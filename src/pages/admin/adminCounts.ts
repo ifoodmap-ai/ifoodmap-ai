@@ -9,7 +9,9 @@
 //            這跟「訂單 › 看板」頁上的「卡關筆數」是同一個判斷(isStuck),點過去看到的數字會對得上。
 //   待審入駐  supplier_applications.status = 'pending'
 //   未結爭議  disputes.status in ('open', 'investigating') —— 跟爭議頁 KPI「未結案」同一個定義
-//   待審分析  analysis_records.status = 'pending_review'
+//   待審分析  analysis_records.status = 'pending_review' 且 claimed_at is null
+//            (形象站訪客註冊後已被認領、轉成採購單草稿的不算待審 —— 跟「分析紀錄」列表的「待審核」分頁同一個定義,
+//            兩邊都呼叫 applyPendingAnalysisFilter)
 //
 // 全部用管理員既有的 RLS 權限讀(is_admin()),不新增任何資料庫物件;
 // 三個純計數用 head:true + count:'exact',只回筆數、不回資料。
@@ -28,6 +30,7 @@ type RowsResult<T> = { data: T[] | null; error: PgError };
 interface CountQuery extends PromiseLike<CountResult> {
   eq(col: string, v: unknown): CountQuery;
   in(col: string, v: readonly unknown[]): CountQuery;
+  is(col: string, v: null): CountQuery;
 }
 
 interface RowsQuery<T> extends PromiseLike<RowsResult<T>> {
@@ -94,9 +97,17 @@ export const OPEN_DISPUTE_STATUSES = ['open', 'investigating'] as const;
 export const fetchOpenDisputeCount = async (): Promise<number> =>
   unwrapCount(await countOf('disputes').in('status', OPEN_DISPUTE_STATUSES));
 
-/** 待審分析數:analysis_records.status = 'pending_review' */
+/**
+ * 「待審分析」的篩選條件(唯一定義):還在 pending_review、而且還沒被註冊認領(claimed_at is null)。
+ * 今日待辦的計數與「分析紀錄」列表的「待審核」分頁共用這一份。
+ */
+export const applyPendingAnalysisFilter = <Q extends { eq(col: string, v: unknown): Q; is(col: string, v: null): Q }>(
+  query: Q,
+): Q => query.eq('status', 'pending_review').is('claimed_at', null);
+
+/** 待審分析數(定義見 applyPendingAnalysisFilter) */
 export const fetchPendingAnalysisCount = async (): Promise<number> =>
-  unwrapCount(await countOf('analysis_records').eq('status', 'pending_review'));
+  unwrapCount(await applyPendingAnalysisFilter(countOf('analysis_records')));
 
 /** 停在會員分區時,多久自動重查一次待審數 */
 export const PENDING_APPLICATIONS_REFRESH_MS = 30_000;

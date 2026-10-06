@@ -86,7 +86,11 @@ describe('今日待辦 — 四個數字與連結', () => {
     expect(q('disputes')[0].filters).toEqual([{ op: 'in', column: 'status', value: ['open', 'investigating'] }]);
 
     expect(q('analysis_records')[0].options).toEqual({ count: 'exact', head: true });
-    expect(q('analysis_records')[0].filters).toEqual([{ op: 'eq', column: 'status', value: 'pending_review' }]);
+    // 待審分析 = 還在 pending_review、而且還沒被形象站訪客註冊認領(claimed_at is null)
+    expect(q('analysis_records')[0].filters).toEqual([
+      { op: 'eq', column: 'status', value: 'pending_review' },
+      { op: 'is', column: 'claimed_at', value: null },
+    ]);
 
     expect(q('order_pipeline')[0].columns).toBe('id, status, current_stage_since');
 

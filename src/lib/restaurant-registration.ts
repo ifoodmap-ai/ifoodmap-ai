@@ -1,3 +1,5 @@
+import { HANDOFF_METADATA_KEY, isValidHandoff } from "./landing-handoff";
+
 export interface RestaurantRegistrationInput {
   restaurantName: string;
   contactName: string;
@@ -76,6 +78,9 @@ export interface RestaurantRegistrationClient {
           pending_restaurant_name?: string;
           pending_contact_name?: string;
           pending_contact_phone?: string;
+          // 形象站 AI 對話的交接碼(<analysisId>.<claimToken>)。換裝置開確認信也帶得過去,
+          // 進 /restaurant 時由 use-landing-handoff-claim 認領成採購單草稿。
+          ifm_handoff?: string;
         };
       };
     }): PromiseLike<AuthResult>;
@@ -224,9 +229,19 @@ const runOnboarding = async (
   return { restaurantId: result.data };
 };
 
+export interface RegisterRestaurantOptions {
+  /**
+   * 形象站帶過來的 AI 需求交接碼(格式見 landing-handoff.ts)。
+   * 有、而且格式正確時才放進 signUp 的 user_metadata.ifm_handoff;已登入(不走 signUp)時不用 ——
+   * 那條路徑認領靠的是 localStorage。
+   */
+  handoff?: string | null;
+}
+
 export const registerRestaurant = async (
   client: RestaurantRegistrationClient,
   input: RestaurantRegistrationInput,
+  options: RegisterRestaurantOptions = {},
 ): Promise<{ restaurantId: string }> => {
   const fieldErrors = validateRestaurantRegistration(input);
   if (Object.keys(fieldErrors).length > 0) {
@@ -268,6 +283,9 @@ export const registerRestaurant = async (
           pending_restaurant_name: input.restaurantName.trim(),
           pending_contact_name: input.contactName.trim(),
           pending_contact_phone: input.phone.trim(),
+          ...(isValidHandoff(options.handoff)
+            ? { [HANDOFF_METADATA_KEY]: options.handoff }
+            : {}),
         },
       },
     });

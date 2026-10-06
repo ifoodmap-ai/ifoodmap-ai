@@ -54,6 +54,7 @@ import {
 import { formatOrderNo } from '@/lib/order-number';
 import DispatchOrderDialog, { type DispatchTarget } from './DispatchOrderDialog';
 import CancelOrderDialog, { type CancelTarget } from './CancelOrderDialog';
+import { CLAIMED_ORDER_NOTE } from './analysisClaim';
 
 /* ---------------------------------------------------------------
  * 新資料表尚未進 types.ts,沿用專案既有的 cast 慣例
@@ -125,6 +126,8 @@ interface BuyerLead {
   company_name: string | null;
   contact_phone: string | null;
   contact_line: string | null;
+  /** 形象站「留 Email 讓專人聯絡」 */
+  contact_email: string | null;
 }
 
 interface Dispute {
@@ -334,6 +337,8 @@ export default function AdminOrderTimelinePage() {
   const [reviews, setReviews] = useState<Review[]>([]);
   const [disputes, setDisputes] = useState<Dispute[]>([]);
   const [analysisSummary, setAnalysisSummary] = useState<string | null>(null);
+  // 來源分析:通常是 supplier_orders.analysis_id;形象站訪客註冊認領的草稿則用 claimed_order_id 反查
+  const [sourceAnalysisId, setSourceAnalysisId] = useState<string | null>(null);
   const [buyer, setBuyer] = useState<BuyerLead | null>(null);
   const [loading, setLoading] = useState(true);
   const [timelineError, setTimelineError] = useState<string | null>(null);
@@ -349,6 +354,7 @@ export default function AdminOrderTimelinePage() {
     setBranchName('');
     setSupplierName('');
     setAnalysisSummary(null);
+    setSourceAnalysisId(null);
     setBuyer(null);
 
     const orderRes = await table<OrderRow>('supplier_orders').select('*').eq('id', id);
@@ -375,13 +381,32 @@ export default function AdminOrderTimelinePage() {
         const [analysisRes, leadRes] = await Promise.all([
           table<{ summary: string | null }>('analysis_records').select('summary').eq('id', o.analysis_id),
           table<BuyerLead>('landing_leads')
-            .select('company_name, contact_phone, contact_line')
+            .select('company_name, contact_phone, contact_line, contact_email')
             .eq('analysis_id', o.analysis_id)
             .order('created_at', { ascending: false })
             .limit(1),
         ]);
+        setSourceAnalysisId(o.analysis_id);
         setAnalysisSummary(analysisRes.data?.[0]?.summary ?? null);
         setBuyer(leadRes.data?.[0] ?? null);
+      } else if (o.notes === CLAIMED_ORDER_NOTE) {
+        // 形象站訪客註冊後由 claim_landing_analysis 建的草稿:契約沒要求寫 analysis_id,
+        // 改用分析紀錄上的 claimed_order_id 反查來源(只有帶這個備註的單才查,一般訂單不多打查詢)
+        const claimedRes = await table<{ id: string; summary: string | null }>('analysis_records')
+          .select('id, summary')
+          .eq('claimed_order_id', o.id)
+          .limit(1);
+        const source = claimedRes.data?.[0] ?? null;
+        if (source) {
+          const leadRes = await table<BuyerLead>('landing_leads')
+            .select('company_name, contact_phone, contact_line, contact_email')
+            .eq('analysis_id', source.id)
+            .order('created_at', { ascending: false })
+            .limit(1);
+          setSourceAnalysisId(source.id);
+          setAnalysisSummary(source.summary ?? null);
+          setBuyer(leadRes.data?.[0] ?? null);
+        }
       }
     }
 
@@ -579,6 +604,7 @@ export default function AdminOrderTimelinePage() {
               <InfoRow label="姓名 / 名稱" value={buyer.company_name || '—'} />
               <InfoRow label="聯絡電話" value={buyer.contact_phone || '—'} />
               <InfoRow label="LINE ID" value={buyer.contact_line || '—'} />
+              <InfoRow label="Email" value={buyer.contact_email || '—'} />
             </CardContent>
           </Card>
         )}
@@ -618,11 +644,14 @@ export default function AdminOrderTimelinePage() {
           </CardContent>
         </Card>
 
-        {/* 對應分析來源(從舊明細搬來) */}
-        {order.analysis_id && (
+        {/* 對應分析來源(從舊明細搬來;註冊認領的草稿用 claimed_order_id 反查到的那筆) */}
+        {sourceAnalysisId && (
           <Card>
             <CardHeader className="pb-3">
               <CardTitle className="text-base text-slate-700">對應分析來源</CardTitle>
+              {!order.analysis_id && (
+                <p className="text-xs text-emerald-700">形象站訪客註冊後,由 AI 採購助手的對話帶入成這張草稿</p>
+              )}
             </CardHeader>
             <CardContent className="space-y-3">
               <p className="whitespace-pre-wrap text-sm text-slate-700">
@@ -631,7 +660,7 @@ export default function AdminOrderTimelinePage() {
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => navigate(`/admin/analyses/${order.analysis_id}`)}
+                onClick={() => navigate(`/admin/analyses/${sourceAnalysisId}`)}
               >
                 查看分析紀錄 →
               </Button>

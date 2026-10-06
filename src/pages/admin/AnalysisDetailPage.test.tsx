@@ -198,3 +198,78 @@ describe('AnalysisDetailPage — 其他功能照舊', () => {
     expect(await screen.findByText(/找不到紀錄/)).toBeInTheDocument();
   });
 });
+
+describe('AnalysisDetailPage — 形象站 Email 與註冊認領', () => {
+  const ORDER_ID = '0b6c3e2a-7d14-4f58-9a3b-2c1d0e9f8a7b';
+
+  const serveWith = (record: Record<string, unknown>, lead: Record<string, unknown> | null = null) =>
+    fakeSupabase.respond((q) => {
+      if (q.table === 'analysis_records' && q.action === 'select') return { data: { ...RECORD, ...record } };
+      if (q.table === 'landing_leads') return { data: lead ? [lead] : [] };
+      return undefined;
+    });
+
+  const renderWithOrderRoute = () =>
+    render(
+      <MemoryRouter initialEntries={['/admin/analyses/an-1']}>
+        <Routes>
+          <Route path="/admin/analyses/:id" element={<AnalysisDetailPage />} />
+          <Route path="/admin/orders/:id" element={<h1>訂單頁</h1>} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+  it('買方聯絡資訊多一欄 Email(landing_leads.contact_email),查詢也有帶這個欄位', async () => {
+    serveWith({}, { ...LEAD, contact_phone: null, contact_email: 'boss@beef.example' });
+    renderPage();
+    await loaded();
+
+    expect(await screen.findByText('boss@beef.example')).toBeInTheDocument();
+    expect(screen.getByText('Email')).toBeInTheDocument();
+    const [leads] = fakeSupabase.queriesOf('landing_leads');
+    expect(leads.columns).toBe('company_name, contact_phone, contact_line, contact_email');
+    expect(leads.filters[0]).toEqual({ op: 'eq', column: 'analysis_id', value: 'an-1' });
+  });
+
+  it('claimed_at 有值 → 顯示「已由註冊帶入，轉成採購單草稿」並連到那張訂單;不再是待審(沒有拒絕鈕、標籤不是待審核)', async () => {
+    serveWith({ claimed_at: '2026-10-07T02:00:00.000Z', claimed_order_id: ORDER_ID });
+    const user = userEvent.setup();
+    renderWithOrderRoute();
+    await loaded();
+
+    const card = screen.getByTestId('claimed-card');
+    expect(card).toHaveTextContent('已由註冊帶入，轉成採購單草稿');
+    const link = within(card).getByRole('link', { name: /查看採購單/ });
+    expect(link).toHaveAttribute('href', `/admin/orders/${ORDER_ID}`);
+    expect(link).toHaveTextContent('#0E9F8A7B'); // 訂單編號 = id 後 8 碼大寫(formatOrderNo)
+    expect(screen.getByText('已轉採購單')).toBeInTheDocument();
+    expect(screen.queryByText('待審核')).toBeNull();
+    expect(screen.queryByRole('button', { name: /拒絕/ })).toBeNull();
+    expect(screen.queryByText(/潛在客戶名單/)).toBeNull();
+
+    await user.click(link);
+    expect(await screen.findByRole('heading', { name: '訂單頁' })).toBeInTheDocument();
+  });
+
+  it('認領了但沒有建單(對話沒有食材)→ 說明沒有建立採購單,沒有連結', async () => {
+    serveWith({ claimed_at: '2026-10-07T02:00:00.000Z', claimed_order_id: null });
+    renderPage();
+    await loaded();
+
+    const card = screen.getByTestId('claimed-card');
+    expect(card).toHaveTextContent('已由註冊帶入（沒有辨識到食材，沒有建立採購單）');
+    expect(within(card).queryByRole('link')).toBeNull();
+    expect(screen.getByText('已註冊帶入')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /拒絕/ })).toBeNull();
+  });
+
+  it('沒被認領的待審紀錄 → 沒有認領卡,照舊是待審', async () => {
+    serveWith({ claimed_at: null, claimed_order_id: null }, LEAD);
+    renderPage();
+    await loaded();
+
+    expect(screen.queryByTestId('claimed-card')).toBeNull();
+    expect(screen.getByText('待審核')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /拒絕/ })).toBeInTheDocument();
+  });
+});

@@ -10,6 +10,7 @@ import { useRestaurant, canSeeCost } from "@/components/RestaurantRoute";
 import PortalSwitcher from "@/components/PortalSwitcher";
 import AIAssistantBubble from "@/components/AIAssistantBubble";
 import SectionTabs, { type SectionTabItem } from "@/components/portal/SectionTabs";
+import { useLandingHandoffClaim } from "@/hooks/use-landing-handoff-claim";
 
 // 後台精簡第一期(PROPOSAL.md §2):10 個選單項目收成 5 個分區,分區裡用分頁(深連結到原本的路由)。
 // 路由一條都沒動、也不需要轉址 —— 通知信(/restaurant/orders)、AI 交接(/restaurant/purchase)、
@@ -101,6 +102,9 @@ const RestaurantLayout = () => {
   const location = useLocation();
   const account = useRestaurant();
   const [mobileOpen, setMobileOpen] = useState(false);
+  // 形象站 AI 對話帶過來的需求 → 採購單草稿。認領只在這裡做(註冊、換裝置開確認信、改成登入都會經過);
+  // 帶上畫面正在用的這家店,草稿才會建在使用者看得到的地方(多店的人不會建到另一家)
+  useLandingHandoffClaim(account.restaurant_id);
 
   const showCost = canSeeCost(account.role);
   // 採購員看不到成本相關的分區(整個「菜單與成本」)

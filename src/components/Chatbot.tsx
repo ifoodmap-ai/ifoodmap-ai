@@ -5,7 +5,7 @@ import { Card } from "@/components/ui/card";
 import { Send, Bot, User, ArrowRight } from "lucide-react";
 import { toast } from "sonner";
 import { useLanguage } from "@/contexts/LanguageContext";
-import { analyzeChat, chatReply, formatIngredient } from "@/lib/api";
+import { analyzeChat, chatReply, formatIngredient, friendlyAiError } from "@/lib/api";
 import { track } from "@/lib/analytics";
 import type { AnalysisMeta } from "@/components/MenuUpload";
 
@@ -167,6 +167,13 @@ const Chatbot = ({
       }
     } catch (error) {
       if (!mountedRef.current) return;
+      // 用量上限這類有錯誤碼的 → 只講白話(例如「今天的 AI 使用次數已達上限,請明天再試」),不露技術細節
+      const friendly = friendlyAiError(error);
+      if (friendly) {
+        pushBotMessage(friendly);
+        toast.error(friendly);
+        return;
+      }
       const message = error instanceof Error ? error.message : "AI 服務暫時無法使用";
       pushBotMessage(`抱歉,AI 服務暫時無法回覆,請稍後再試。(${message})`);
       toast.error(`AI 對話失敗:${message}`);

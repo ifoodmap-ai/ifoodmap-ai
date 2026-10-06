@@ -493,3 +493,52 @@ describe("registerRestaurant", () => {
     expect(error.fieldErrors.email).toBe("請輸入有效的 Email");
   });
 });
+
+describe("registerRestaurant — 形象站 AI 需求交接碼(SPEC §7)", () => {
+  const HANDOFF =
+    "3f2b8c1e-9a4d-4e7b-8c21-5d6f7a8b9c0d.q5Vh2kK8mX0bZr3Lw9TfYc1NpQe7JdUsHaGiOvRx4yA";
+
+  const signUpData = (signUp: ReturnType<typeof vi.fn>) =>
+    (signUp.mock.calls[0][0] as { options: { data: Record<string, unknown> } }).options.data;
+
+  it("有交接碼 → signUp 的 options.data 帶 ifm_handoff(其他欄位不變)", async () => {
+    const { client, signUp } = createClient();
+
+    await registerRestaurant(client, VALID_INPUT, { handoff: HANDOFF });
+
+    expect(signUp).toHaveBeenCalledTimes(1);
+    expect(signUpData(signUp)).toEqual({
+      display_name: "王小明",
+      pending_restaurant_name: "美味餐廳",
+      pending_contact_name: "王小明",
+      pending_contact_phone: "+886 912-345-678",
+      ifm_handoff: HANDOFF,
+    });
+  });
+
+  it.each([
+    ["沒有交接碼", undefined],
+    ["null", null],
+    ["格式不對", "not-a-handoff"],
+  ])("%s → options.data 不帶 ifm_handoff", async (_label, handoff) => {
+    const { client, signUp } = createClient();
+
+    await registerRestaurant(client, VALID_INPUT, { handoff });
+
+    expect(signUpData(signUp)).not.toHaveProperty("ifm_handoff");
+  });
+
+  it("已經登入(不走 signUp)→ 直接建檔,交接碼留給 /restaurant 從 localStorage 認領", async () => {
+    const { client, getSession, signUp, rpc } = createClient();
+    getSession.mockResolvedValue({
+      data: { session: { user: { email: "owner@example.com" } } },
+      error: null,
+    });
+
+    await expect(
+      registerRestaurant(client, VALID_INPUT, { handoff: HANDOFF }),
+    ).resolves.toEqual({ restaurantId: UUID });
+    expect(signUp).not.toHaveBeenCalled();
+    expect(rpc).toHaveBeenCalledWith("create_restaurant_onboarding", expect.any(Object));
+  });
+});

@@ -5,8 +5,8 @@
 // 餐廳後台看不到,兩個寫入都沒檢查 error,失敗也照樣顯示成功。要成交請對方註冊餐廳後台叫貨,走正式訂單流程。
 // 這一頁因此不會再寫 supplier_orders,也不需要再讀供應商清單;拒絕與刪除照舊。
 import { useEffect, useState } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft, Loader2, Trash2 } from 'lucide-react';
+import { Link, useParams, useNavigate } from 'react-router-dom';
+import { ArrowLeft, Loader2, Trash2, UserCheck } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -30,6 +30,8 @@ import {
 import { Textarea } from '@/components/ui/textarea';
 import { useToast } from '@/hooks/use-toast';
 import { supabase } from '@/integrations/supabase/client';
+import { formatOrderNo } from '@/lib/order-number';
+import { CLAIMED_BADGE_CLASS, claimedBadgeLabel, claimedSummary, isClaimed } from './analysisClaim';
 
 interface Ingredient {
   name: string;
@@ -50,6 +52,9 @@ interface AnalysisRecord {
   transcript: string | null;
   images: string[] | null;
   messages: { role: string; text: string; image?: string }[] | null;
+  /** 形象站訪客註冊後認領的時間(claim_landing_analysis 押的);有值 = 已轉成採購單草稿,不算待審 */
+  claimed_at?: string | null;
+  claimed_order_id?: string | null;
 }
 
 const asDataUrl = (s: string) => (s.startsWith('data:') ? s : `data:image/jpeg;base64,${s}`);
@@ -58,6 +63,8 @@ interface BuyerLead {
   company_name: string | null;
   contact_phone: string | null;
   contact_line: string | null;
+  /** 形象站「留 Email 讓專人聯絡」(不再收電話之後的主要聯絡方式) */
+  contact_email: string | null;
 }
 
 /* analysis_records / landing_leads 還沒進 types.ts,沿用專案既有的 cast 慣例,只描述這頁用得到的 builder */
@@ -137,7 +144,7 @@ const AnalysisDetailPage = () => {
 
     const { data: leads } = await db
       .from('landing_leads')
-      .select('company_name, contact_phone, contact_line')
+      .select('company_name, contact_phone, contact_line, contact_email')
       .eq('analysis_id', id)
       .order('created_at', { ascending: false })
       .limit(1);
@@ -204,7 +211,9 @@ const AnalysisDetailPage = () => {
     );
   }
 
-  const isPending = record.status === 'pending_review';
+  const claimed = isClaimed(record);
+  // 已被註冊認領(轉成採購單草稿)的不算待審:不再顯示「潛在客戶名單」說明與拒絕鈕
+  const isPending = record.status === 'pending_review' && !claimed;
 
   return (
     <div className="max-w-3xl">
@@ -219,9 +228,15 @@ const AnalysisDetailPage = () => {
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-2xl font-bold text-slate-800">分析詳情 (Analysis Detail)</h1>
         <div className="flex items-center gap-3">
-          <Badge variant="outline" className={statusBadgeClass[record.status]}>
-            {statusLabel[record.status]}
-          </Badge>
+          {claimed ? (
+            <Badge variant="outline" className={CLAIMED_BADGE_CLASS}>
+              {claimedBadgeLabel(record)}
+            </Badge>
+          ) : (
+            <Badge variant="outline" className={statusBadgeClass[record.status]}>
+              {statusLabel[record.status]}
+            </Badge>
+          )}
           <Button
             variant="outline"
             size="sm"
@@ -235,6 +250,29 @@ const AnalysisDetailPage = () => {
       </div>
 
       <div className="space-y-4">
+        {claimed && (
+          <Card className="border-emerald-200 bg-emerald-50/60" data-testid="claimed-card">
+            <CardContent className="flex flex-col gap-3 py-4 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex items-start gap-2.5">
+                <UserCheck className="mt-0.5 h-4 w-4 shrink-0 text-emerald-700" aria-hidden="true" />
+                <div>
+                  <p className="text-sm font-medium text-emerald-900">{claimedSummary(record)}</p>
+                  <p className="mt-0.5 text-xs text-emerald-700">
+                    帶入時間 {new Date(record.claimed_at as string).toLocaleString('zh-TW')}
+                  </p>
+                </div>
+              </div>
+              {record.claimed_order_id && (
+                <Button asChild variant="outline" size="sm" className="shrink-0 border-emerald-300 bg-white">
+                  <Link to={`/admin/orders/${record.claimed_order_id}`}>
+                    查看採購單 {formatOrderNo(record.claimed_order_id)} →
+                  </Link>
+                </Button>
+              )}
+            </CardContent>
+          </Card>
+        )}
+
         <Card>
           <CardHeader>
             <CardTitle className="text-base text-slate-700">基本資訊 (Basic Info)</CardTitle>
@@ -285,6 +323,10 @@ const AnalysisDetailPage = () => {
               <div className="flex gap-2">
                 <span className="text-slate-500 w-28 shrink-0">LINE ID</span>
                 <span className="text-slate-800">{buyer.contact_line || '—'}</span>
+              </div>
+              <div className="flex gap-2">
+                <span className="text-slate-500 w-28 shrink-0">Email</span>
+                <span className="text-slate-800 break-all">{buyer.contact_email || '—'}</span>
               </div>
             </CardContent>
           </Card>

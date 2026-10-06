@@ -25,6 +25,8 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
 import { supabase } from '@/integrations/supabase/client';
+import { applyPendingAnalysisFilter } from './adminCounts';
+import { CLAIMED_BADGE_CLASS, claimedBadgeLabel, claimedSummary, isClaimed } from './analysisClaim';
 
 type AnalysisStatus = 'pending_review' | 'approved' | 'rejected' | 'sent';
 type TabValue = 'all' | AnalysisStatus;
@@ -35,6 +37,13 @@ interface AnalysisRecord {
   source_type: string;
   summary: string | null;
   status: AnalysisStatus;
+  claimed_at: string | null;
+  claimed_order_id: string | null;
+}
+
+interface ListQuery extends PromiseLike<{ data: AnalysisRecord[] | null }> {
+  eq(col: string, val: unknown): ListQuery;
+  is(col: string, val: null): ListQuery;
 }
 
 const statusBadgeClass: Record<AnalysisStatus, string> = {
@@ -93,16 +102,23 @@ const AnalysisListPage = () => {
     const fetchRecords = async () => {
       setLoading(true);
 
-      let query = (supabase as never)
+      let query = (supabase as never as {
+        from: (t: string) => {
+          select: (c: string) => { order: (col: string, o: { ascending: boolean }) => ListQuery };
+        };
+      })
         .from('analysis_records')
-        .select('id, created_at, source_type, summary, status')
+        .select('id, created_at, source_type, summary, status, claimed_at, claimed_order_id')
         .order('created_at', { ascending: false });
 
-      if (activeTab !== 'all') {
-        query = (query as { eq: (col: string, val: string) => unknown }).eq('status', activeTab);
+      if (activeTab === 'pending_review') {
+        // 跟今日待辦的「待審分析」同一個定義:已被註冊認領的不算待審
+        query = applyPendingAnalysisFilter(query);
+      } else if (activeTab !== 'all') {
+        query = query.eq('status', activeTab);
       }
 
-      const { data } = await (query as Promise<{ data: AnalysisRecord[] | null }>);
+      const { data } = await query;
       setRecords((data as AnalysisRecord[] | null) ?? []);
       setLoading(false);
     };
@@ -171,12 +187,23 @@ const AnalysisListPage = () => {
                       : <span className="text-slate-400 italic">無摘要</span>}
                   </TableCell>
                   <TableCell>
-                    <Badge
-                      variant="outline"
-                      className={statusBadgeClass[record.status]}
-                    >
-                      {statusLabel[record.status]}
-                    </Badge>
+                    {/* 被註冊認領的紀錄 status 仍是 pending_review,但已經不算待審 —— 標成「已轉採購單」 */}
+                    {isClaimed(record) ? (
+                      <Badge
+                        variant="outline"
+                        className={CLAIMED_BADGE_CLASS}
+                        title={claimedSummary(record)}
+                      >
+                        {claimedBadgeLabel(record)}
+                      </Badge>
+                    ) : (
+                      <Badge
+                        variant="outline"
+                        className={statusBadgeClass[record.status]}
+                      >
+                        {statusLabel[record.status]}
+                      </Badge>
+                    )}
                   </TableCell>
                   <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
                     <Button

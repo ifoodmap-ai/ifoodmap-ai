@@ -4,7 +4,7 @@ import { Card } from "@/components/ui/card";
 import { Upload, FileImage, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { useLanguage } from "@/contexts/LanguageContext";
-import { analyzeMenu, formatIngredient } from "@/lib/api";
+import { analyzeMenu, formatIngredient, friendlyAiError } from "@/lib/api";
 import { track } from "@/lib/analytics";
 
 export interface AnalysisMeta {
@@ -77,8 +77,10 @@ const MenuUpload = ({ onAnalysisComplete, compact = false }: MenuUploadProps) =>
       });
       toast.success("AI 分析完成!");
     } catch (error) {
+      // 用量上限、照片太大這類有錯誤碼的 → 直接給白話提示;其他照舊
+      const friendly = friendlyAiError(error);
       const message = error instanceof Error ? error.message : "AI 分析失敗";
-      toast.error(`AI 分析失敗:${message}`);
+      toast.error(friendly ?? `AI 分析失敗:${message}`);
     } finally {
       setIsUploading(false);
     }

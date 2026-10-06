@@ -10,6 +10,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { supabase } from "@/integrations/supabase/client";
 import { useRestaurant, canSeeCost } from "@/components/RestaurantRoute";
+import { AiError, friendlyAiError, requestAi } from "@/lib/api";
 
 /* ── 新資料表不在 types.ts,沿用專案的 loose cast 慣例 ─────────────── */
 type Result<T> = { data: T[] | null; error: { message: string } | null };
@@ -66,7 +67,6 @@ interface Idea {
 }
 
 const DAY = 86_400_000;
-const AI_FN_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/ai`;
 
 const normalizeName = (s: string) =>
   s.toLowerCase().replace(/\s+/g, "").replace(/[（(].*?[)）]/g, "");
@@ -243,18 +243,8 @@ const RestaurantLabPage = () => {
     }
     setGenerating(true);
     try {
-      const res = await fetch(AI_FN_URL, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
-        },
-        body: JSON.stringify({ action: "dish-ideas", ingredients: list, cuisine: cuisine || "台式" }),
-      });
-
-      if (!res.ok) throw new Error(`AI 回應 ${res.status}`);
-
-      const json = (await res.json().catch(() => null)) as Record<string, unknown> | null;
+      // 走共用的 requestAi:apikey + 登入者的 Bearer token 都在那裡帶(user tier)
+      const json = await requestAi({ action: "dish-ideas", ingredients: list, cuisine: cuisine || "台式" });
       const payload = (json?.data ?? json) as Record<string, unknown> | unknown[] | null;
       const rawList: unknown[] = Array.isArray(payload)
         ? payload
@@ -304,8 +294,17 @@ const RestaurantLabPage = () => {
         setAiUnavailable(false);
       }
     } catch (e) {
-      setAiUnavailable(true);
-      toast.info("AI 建議即將推出", { description: (e as Error).message });
+      // 用量上限、照片太大這類有錯誤碼的 → 照實說,不要講成「即將推出」
+      const friendly = friendlyAiError(e);
+      if (friendly) {
+        toast.error(friendly);
+      } else {
+        setAiUnavailable(true);
+        // 沒有錯誤碼的 HTTP 錯誤照舊只說狀態碼 —— 不把伺服器訊息(可能是設定類的技術字串)秀給餐廳
+        toast.info("AI 建議即將推出", {
+          description: e instanceof AiError ? `AI 回應 ${e.status}` : (e as Error).message,
+        });
+      }
     } finally {
       setGenerating(false);
     }

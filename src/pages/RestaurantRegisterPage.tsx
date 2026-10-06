@@ -14,6 +14,7 @@ import {
   ClipboardCheck,
   Loader2,
   ShoppingBasket,
+  Sparkles,
 } from "lucide-react";
 import { toast } from "sonner";
 import PublicHeader from "@/components/PublicHeader";
@@ -31,6 +32,14 @@ import {
   type RegistrationErrors,
   type RestaurantRegistrationInput,
 } from "@/lib/restaurant-registration";
+import {
+  captureHandoffFromUrl,
+  readStoredHandoff,
+} from "@/lib/landing-handoff";
+
+/** 形象站帶著 AI 對話過來時的說明橫幅(文案業主指定) */
+export const HANDOFF_BANNER_TEXT =
+  "你跟 AI 採購助手聊的需求已經保存，註冊完成後會自動幫你建成一張採購單草稿";
 
 const INITIAL_FORM: RestaurantRegistrationInput = {
   restaurantName: "",
@@ -163,6 +172,13 @@ const RestaurantRegisterPage = () => {
     terms: termsRef,
   });
 
+  // 形象站的 AI 需求交接碼(#handoff=…)。一進頁面就撈出來存好、把片段從網址拿掉(SPEC §7);
+  // 之前存過、還沒過期的也算(例如先去登入頁晃一圈又回來)。用 layout effect:畫面出來前網址就乾淨了。
+  const [handoff, setHandoff] = useState<string | null>(null);
+  useLayoutEffect(() => {
+    setHandoff(captureHandoffFromUrl() ?? readStoredHandoff());
+  }, []);
+
   const queueFirstError = (errors: RegistrationErrors) => {
     const firstInvalid = FIELD_ORDER.find((field) => errors[field]);
     setPendingFocus(firstInvalid ?? null);
@@ -207,7 +223,13 @@ const RestaurantRegisterPage = () => {
     setIsSubmitting(true);
 
     try {
-      await registerRestaurant(supabase, form);
+      // 交接碼跟著 signUp 寄放進 user_metadata(換裝置開確認信也能認領);沒有就照舊只傳表單
+      const pendingHandoff = handoff ?? readStoredHandoff();
+      if (pendingHandoff) {
+        await registerRestaurant(supabase, form, { handoff: pendingHandoff });
+      } else {
+        await registerRestaurant(supabase, form);
+      }
       toast.success("餐廳帳號已建立", {
         description: "歡迎加入 iFoodmap，現在開始設定你的採購流程。",
       });
@@ -280,6 +302,18 @@ const RestaurantRegisterPage = () => {
         </section>
 
         <Card className="mx-auto w-full max-w-2xl border-slate-200 bg-white p-5 shadow-xl shadow-slate-900/5 sm:p-8">
+          {handoff ? (
+            <Alert
+              role="status"
+              data-testid="handoff-banner"
+              className="mb-5 border-emerald-200 bg-emerald-50 text-emerald-950"
+            >
+              <Sparkles className="h-4 w-4 !text-emerald-700" aria-hidden="true" />
+              <AlertDescription className="leading-6">
+                {HANDOFF_BANNER_TEXT}
+              </AlertDescription>
+            </Alert>
+          ) : null}
           <form noValidate onSubmit={handleSubmit} className="space-y-5">
             <div className="grid gap-5 sm:grid-cols-2">
               <FormField

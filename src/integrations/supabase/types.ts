@@ -14,6 +14,162 @@ export type Database = {
   }
   public: {
     Tables: {
+      // 以下三張表 2026-10-07 手動補上(欄位照正式庫 information_schema + 形象站 AI 防濫用 migration 新增的欄位:
+      // ai_usage.tier / thoughts_tokens、analysis_records.claim_token_hash / claimed_*、landing_leads.contact_email)。
+      // 既有頁面仍沿用 loose cast 慣例;新程式可以直接用型別。
+      ai_usage: {
+        Row: {
+          action: string
+          completion_tokens: number | null
+          created_at: string
+          error: string | null
+          id: string
+          latency_ms: number | null
+          model: string | null
+          ok: boolean
+          prompt_tokens: number | null
+          thoughts_tokens: number | null
+          tier: string | null
+        }
+        Insert: {
+          action: string
+          completion_tokens?: number | null
+          created_at?: string
+          error?: string | null
+          id?: string
+          latency_ms?: number | null
+          model?: string | null
+          ok?: boolean
+          prompt_tokens?: number | null
+          thoughts_tokens?: number | null
+          tier?: string | null
+        }
+        Update: {
+          action?: string
+          completion_tokens?: number | null
+          created_at?: string
+          error?: string | null
+          id?: string
+          latency_ms?: number | null
+          model?: string | null
+          ok?: boolean
+          prompt_tokens?: number | null
+          thoughts_tokens?: number | null
+          tier?: string | null
+        }
+        Relationships: []
+      }
+      analysis_records: {
+        Row: {
+          admin_notes: string | null
+          claim_token_hash: string | null
+          claimed_at: string | null
+          claimed_order_id: string | null
+          claimed_restaurant_id: string | null
+          created_at: string
+          id: string
+          images: Json | null
+          ingredient_list: Json
+          messages: Json | null
+          reviewed_at: string | null
+          reviewed_by: string | null
+          source_id: string | null
+          source_type: string
+          status: string
+          summary: string | null
+          transcript: string | null
+          updated_at: string
+          user_id: string | null
+        }
+        Insert: {
+          admin_notes?: string | null
+          claim_token_hash?: string | null
+          claimed_at?: string | null
+          claimed_order_id?: string | null
+          claimed_restaurant_id?: string | null
+          created_at?: string
+          id?: string
+          images?: Json | null
+          ingredient_list?: Json
+          messages?: Json | null
+          reviewed_at?: string | null
+          reviewed_by?: string | null
+          source_id?: string | null
+          source_type: string
+          status?: string
+          summary?: string | null
+          transcript?: string | null
+          updated_at?: string
+          user_id?: string | null
+        }
+        Update: {
+          admin_notes?: string | null
+          claim_token_hash?: string | null
+          claimed_at?: string | null
+          claimed_order_id?: string | null
+          claimed_restaurant_id?: string | null
+          created_at?: string
+          id?: string
+          images?: Json | null
+          ingredient_list?: Json
+          messages?: Json | null
+          reviewed_at?: string | null
+          reviewed_by?: string | null
+          source_id?: string | null
+          source_type?: string
+          status?: string
+          summary?: string | null
+          transcript?: string | null
+          updated_at?: string
+          user_id?: string | null
+        }
+        Relationships: []
+      }
+      landing_leads: {
+        Row: {
+          analysis_id: string | null
+          company_name: string | null
+          contact_email: string | null
+          contact_line: string | null
+          contact_phone: string | null
+          created_at: string
+          detail: string | null
+          id: string
+          items_text: string | null
+          source: string
+          status: string
+          user_agent: string | null
+        }
+        Insert: {
+          analysis_id?: string | null
+          company_name?: string | null
+          contact_email?: string | null
+          contact_line?: string | null
+          contact_phone?: string | null
+          created_at?: string
+          detail?: string | null
+          id?: string
+          items_text?: string | null
+          source?: string
+          status?: string
+          user_agent?: string | null
+        }
+        Update: {
+          analysis_id?: string | null
+          company_name?: string | null
+          contact_email?: string | null
+          contact_line?: string | null
+          contact_phone?: string | null
+          created_at?: string
+          detail?: string | null
+          id?: string
+          items_text?: string | null
+          source?: string
+          status?: string
+          user_agent?: string | null
+        }
+        Relationships: []
+      }
       inquiries: {
         Row: {
           created_at: string
@@ -82,6 +238,17 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      // 形象站 AI 對話 → 採購單草稿的認領(SPEC §6、修訂 2 R2)。一律回 200,用 ok / reason 表達結果:
+      //   { ok: true, order_id: uuid | null, already: boolean } | { ok: false, reason: "invalid" | "no_restaurant" | "expired_or_used" }
+      // p_restaurant_id:有帶 → 呼叫者必須是那家店的 accepted 成員,不是就 no_restaurant;沒帶 → 最近 accepted 的那家。
+      // 產品站一律帶目前畫面上那家店。
+      claim_landing_analysis: {
+        Args: {
+          p_handoff: string
+          p_restaurant_id?: string | null
+        }
+        Returns: Json
+      }
       create_restaurant_onboarding: {
         Args: {
           p_contact_name?: string | null

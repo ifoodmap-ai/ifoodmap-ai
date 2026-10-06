@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useLocation } from "react-router-dom";
 import {
   Sparkles, Plus, Trash2, Loader2, ShoppingCart, ClipboardCheck,
   History, Send, PackagePlus, Hourglass, Undo2,
@@ -25,6 +26,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { useRestaurant, needsApproval } from "@/components/RestaurantRoute";
 import { ANALYSIS_HANDOFF_KEY } from "./RestaurantAnalyzePage";
 import { recordOrderEvent } from "@/lib/orders";
+import type { ClaimedDraftLocationState } from "@/hooks/use-landing-handoff-claim";
 
 /* ── 新資料表不在 types.ts,沿用專案的 loose cast 慣例 ─────────────── */
 type Result<T> = { data: T[] | null; error: { message: string } | null };
@@ -83,6 +85,9 @@ const dayDiff = (a: number, b: number) => Math.max(0, Math.round((a - b) / DAY))
 const RestaurantPurchasePage = () => {
   const account = useRestaurant();
   const mustApprove = needsApproval(account.role);
+  // 形象站 AI 對話剛被認領成草稿時,RestaurantLayout 會帶著 claimedOrderId 導過來
+  const claimedOrderId =
+    (useLocation().state as Partial<ClaimedDraftLocationState> | null)?.claimedOrderId ?? null;
 
   const [loading, setLoading] = useState(true);
   const [userId, setUserId] = useState<string | null>(null);
@@ -196,6 +201,14 @@ const RestaurantPurchasePage = () => {
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [account.restaurant_id]);
+
+  // 本來就停在這一頁時才認領完成(直接打 /restaurant/purchase 進來):第一次載入可能早於草稿建立,
+  // 收到 claimedOrderId 就再抓一次待簽核清單,剛建好的 AI 草稿才看得到
+  useEffect(() => {
+    if (!claimedOrderId) return;
+    void loadDrafts();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [claimedOrderId]);
 
   const cart = useMemo(() => {
     const picked = suggestions
@@ -390,7 +403,7 @@ const RestaurantPurchasePage = () => {
             <p className="text-xs text-amber-700">
               {mustApprove
                 ? "老闆或店長簽核後才會送出媒合;需要修改請聯絡店長退回"
-                : "採購員建立的採購單,核准後才會送出媒合"}
+                : "採購員建立、或 AI 採購助手帶入的採購單,核准後才會送出媒合"}
             </p>
           </CardHeader>
           <CardContent className="space-y-3">

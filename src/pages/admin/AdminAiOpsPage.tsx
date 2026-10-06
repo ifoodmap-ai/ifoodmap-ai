@@ -40,6 +40,16 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { supabase } from '@/integrations/supabase/client';
+import { fetchAllPages } from '@/lib/metrics';
+import {
+  USD_PER_M_INPUT,
+  USD_PER_M_OUTPUT,
+  costOf,
+  formatUnitPrice,
+  inputTokensOf,
+  outputTokensOf,
+  thoughtsTokensOf,
+} from './aiCost';
 
 /* ---------------------------------------------------------------
  * 新資料表尚未進 types.ts,沿用專案既有的 cast 慣例
@@ -51,6 +61,7 @@ interface Chain<T> extends PromiseLike<Res<T>> {
   gte(col: string, v: unknown): Chain<T>;
   order(col: string, opts?: { ascending: boolean }): Chain<T>;
   limit(n: number): Chain<T>;
+  range(from: number, to: number): Chain<T>;
 }
 
 const table = <T,>(name: string) =>
@@ -65,6 +76,8 @@ interface AiUsageRow {
   model: string | null;
   prompt_tokens: number | null;
   completion_tokens: number | null;
+  /** Gemini 2.5 的思考 tokens(按輸出價計費);舊資料是 null */
+  thoughts_tokens: number | null;
   latency_ms: number | null;
   ok: boolean;
   error: string | null;
@@ -72,9 +85,7 @@ interface AiUsageRow {
 }
 
 /* ------------------------------ constants ------------------------------ */
-/** Gemini Flash 公告價(估算用,實際帳單以 Google Cloud 為準) */
-const USD_PER_M_INPUT = 0.075;
-const USD_PER_M_OUTPUT = 0.3;
+// 單價與成本公式在 ./aiCost(Gemini 2.5 Flash 公告價,輸出含思考 tokens)
 /** 粗估台幣用的匯率,只用於顯示 */
 const TWD_RATE = 32;
 
@@ -109,8 +120,6 @@ const RANGE_OPTIONS = [
 const usd = (v: number): string => `US$${v < 0.01 && v > 0 ? v.toFixed(4) : v.toFixed(2)}`;
 const twd = (v: number): string =>
   `約 NT$${Math.round(v * TWD_RATE).toLocaleString('zh-TW')}`;
-const costOf = (inTok: number, outTok: number): number =>
-  (inTok / 1_000_000) * USD_PER_M_INPUT + (outTok / 1_000_000) * USD_PER_M_OUTPUT;
 const actionLabel = (a: string): string => ACTION_LABEL[a] ?? a;
 
 /* ------------------------------ page ------------------------------ */
@@ -129,12 +138,18 @@ export default function AdminAiOpsPage() {
       setLoadError(null);
 
       const since = new Date(Date.now() - Number(days) * 86_400_000).toISOString();
-      const res = await table<AiUsageRow>('ai_usage')
-        .select(
-          'id, action, model, prompt_tokens, completion_tokens, latency_ms, ok, error, created_at',
-        )
-        .gte('created_at', since)
-        .order('created_at', { ascending: false });
+      // 分頁讀完:PostgREST 一次最多回 1000 筆,超過的會被默默截掉 —— 流量大(正是要看成本的時候)
+      // 呼叫數、tokens、成本都會偏低。排序加 id 才不會翻頁時重複或漏掉。
+      const res = await fetchAllPages((from, to) =>
+        table<AiUsageRow>('ai_usage')
+          .select(
+            'id, action, model, prompt_tokens, completion_tokens, thoughts_tokens, latency_ms, ok, error, created_at',
+          )
+          .gte('created_at', since)
+          .order('created_at', { ascending: false })
+          .order('id', { ascending: false })
+          .range(from, to),
+      );
 
       if (res.error) {
         setLoadError(res.error.message);
@@ -170,8 +185,10 @@ export default function AdminAiOpsPage() {
     const p95 =
       latencies.length > 0 ? latencies[Math.min(latencies.length - 1, Math.floor(latencies.length * 0.95))] : null;
 
-    const inTok = rows.reduce((s, r) => s + (Number(r.prompt_tokens) || 0), 0);
-    const outTok = rows.reduce((s, r) => s + (Number(r.completion_tokens) || 0), 0);
+    const inTok = rows.reduce((s, r) => s + inputTokensOf(r), 0);
+    // 輸出含思考 tokens(2.5 Flash 按輸出價計費)
+    const outTok = rows.reduce((s, r) => s + outputTokensOf(r), 0);
+    const thoughtsTok = rows.reduce((s, r) => s + thoughtsTokensOf(r), 0);
 
     return {
       total,
@@ -182,6 +199,7 @@ export default function AdminAiOpsPage() {
       p95,
       inTok,
       outTok,
+      thoughtsTok,
       cost: costOf(inTok, outTok),
     };
   }, [rows]);
@@ -225,8 +243,8 @@ export default function AdminAiOpsPage() {
         const lat = list
           .map((r) => r.latency_ms)
           .filter((v): v is number => v != null && v >= 0);
-        const inTok = list.reduce((s, r) => s + (Number(r.prompt_tokens) || 0), 0);
-        const outTok = list.reduce((s, r) => s + (Number(r.completion_tokens) || 0), 0);
+        const inTok = list.reduce((s, r) => s + inputTokensOf(r), 0);
+        const outTok = list.reduce((s, r) => s + outputTokensOf(r), 0);
         return {
           action: a,
           total: list.length,
@@ -275,7 +293,9 @@ export default function AdminAiOpsPage() {
     {
       title: 'Token 用量',
       value: (stats.inTok + stats.outTok).toLocaleString('zh-TW'),
-      hint: `輸入 ${stats.inTok.toLocaleString('zh-TW')} / 輸出 ${stats.outTok.toLocaleString('zh-TW')}`,
+      hint: `輸入 ${stats.inTok.toLocaleString('zh-TW')} / 輸出 ${stats.outTok.toLocaleString('zh-TW')}${
+        stats.thoughtsTok > 0 ? `(含思考 ${stats.thoughtsTok.toLocaleString('zh-TW')})` : ''
+      }`,
       icon: Cpu,
       accent: 'text-purple-600',
       bg: 'bg-purple-50',
@@ -426,9 +446,10 @@ export default function AdminAiOpsPage() {
             <Card className="border-slate-200">
               <CardHeader className="pb-3">
                 <CardTitle className="text-base text-slate-700">各用途的量、品質與成本</CardTitle>
-                <p className="text-xs text-slate-500 mt-1">
-                  成本為估算值:輸入 US${USD_PER_M_INPUT}/1M tokens、輸出 US${USD_PER_M_OUTPUT}
-                  /1M tokens(Gemini Flash 公告價),實際帳單以 Google Cloud 為準
+                <p className="text-xs text-slate-500 mt-1" data-testid="ai-cost-note">
+                  成本為估算值:輸入 {formatUnitPrice(USD_PER_M_INPUT)}/1M tokens、輸出{' '}
+                  {formatUnitPrice(USD_PER_M_OUTPUT)}/1M tokens(Gemini 2.5 Flash 公告價;輸出 tokens
+                  含思考 tokens),實際帳單以 Google Cloud 為準
                 </p>
               </CardHeader>
               <CardContent>
@@ -441,7 +462,7 @@ export default function AdminAiOpsPage() {
                         <TableHead className="text-slate-600">成功率</TableHead>
                         <TableHead className="text-slate-600 text-right">平均延遲</TableHead>
                         <TableHead className="text-slate-600 text-right">輸入 tokens</TableHead>
-                        <TableHead className="text-slate-600 text-right">輸出 tokens</TableHead>
+                        <TableHead className="text-slate-600 text-right">輸出 tokens(含思考)</TableHead>
                         <TableHead className="text-slate-600 text-right">估算成本</TableHead>
                       </TableRow>
                     </TableHeader>

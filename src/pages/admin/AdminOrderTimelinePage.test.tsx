@@ -209,3 +209,79 @@ describe('單筆訂單頁(明細 + 履歷合一)', () => {
     expect(fakeSupabase.queriesOf('landing_leads')).toEqual([]);
   });
 });
+
+describe('單筆訂單頁 — 形象站 Email 與註冊認領的草稿', () => {
+  const LEAD = { company_name: '王先生', contact_phone: null, contact_line: null, contact_email: 'wang@beef.example' };
+
+  it('買方聯絡資訊多一欄 Email(landing_leads.contact_email)', async () => {
+    fakeSupabase.respond((q) => {
+      if (q.table === 'supplier_orders') return { data: [ORDER] };
+      if (q.table === 'analysis_records') return { data: [{ summary: '牛肉麵店,每週需要牛腱' }] };
+      if (q.table === 'landing_leads') return { data: [LEAD] };
+      if (q.table === 'order_events') return { data: [EVENT] };
+      return { data: [] };
+    });
+    renderAt();
+
+    expect(await screen.findByText('買方聯絡資訊')).toBeInTheDocument();
+    expect(screen.getByText('wang@beef.example')).toBeInTheDocument();
+    expect(fakeSupabase.queriesOf('landing_leads')[0].columns).toBe(
+      'company_name, contact_phone, contact_line, contact_email',
+    );
+  });
+
+  it('註冊認領建的草稿(沒有 analysis_id、備註「AI 採購助手帶入」)→ 用 claimed_order_id 反查來源分析與聯絡資訊', async () => {
+    const draft = {
+      ...ORDER,
+      status: 'draft',
+      analysis_id: null,
+      notes: 'AI 採購助手帶入',
+      supplier_id: null,
+      sent_at: null,
+    };
+    fakeSupabase.respond((q) => {
+      if (q.table === 'supplier_orders') return { data: [draft] };
+      if (q.table === 'analysis_records') return { data: [{ id: 'an-claimed', summary: '火鍋店每週要高麗菜' }] };
+      if (q.table === 'landing_leads') return { data: [LEAD] };
+      if (q.table === 'restaurants') return { data: [{ name: '新開的小館' }] };
+      return { data: [] };
+    });
+    const user = userEvent.setup();
+    renderAt();
+
+    expect(await screen.findByText('對應分析來源')).toBeInTheDocument();
+    expect(screen.getByText('火鍋店每週要高麗菜')).toBeInTheDocument();
+    expect(screen.getByText(/形象站訪客註冊後/)).toBeInTheDocument();
+    expect(await screen.findByText('wang@beef.example')).toBeInTheDocument();
+
+    const [lookup] = fakeSupabase.queriesOf('analysis_records');
+    expect(lookup.filters).toEqual([
+      { op: 'eq', column: 'claimed_order_id', value: ORDER.id },
+      { op: 'limit', column: 'limit', value: 1 },
+    ]);
+    expect(fakeSupabase.queriesOf('landing_leads')[0].filters[0]).toEqual({
+      op: 'eq',
+      column: 'analysis_id',
+      value: 'an-claimed',
+    });
+
+    await user.click(screen.getByRole('button', { name: '查看分析紀錄 →' }));
+    expect(await screen.findByRole('heading', { name: '分析詳情頁' })).toBeInTheDocument();
+  });
+
+  it('反查不到來源(例如分析紀錄被刪了)→ 不顯示那兩張卡,也不查聯絡資訊', async () => {
+    fakeSupabase.respond((q) => {
+      if (q.table === 'supplier_orders') return { data: [{ ...ORDER, analysis_id: null, notes: 'AI 採購助手帶入' }] };
+      if (q.table === 'analysis_records') return { data: [] };
+      return { data: [] };
+    });
+    renderAt();
+    await screen.findByRole('heading', { name: '訂單履歷' });
+    await waitFor(() => expect(fakeSupabase.queriesOf('disputes')).toHaveLength(1));
+
+    expect(fakeSupabase.queriesOf('analysis_records')).toHaveLength(1);
+    expect(fakeSupabase.queriesOf('landing_leads')).toEqual([]);
+    expect(screen.queryByText('對應分析來源')).toBeNull();
+    expect(screen.queryByText('買方聯絡資訊')).toBeNull();
+  });
+});

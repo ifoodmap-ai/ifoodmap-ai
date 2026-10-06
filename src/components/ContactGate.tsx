@@ -14,6 +14,19 @@ interface ContactGateProps {
   onDone: () => void;
 }
 
+/** landing_leads 的 trigger 擋下同一人/全站太多筆時(raise 'LEAD_RATE_LIMITED',PostgREST 回 400、code P0001) */
+export const LEAD_RATE_LIMITED_TEXT = "今天留資料的次數太多了，請明天再試，或直接聯絡我們";
+/** 其他寫入失敗(constraint、RLS、網路)一律這句 —— 不把 DB 錯誤或 constraint 名稱秀給使用者 */
+export const LEAD_SUBMIT_FAILED_TEXT = "送出失敗，請稍後再試，或直接聯絡我們";
+
+interface LeadInsertError {
+  message?: string;
+  code?: string;
+}
+
+const leadErrorText = (error: LeadInsertError | null | undefined): string =>
+  error?.message?.includes("LEAD_RATE_LIMITED") ? LEAD_RATE_LIMITED_TEXT : LEAD_SUBMIT_FAILED_TEXT;
+
 const ContactGate = ({ analysisId, names, onDone }: ContactGateProps) => {
   const [companyName, setCompanyName] = useState("");
   const [line, setLine] = useState("");
@@ -40,7 +53,7 @@ const ContactGate = ({ analysisId, names, onDone }: ContactGateProps) => {
 
     try {
       const { error } = await (supabase as never as {
-        from: (t: string) => { insert: (row: object) => Promise<{ error: { message?: string } | null }> };
+        from: (t: string) => { insert: (row: object) => Promise<{ error: LeadInsertError | null }> };
       })
         .from("landing_leads")
         .insert({
@@ -54,15 +67,16 @@ const ContactGate = ({ analysisId, names, onDone }: ContactGateProps) => {
         });
 
       if (error) {
-        throw new Error(error.message ?? "送出失敗");
+        toast.error(leadErrorText(error));
+        return;
       }
 
       track("contact_captured", { analysis_id: analysisId });
       toast.success("已收到您的聯絡方式,正在為您媒合供應商!");
       onDone();
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "送出失敗";
-      toast.error(`送出失敗,請稍後再試(${message})`);
+    } catch {
+      // 網路斷線之類(insert 直接丟錯)
+      toast.error(LEAD_SUBMIT_FAILED_TEXT);
     } finally {
       setIsSubmitting(false);
     }
