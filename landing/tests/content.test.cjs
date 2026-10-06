@@ -990,8 +990,21 @@ test('AI assistant calls all three proxy endpoints and always tells them the lan
   for (const payload of payloads) {
     assert.match(payload, /lang:\s*curLang\(\)/, `這個請求沒帶 lang:${payload.slice(0, 80)}`);
   }
-  // 直接用 fetch / sendBeacon 送的那兩個 ai-extract 也要帶
-  assert.equal((source.match(/\{ messages: conv, lang: curLang\(\) \}/g) || []).length, 2);
+  // 直接用 fetch / sendBeacon 送的 ai-extract 也要帶。
+  // 原本這裡釘的是「fetch 與 sendBeacon 各自組的 { messages: conv, lang: curLang() } 共兩處」——
+  // 原意是:存檔請求不管走哪條路都帶 lang。2026-10 存檔改成 reason = register / lead / close 三種,
+  // 改由同一個 extractPayload() 組 body,所以改釘:① 它帶 lang: curLang() ② 每一個打 ai-extract 的地方
+  // (fetch 與 sendBeacon)body 都出自 extractPayload,沒有另外手組、可能漏掉 lang 的 payload。
+  assert.match(source, /function extractPayload\(reason\) \{\s*var p = \{ messages: saveMessages\(history\), lang: curLang\(\), reason: reason \};/);
+  const extractCalls = source.match(/(?:fetch|sendBeacon)\('\/api\/ai-extract'[^\n]*/g) || [];
+  assert.ok(extractCalls.length >= 3, `找不到 ai-extract 的 fetch / sendBeacon:${extractCalls.length}`);
+  assert.ok(extractCalls.some((call) => /^sendBeacon/.test(call)), '離開頁面時要用 sendBeacon 補存');
+  for (const call of extractCalls) {
+    // 同一行裡要嘛是 init(在 send() 裡由 extractPayload 組好),要嘛是 data / Blob(saveOnLeave 由 extractPayload 組好)
+    assert.match(call, /'\/api\/ai-extract', (?:init\)|new Blob\(\[data\]|\{ method: 'POST'[^\n]*body: data)/, `這個 ai-extract 請求的 body 不是 extractPayload 組的:${call.slice(0, 120)}`);
+  }
+  assert.match(source, /var init = \{ method: 'POST', headers: \{ 'Content-Type': 'application\/json' \}, body: JSON\.stringify\(extractPayload\(reason\)\) \};/);
+  assert.match(source, /var data = JSON\.stringify\(extractPayload\('close'\)\);/);
   // lang 必須是「呼叫當下才取」的函式,不能是開機時抓一次存起來的變數
   assert.match(source, /function curLang\(\)[\s\S]{0,200}IfmI18n[\s\S]{0,80}current\(window\)/);
 });

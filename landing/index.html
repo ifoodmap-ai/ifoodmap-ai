@@ -779,9 +779,11 @@
         <p class="mc-lead" style="margin-top:20px;font-size:17px;line-height:1.9;color:#4B5A52;max-width:520px;font-weight:400">{{ L.home.heroSubA }}<br>{{ L.home.heroSubB }}</p>
 
         <!-- 搜尋不是真的搜尋:送出後把關鍵字帶進右下角的 AI 採購助手,由它接著訪談
-             (數量、頻率、配送區域…),最後引導留下聯絡方式。見 askAI() 與 window.IfmAI -->
+             (數量、頻率、配送區域…),最後引導免費註冊或留 Email。見 askAI() 與 window.IfmAI
+             maxLength 280:送出時會加上「我想找食材：」這段前綴,加完仍要在助手的單則上限 300 字以內。
+             一定要寫成 camelCase —— support.js 只認 camelCase 才會變成 React 的 maxLength。 -->
         <form onSubmit="{{ askAI }}" role="search" class="mc-heroform" aria-label="{{ L.home.searchAriaLabel }}" style="margin-top:34px;width:100%;max-width:620px;display:flex;gap:10px;flex-wrap:wrap;background:#fff;border:1px solid #DCE3DE;border-radius:999px;padding:8px 8px 8px 10px;box-shadow:0 14px 34px rgba(14,26,20,.08)">
-          <input name="q" class="mc-searchinput" aria-label="{{ L.home.searchAriaLabel }}" autocomplete="off" placeholder="{{ L.home.searchPlaceholder }}" style="flex:1;min-width:190px;border:none;background:transparent;color:#0E1A14;font-size:15.5px;padding:12px 14px">
+          <input name="q" class="mc-searchinput" aria-label="{{ L.home.searchAriaLabel }}" autocomplete="off" maxLength="280" placeholder="{{ L.home.searchPlaceholder }}" style="flex:1;min-width:190px;border:none;background:transparent;color:#0E1A14;font-size:15.5px;padding:12px 14px">
           <button type="submit" class="mc-searchbtn" style="border:none;color:#fff;font-size:15px;font-weight:700;padding:13px 30px;border-radius:999px;cursor:pointer;box-shadow:0 8px 18px rgba(18,138,84,.3)">{{ L.home.searchButton }}</button>
         </form>
         <div class="mc-hottags" style="margin-top:16px;display:flex;gap:8px;flex-wrap:wrap;justify-content:center">
@@ -1583,31 +1585,31 @@
           <div style="display:flex; flex-direction:column; gap:18px;">
             <div>
               <label for="partner-company-name" style="display:block;font-size:14px;font-weight:600;color:#3c4d42;margin-bottom:8px;">{{ L.contact.labelCompany }} <span aria-hidden="true" style="color:#C0392B;">*</span></label>
-              <input class="contact-field" id="partner-company-name" type="text" name="company_name" required="required" autocomplete="organization" aria-describedby="partner-form-help" placeholder="{{ L.contact.placeholderCompany }}" style="width:100%;padding:14px 16px;border:1.5px solid #dde5dc;border-radius:12px;font-size:16px;font-family:inherit;" />
+              <input class="contact-field" id="partner-company-name" type="text" name="company_name" maxLength="200" required="required" autocomplete="organization" aria-describedby="partner-form-help" placeholder="{{ L.contact.placeholderCompany }}" style="width:100%;padding:14px 16px;border:1.5px solid #dde5dc;border-radius:12px;font-size:16px;font-family:inherit;" />
             </div>
             <div class="contact-fields-two">
               <div>
                 <label for="partner-contact-name" style="display:block;font-size:14px;font-weight:600;color:#3c4d42;margin-bottom:8px;">{{ L.contact.labelName }} <span aria-hidden="true" style="color:#C0392B;">*</span></label>
-                <input class="contact-field" id="partner-contact-name" type="text" name="contact_name" required="required" autocomplete="name" placeholder="{{ L.contact.placeholderName }}" style="width:100%;padding:14px 16px;border:1.5px solid #dde5dc;border-radius:12px;font-size:16px;font-family:inherit;" />
+                <input class="contact-field" id="partner-contact-name" type="text" name="contact_name" maxLength="100" required="required" autocomplete="name" placeholder="{{ L.contact.placeholderName }}" style="width:100%;padding:14px 16px;border:1.5px solid #dde5dc;border-radius:12px;font-size:16px;font-family:inherit;" />
               </div>
               <div>
                 <label for="partner-job-title" style="display:block;font-size:14px;font-weight:600;color:#3c4d42;margin-bottom:8px;">{{ L.contact.labelJobTitle }}</label>
-                <input class="contact-field" id="partner-job-title" type="text" name="job_title" autocomplete="organization-title" placeholder="{{ L.contact.placeholderJobTitle }}" style="width:100%;padding:14px 16px;border:1.5px solid #dde5dc;border-radius:12px;font-size:16px;font-family:inherit;" />
+                <input class="contact-field" id="partner-job-title" type="text" name="job_title" maxLength="100" autocomplete="organization-title" placeholder="{{ L.contact.placeholderJobTitle }}" style="width:100%;padding:14px 16px;border:1.5px solid #dde5dc;border-radius:12px;font-size:16px;font-family:inherit;" />
               </div>
             </div>
             <div class="contact-fields-two">
               <div>
                 <label for="partner-contact-email" style="display:block;font-size:14px;font-weight:600;color:#3c4d42;margin-bottom:8px;">{{ L.contact.labelEmail }} <span aria-hidden="true" style="color:#C0392B;">*</span></label>
-                <input class="contact-field" id="partner-contact-email" type="email" name="contact_email" required="required" autocomplete="email" inputmode="email" placeholder="{{ L.contact.placeholderEmail }}" style="width:100%;padding:14px 16px;border:1.5px solid #dde5dc;border-radius:12px;font-size:16px;font-family:inherit;" />
+                <input class="contact-field" id="partner-contact-email" type="email" name="contact_email" maxLength="254" required="required" autocomplete="email" inputmode="email" placeholder="{{ L.contact.placeholderEmail }}" style="width:100%;padding:14px 16px;border:1.5px solid #dde5dc;border-radius:12px;font-size:16px;font-family:inherit;" />
               </div>
               <div>
                 <label for="partner-contact-phone" style="display:block;font-size:14px;font-weight:600;color:#3c4d42;margin-bottom:8px;">{{ L.contact.labelPhone }}</label>
-                <input class="contact-field" id="partner-contact-phone" type="tel" name="contact_phone" autocomplete="tel" inputmode="tel" placeholder="{{ L.contact.placeholderPhone }}" style="width:100%;padding:14px 16px;border:1.5px solid #dde5dc;border-radius:12px;font-size:16px;font-family:inherit;" />
+                <input class="contact-field" id="partner-contact-phone" type="tel" name="contact_phone" maxLength="40" autocomplete="tel" inputmode="tel" placeholder="{{ L.contact.placeholderPhone }}" style="width:100%;padding:14px 16px;border:1.5px solid #dde5dc;border-radius:12px;font-size:16px;font-family:inherit;" />
               </div>
             </div>
             <div>
               <label for="partner-website" style="display:block;font-size:14px;font-weight:600;color:#3c4d42;margin-bottom:8px;">{{ L.contact.labelWebsite }}</label>
-              <input class="contact-field" id="partner-website" type="url" name="website" autocomplete="url" inputmode="url" placeholder="{{ L.contact.placeholderWebsite }}" style="width:100%;padding:14px 16px;border:1.5px solid #dde5dc;border-radius:12px;font-size:16px;font-family:inherit;" />
+              <input class="contact-field" id="partner-website" type="url" name="website" maxLength="500" autocomplete="url" inputmode="url" placeholder="{{ L.contact.placeholderWebsite }}" style="width:100%;padding:14px 16px;border:1.5px solid #dde5dc;border-radius:12px;font-size:16px;font-family:inherit;" />
             </div>
             <div>
               <label for="partner-type" style="display:block;font-size:14px;font-weight:600;color:#3c4d42;margin-bottom:8px;">{{ L.contact.labelPartnerType }} <span aria-hidden="true" style="color:#C0392B;">*</span></label>
@@ -1618,7 +1620,7 @@
             </div>
             <div>
               <label for="partner-message" style="display:block;font-size:14px;font-weight:600;color:#3c4d42;margin-bottom:8px;">{{ L.contact.labelMessage }} <span aria-hidden="true" style="color:#C0392B;">*</span></label>
-              <textarea class="contact-field" id="partner-message" name="message" required="required" rows="5" placeholder="{{ L.contact.placeholderMessage }}" style="width:100%;padding:14px 16px;border:1.5px solid #dde5dc;border-radius:12px;font-size:16px;font-family:inherit;resize:vertical;"></textarea>
+              <textarea class="contact-field" id="partner-message" name="message" maxLength="5000" required="required" rows="5" placeholder="{{ L.contact.placeholderMessage }}" style="width:100%;padding:14px 16px;border:1.5px solid #dde5dc;border-radius:12px;font-size:16px;font-family:inherit;resize:vertical;"></textarea>
             </div>
             <button class="contact-submit" type="submit" aria-live="polite" style="display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg,#46c138,#1f9e4e);color:#0E1A14;font-weight:700;font-size:16px;padding:16px;border-radius:100px;text-align:center;cursor:pointer;box-shadow:0 12px 30px rgba(61,174,43,.24);">{{ L.contact.submit }}</button>
           </div>
@@ -2416,9 +2418,10 @@ class Component extends DCLogic {
     const restore = () => { btn.textContent = this.partnerText('submit') || original; };
 
     // 必填 = partnership_leads 的四個 NOT NULL 欄位,外加合作類型(要靠它分流到對的窗口)。
-    // email 只做「有 @、有網域」的粗檢查 —— 真正的驗證是那封回信寄不寄得到,
-    // 在前端寫一條嚴格的 RFC regex 只會把正常信箱擋在外面。
-    const emailOk = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(data.contact_email);
+    // Email 規則全站統一(SPEC 修訂 2 R4:DB constraint、notify-lead、AI 助手、這張表單一字不差):
+    // 長度 ≤ 254,且符合下面這條 regex —— 擋掉 a@b..c、結尾帶逗號或分號、空白、一次貼多個地址。
+    // 不在前端另寫更嚴的 RFC 版本:前端比 DB 嚴會把正常信箱擋掉,比 DB 鬆則會送出去才被 400 打回來。
+    const emailOk = data.contact_email.length <= 254 && /^[A-Za-z0-9._%+-]+@([A-Za-z0-9-]+\.)+[A-Za-z]{2,}$/.test(data.contact_email);
     const invalid = ['company_name', 'contact_name', 'contact_email', 'partner_type', 'message']
       .filter((name) => (name === 'contact_email' ? !emailOk : !data[name]));
 
@@ -2479,9 +2482,13 @@ class Component extends DCLogic {
         user_agent: (navigator.userAgent || '').slice(0, 300)
       })
     }).then((r) => {
+      if (r.status === 201 || r.ok) return { ok: true };
+      // 失敗時讀一下 body:後端防灌水(同一個 Email 24 小時內第 3 筆、或全站當天太多)回 400 + message LEAD_RATE_LIMITED
+      return r.json().then((j) => ({ ok: false, status: r.status, json: j }), () => ({ ok: false, status: r.status, json: null }));
+    }).then((r) => {
       btn.removeAttribute('data-busy');
       btn.removeAttribute('aria-disabled');
-      if (r.status === 201 || r.ok) {
+      if (r.ok) {
         // 成功之後永久鎖住:同一個人手滑連按兩次會變成兩筆一模一樣的 lead
         btn.setAttribute('data-done', '1');
         btn.textContent = this.partnerText('formSuccess');
@@ -2492,8 +2499,11 @@ class Component extends DCLogic {
         }
       } else {
         btn.disabled = false;
-        btn.textContent = this.partnerText('formFailure');
-        this._partnerTimer = setTimeout(restore, 2600);
+        // 被防灌水擋下時重送也沒用(24 小時的窗),給一句說明清楚的話,而且停久一點讓人看得完
+        const rateLimited = r.status === 400 && !!r.json && typeof r.json.message === 'string'
+          && r.json.message.indexOf('LEAD_RATE_LIMITED') !== -1;
+        btn.textContent = this.partnerText(rateLimited ? 'formRateLimited' : 'formFailure');
+        this._partnerTimer = setTimeout(restore, rateLimited ? 6000 : 2600);
       }
     }).catch(() => {
       btn.removeAttribute('data-busy');
@@ -3632,7 +3642,14 @@ class Component extends DCLogic {
   .ai-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
   .ai-chip { background: #eaf7e4; color: #1f7a37; border: 1px solid #cdeec0; border-radius: 100px; padding: 4px 11px; font-size: 12.5px; font-weight: 600; }
   .ai-cta { margin-top: 11px; display: inline-flex; align-items: center; gap: 6px; background: linear-gradient(135deg,#46c138,#1f9e4e);
-    color: #0E1A14; font-weight: 700; font-size: 13.5px; padding: 10px 16px; border-radius: 100px; border: none; cursor: pointer; }
+    color: #0E1A14; font-weight: 700; font-size: 13.5px; padding: 10px 16px; border-radius: 100px; border: none; cursor: pointer; min-height: 44px; font-family: inherit; }
+  /* 結尾導流:主按鈕「免費註冊」+ 次要的「留 Email」。可以出現很多次,但畫面上永遠只有一組 .ai-cta-row */
+  .ai-cta-row .ai-bub { display: flex; flex-direction: column; align-items: flex-start; }
+  .ai-cta-prefix { margin-bottom: 4px; }
+  .ai-cta-alt { margin-top: 4px; min-height: 44px; display: inline-flex; align-items: center; padding: 0 2px; background: none; border: none;
+    color: #1f7a37; font-family: inherit; font-size: 13px; font-weight: 600; line-height: 1.45; text-align: left;
+    text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
+  .ai-cta[aria-disabled="true"], .ai-cta-alt[aria-disabled="true"] { opacity: .6; cursor: progress; }
 
   .ai-lead { margin-top: 10px; display: flex; flex-direction: column; gap: 8px; }
   .ai-lead input { width: 100%; box-sizing: border-box; padding: 10px 12px; border: 1.5px solid #dde5dc; border-radius: 10px; font-size: 13.5px; font-family: inherit; outline: none; }
@@ -3650,6 +3667,9 @@ class Component extends DCLogic {
   .ai-send { flex-shrink: 0; width: 40px; height: 40px; border-radius: 50%; border: none; background: linear-gradient(135deg,#46c138,#1f9e4e); color: #0E1A14; cursor: pointer; display: flex; align-items: center; justify-content: center; }
   .ai-send svg { width: 18px; height: 18px; }
   .ai-send:disabled { opacity: .5; cursor: default; }
+  /* 忙碌鎖 / 對話鎖:用 aria-disabled 而不是 disabled —— disabled 會把焦點踢出去,用鍵盤的人會迷路 */
+  .ai-send[aria-disabled="true"], .ai-upload[aria-disabled="true"] { opacity: .5; cursor: default; }
+  .ai-foot input.ai-text[readonly] { background: #f3f6f3; color: #5f6f65; }
 
   @media (max-width: 520px) {
     .ai-panel { right: 0; left: 0; bottom: 0; width: 100%; max-width: 100%; height: 86vh; border-radius: 20px 20px 0 0; }
@@ -3689,14 +3709,246 @@ class Component extends DCLogic {
   }
   function errMsg() { return txt('errService'); }
 
-  var history = [];        // {role:'user'|'bot', text}
-  var lastAnalysis = null; // {summary, ingredients}
-  var leadShown = false;
-  var ctaShown = false;
-  var lastPersistedLen = 0;   // 上次已送到後台的訊息數（>0 後續追加會再更新同一筆）
-  var collect = { active: false, step: '', name: '', phone: '' };
-  var lastAnalysisId = null;   // 連結 landing_leads ↔ analysis_records
-  var extractPromise = null;
+  /* ==== AI-PURE:BEGIN ====
+     這一段只放純函式與常數(不碰 DOM、不碰 window、不呼叫 txt):tests/ai-widget.test.cjs 會把它
+     原封不動抽出來丟進 node:vm 實際呼叫。要用到 DOM 的請寫在 AI-PURE:END 之後。
+     介面契約見「形象站 AI 防濫用＋註冊導流」SPEC(§2 錯誤碼、§4 stage、§5 analysisId/claimToken、§7 交接網址)。 */
+  var AI_LIMITS = {
+    maxInputChars: 300,      // 單則上限,對齊後端 landing tier(SPEC §3 TOO_LONG);輸入框 maxlength 也是這個數
+    maxUserMessages: 20,     // 每段對話的使用者訊息上限(SPEC §3 CONVERSATION_LIMIT)。滿了就不再呼叫 AI
+    maxImages: 3,            // 每段對話的照片上限,超過請他註冊
+    maxModelChars: 1000,     // 非 user 的訊息後端只吃 1,000 字,前端先截短省流量
+    imageMaxBytes: 1400000,  // 後端解碼後上限 1.5 MB(SPEC §3),留一點餘裕
+    extractTimeoutMs: 10000, // 按「免費註冊」/ 送出 Email 時,存檔最多等 10 秒
+    saveMaxMessages: 40,     // 存檔(analyze-chat)帶的訊息上限:keepalive fetch / sendBeacon 的 body 只能 64 KB
+    saveMaxChars: 12000,     //   中文 1 字 3 bytes,12,000 字約 36 KB。後端本來就只拿最後 20 則、4,000 字給 Gemini
+    cooldownMaxSeconds: 600, // RATE_LIMITED 且 retryAfterSeconds ≤ 600(10 分鐘級):時間到自動解鎖(SPEC 修訂 2 R10)
+    navigateGraceMs: 8000    // location.assign 之後 8 秒還在原頁 = 沒導走,註冊按鈕要恢復(R10)
+  };
+  // SPEC §2 的三種 429。文案與處理都一樣(免費額度用完 → CTA + 鎖住),但三個都要認得。
+  var QUOTA_CODES = { RATE_LIMITED: 1, CONVERSATION_LIMIT: 1, DAILY_CAP: 1 };
+
+  // 10 分鐘級的 RATE_LIMITED(retryAfterSeconds ≤ 600)→ 要等幾秒;其他(CONVERSATION_LIMIT、DAILY_CAP、
+  // 天級的 RATE_LIMITED、沒給秒數的)→ 0 = 維持鎖住。秒數優先看 body 的 retryAfterSeconds,沒有才看 Retry-After header。
+  function cooldownSeconds(status, json, retryAfter) {
+    var code = json && typeof json.code === 'string' ? json.code : '';
+    if (status !== 429 || code !== 'RATE_LIMITED') return 0;
+    var raw = json && typeof json.retryAfterSeconds === 'number' ? json.retryAfterSeconds : Number(retryAfter);
+    return isFinite(raw) && raw > 0 && raw <= AI_LIMITS.cooldownMaxSeconds ? Math.ceil(raw) : 0;
+  }
+
+  // 失敗的回應 → 要給哪一種文案。kind:'text'(對話)/ 'image'(菜單照片);retryAfter = Retry-After header
+  function classifyFailure(status, json, kind, retryAfter) {
+    var code = json && typeof json.code === 'string' ? json.code : '';
+    if (cooldownSeconds(status, json, retryAfter) > 0) return 'cooldown';
+    if (QUOTA_CODES[code] === 1 || status === 429) return 'quota';
+    if (code === 'TOO_LONG') return 'tooLong';
+    if (code === 'IMAGE_TOO_LARGE') return 'imageTooLarge';
+    if (code === 'UNSUPPORTED_IMAGE' || status === 415) return 'imageUnsupported';
+    if (code === 'BODY_TOO_LARGE' || status === 413) return kind === 'image' ? 'imageTooLarge' : 'tooLong';
+    return 'generic';
+  }
+
+  // chat 的 data → { reply, stage }。舊版 ai 不回 stage:一律當 null,照常運作。
+  // 後端照理已經把 [[DONE]] / [[END]] 拿掉(SPEC §4);萬一沒拿掉也不能讓訪客看到記號。
+  function parseChatData(data) {
+    var raw = data && typeof data.reply === 'string' ? data.reply : '';
+    var stage = data && (data.stage === 'done' || data.stage === 'ended') ? data.stage : null;
+    if (!stage && /\[\[END\]\]/.test(raw)) stage = 'ended';
+    if (!stage && /\[\[DONE\]\]/.test(raw)) stage = 'done';
+    return { reply: raw.replace(/\[\[[^\]]*\]\]/g, '').replace(/^\s+|\s+$/g, ''), stage: stage };
+  }
+
+  // 註冊網址(SPEC §7):交接資料放 # 片段,不放 query string —— 片段不會進 Referer、伺服器 log、分析工具
+  function handoffUrl(base, analysisId, claimToken) {
+    var url = String(base || '').replace(/\/+$/, '') + '/register/restaurant';
+    if (typeof analysisId === 'string' && analysisId && typeof claimToken === 'string' && claimToken) {
+      url += '#handoff=' + encodeURIComponent(analysisId + '.' + claimToken);
+    }
+    return url;
+  }
+
+  // Email 規則全站統一(SPEC 修訂 2 R4:DB constraint、notify-lead、widget、異業合作表單一字不差):
+  // 長度 ≤ 254,且符合下面這條 regex —— 擋掉 a@b..c、結尾帶逗號或分號、空白、一次貼多個地址。
+  function validEmail(value) {
+    var s = String(value == null ? '' : value).replace(/^\s+|\s+$/g, '');
+    return s.length <= 254 && /^[A-Za-z0-9._%+-]+@([A-Za-z0-9-]+\.)+[A-Za-z]{2,}$/.test(s);
+  }
+
+  // 後端防灌水(SPEC §6):PostgREST 回 400,body.message = LEAD_RATE_LIMITED
+  function isLeadRateLimited(status, json) {
+    return status === 400 && !!json && typeof json.message === 'string' && json.message.indexOf('LEAD_RATE_LIMITED') !== -1;
+  }
+
+  // 送給 chat 的對話:只帶真的聊過的文字(菜單分析的摘要 note 不帶 —— 開頭若是 model 訊息,Gemini 可能直接拒收)。
+  // 'bot' 一律改叫 'model':新版 ai 只收 user / model / assistant(SPEC §3),舊版 ai 本來就把非 user 當 model。
+  function chatMessages(list) {
+    var out = [];
+    for (var i = 0; i < list.length; i++) {
+      var m = list[i];
+      if (!m || m.note || typeof m.text !== 'string' || !m.text) continue;
+      var isUser = m.role === 'user';
+      out.push({ role: isUser ? 'user' : 'model', text: isUser ? m.text : m.text.slice(0, AI_LIMITS.maxModelChars) });
+    }
+    return out;
+  }
+
+  // 使用者打過幾則字(照片不算)—— 20 則上限、存檔門檻都看這個數
+  function userTextCount(list) {
+    var n = 0;
+    for (var i = 0; i < list.length; i++) if (list[i] && list[i].role === 'user' && list[i].text) n++;
+    return n;
+  }
+
+  // 存檔(analyze-chat)帶的對話:含菜單分析的 note,從最舊的開始丟到符合上限。不帶任何圖片。
+  function saveMessages(list) {
+    var all = [];
+    for (var i = 0; i < list.length; i++) {
+      var m = list[i];
+      if (!m || typeof m.text !== 'string' || !m.text) continue;
+      var isUser = m.role === 'user';
+      all.push({ role: isUser ? 'user' : 'model', text: isUser ? m.text : m.text.slice(0, AI_LIMITS.maxModelChars) });
+    }
+    var out = [];
+    var total = 0;
+    for (var j = all.length - 1; j >= 0 && out.length < AI_LIMITS.saveMaxMessages; j--) {
+      total += all[j].text.length;
+      if (total > AI_LIMITS.saveMaxChars) break;
+      out.unshift(all[j]);
+    }
+    return out;
+  }
+
+  // 關面板 / 離開頁面要不要存:使用者訊息 ≥ 2 則,而且有還沒存過的內容
+  function shouldSaveOnLeave(userCount, savedCount) {
+    return userCount >= 2 && userCount > savedCount;
+  }
+
+  // data URL → 解碼後的位元組數(後端量的是這個)
+  function dataUrlBytes(dataUrl) {
+    var s = String(dataUrl || '');
+    var b64 = s.indexOf(',') >= 0 ? s.slice(s.indexOf(',') + 1) : s;
+    var pad = b64.slice(-2) === '==' ? 2 : (b64.slice(-1) === '=' ? 1 : 0);
+    return Math.max(0, Math.floor(b64.length * 3 / 4) - pad);
+  }
+
+  // 菜單分析結果 → 一句記進對話紀錄的摘要(以 AI 的身分),之後存檔 / 註冊交接才知道這張菜單有什麼
+  function analysisNote(data, label, sep) {
+    var parts = [];
+    if (data && typeof data.summary === 'string' && data.summary) parts.push(data.summary);
+    var items = data && data.ingredients && data.ingredients.length ? data.ingredients : [];
+    var names = [];
+    for (var i = 0; i < items.length; i++) {
+      var it = items[i];
+      if (!it || !it.name) continue;
+      names.push(it.name + (it.quantity ? ' ' + it.quantity : '') + (it.unit ? ' ' + it.unit : ''));
+    }
+    if (names.length) parts.push((label || '') + names.join(sep || '、'));
+    return parts.join('\n').slice(0, 600);
+  }
+
+  // landing_leads 的一筆。欄位對應照舊,只是聯絡方式從手機改成 Email(不再收電話)。
+  // 文字欄位先在前端截短:後端有長度 check(SPEC §6),超過整筆會被擋,lead 就掉了。
+  // detail 是給業主在後台看的,維持中文。
+  function leadRow(lead, analysis, list, analysisId, userAgent) {
+    var name = String((lead && lead.name) || '').slice(0, 60);
+    var detail = '【AI 採購助手】客戶姓名：' + name;
+    var items = '';
+    if (analysis && analysis.summary) detail += '\n' + analysis.summary;
+    var ings = analysis && analysis.ingredients && analysis.ingredients.length ? analysis.ingredients : [];
+    if (ings.length) {
+      items = ings.filter(function (i) { return i && i.name; })
+        .map(function (i) { return i.name + (i.quantity || '') + (i.unit || ''); }).join('、');
+      detail += '\n採購清單：' + items;
+    } else {
+      var talk = chatMessages(list || []);
+      if (talk.length) detail += '\n對話：' + talk.map(function (m) { return (m.role === 'user' ? '客' : 'AI') + '：' + m.text; }).join(' / ');
+    }
+    return {
+      company_name: name,
+      contact_email: String((lead && lead.email) || '').replace(/^\s+|\s+$/g, ''),
+      items_text: items ? items.slice(0, 1000) : null,
+      detail: detail.slice(0, 2000),
+      source: 'ai_widget',
+      analysis_id: analysisId || null,
+      user_agent: String(userAgent || '').slice(0, 300)
+    };
+  }
+  // 記下後端給的 analysisId + claimToken(SPEC §5)→ 回傳新的那組。
+  // replace = true(analyze-chat 的回應):有給就換成它給的那組 —— 驗證過的會原樣回同一組,舊的失效時後端會開新的一筆。
+  // replace = false(analyze-menu 的回應):手上還沒有完整的一組才採用;已經有了的話,之後的存檔會把這張菜單併進原本那筆。
+  // 舊版 ai 不回 claimToken:只記 analysisId(還是連得到 landing_leads),註冊時退回不帶 handoff 的網址。
+  function nextPair(current, analysisId, claimToken, replace) {
+    var cur = current || { analysisId: null, claimToken: null };
+    if (typeof analysisId !== 'string' || !analysisId) return cur;
+    if (!replace && cur.analysisId && cur.claimToken) return cur;
+    var token = typeof claimToken === 'string' && claimToken ? claimToken : null;
+    // 同一筆、這次回應沒帶 token:沿用手上那個(不要因為某個回應少一個欄位就丟掉交接資格)
+    if (!token && analysisId === cur.analysisId) token = cur.claimToken || null;
+    return { analysisId: analysisId, claimToken: token };
+  }
+
+  // 帶給 ai-menu 的那組(SPEC 修訂 2 R1):兩個都有才帶;缺一個就都不帶(後端照舊新建一筆)
+  function pairFields(current) {
+    return current && typeof current.analysisId === 'string' && current.analysisId && typeof current.claimToken === 'string' && current.claimToken
+      ? { analysisId: current.analysisId, claimToken: current.claimToken }
+      : {};
+  }
+
+  // 食材合併:跟後端 guard.ts 的 mergeIngredients 同一套 —— 名稱 trim + 小寫去重,後來的蓋掉先前的,位置照第一次出現
+  function mergeIngredients(prev, next) {
+    var byName = Object.create(null);
+    var order = [];
+    function put(ing) {
+      if (!ing || typeof ing.name !== 'string' || !ing.name) return;
+      var key = ing.name.replace(/^\s+|\s+$/g, '').toLowerCase();
+      if (!(key in byName)) order.push(key);
+      byName[key] = ing;
+    }
+    var a = prev && prev.length ? prev : [];
+    var b = next && next.length ? next : [];
+    for (var i = 0; i < a.length; i++) put(a[i]);
+    for (var j = 0; j < b.length; j++) put(b[j]);
+    return order.map(function (k) { return byName[k]; });
+  }
+
+  // 一張菜單分析回來之後(SPEC 修訂 2 R1):
+  //   conv  = 這段對話的那筆紀錄(新版 ai 驗證過會回同一組;舊版每張都回新的一組 → 換成最新那組)
+  //   view  = 那筆紀錄裡的食材(lead 的 items_text 一定要跟 analysis_id 指的那筆對得上)
+  //   split = 紀錄被拆成好幾筆了(舊版 ai):之後註冊 / 留 Email 時要再存一次檔,把每張菜單都併進同一筆
+  function menuOutcome(prevConv, prevView, data) {
+    var prevId = prevConv && prevConv.analysisId;
+    var newId = data && typeof data.analysisId === 'string' && data.analysisId ? data.analysisId : null;
+    var items = data && data.ingredients && data.ingredients.length ? data.ingredients : [];
+    var summary = data && typeof data.summary === 'string' ? data.summary : '';
+    var same = !newId || !prevId || newId === prevId;
+    var view = same
+      ? { summary: summary || (prevView && prevView.summary) || '', ingredients: mergeIngredients(prevView && prevView.ingredients, items) }
+      : { summary: summary, ingredients: items };
+    return { conv: nextPair(prevConv, newId, data && data.claimToken, true), view: view, split: !same };
+  }
+
+  // 按「免費註冊」/ 送出 Email 時要不要先存一次檔:有打過字,或紀錄被舊版 ai 拆成好幾筆
+  function exitNeedsSave(userCount, split) {
+    return userCount > 0 || !!split;
+  }
+  /* ==== AI-PURE:END ==== */
+
+  var history = [];          // {role:'user'|'bot', text, note?}。只放文字:照片的 base64 不進對話紀錄,不會跟著存檔到處送
+  var lastAnalysis = null;   // {summary, ingredients}:最近一次分析(菜單或整段對話)的結果,留 Email 時寫進 landing_leads
+  var conv = { analysisId: null, claimToken: null };   // 這段對話在後台的那筆 analysis_records(SPEC §5),註冊交接靠它
+  var savedUserCount = 0;    // 上次存檔時的使用者訊息數 —— 關面板 / 離開頁面只存「還沒存過」的內容
+  var collect = { active: false, step: '', name: '', email: '', sending: false };   // step: name → email → done(或 limited)
+  var aiBusy = false;        // 忙碌鎖:同一時間只有一個 AI 請求(對話、菜單、送出 Email 都算)
+  var locked = '';           // '' | 'ended'(AI 判定結束)| 'quota'(免費額度用完)| 'cooldown'(10 分鐘級限流,時間到自動解鎖)
+  var registering = false;   // 按了「免費註冊」,正在存檔 / 跳轉
+  var firstReplySeen = false;
+  var ctaSeq = 0;            // 每顯示一次 CTA 就 +1;延遲顯示的那組靠它知道自己是不是已經被取代
+  var imagesUsed = 0;        // 這段對話已經分析成功(或正在分析)的照片數
+  var imageQueue = [];       // 照片一張一張處理,後面的排隊
+  var saveChain = null;      // ai-extract 一個接一個送:第一次拿到 analysisId 之後,後面都更新同一筆
+  var recordsSplit = false;  // 舊版 ai 把這段對話的照片拆成好幾筆了(見 menuOutcome)
+  var cooldownTimer = 0;     // 10 分鐘級 RATE_LIMITED 的自動解鎖計時器
 
   // ---- DOM ----
   var fab = document.createElement('button');
@@ -3721,7 +3973,7 @@ class Component extends DCLogic {
   panel.setAttribute('aria-hidden', 'true');
   panel.inert = true;
   // 外框的字一律交給 applyStaticStrings() 填(boot + 每次切語系),這裡只留結構。
-  // 「食」是品牌字標,不翻。
+  // 「食」是品牌字標,不翻。maxlength 300 = 後端單則上限(AI_LIMITS.maxInputChars)。
   panel.innerHTML =
     '<div class="ai-head"><div class="ai-ava">食</div><div><div class="ai-tt" id="ai-assistant-title"></div><div class="ai-sub"></div></div><button class="ai-x">×</button></div>' +
     '<div class="ai-body"></div>' +
@@ -3729,7 +3981,7 @@ class Component extends DCLogic {
       '<label for="ai-assistant-input" class="ai-sr-only"></label>' +
       '<button class="ai-upload"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3.2"/></svg></button>' +
       '<input type="file" accept="image/*" class="ai-file" style="display:none">' +
-      '<input id="ai-assistant-input" type="text" class="ai-text" />' +
+      '<input id="ai-assistant-input" type="text" class="ai-text" maxlength="300" autocomplete="off" />' +
       '<button class="ai-send"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4 20-7z"/></svg></button>' +
     '</div>';
 
@@ -3746,11 +3998,14 @@ class Component extends DCLogic {
   var fileInput = panel.querySelector('.ai-file');
   var textInput = panel.querySelector('.ai-text');
   var sendBtn = panel.querySelector('.ai-send');
+  var uploadBtn = panel.querySelector('.ai-upload');
 
   // 輸入框提示會隨「現在問到哪一步」而不同 —— 切語系時要換成當下那一步的字,不能寫死預設值
   function currentPlaceholder() {
     if (collect.active && collect.step === 'name')  return txt('placeholderName');
-    if (collect.active && collect.step === 'phone') return txt('placeholderPhone');
+    if (collect.active && collect.step === 'email') return txt('placeholderEmail');
+    if (locked === 'cooldown') return txt('placeholderCooldown');
+    if (locked) return txt('placeholderLocked');
     return txt('inputPlaceholder');
   }
 
@@ -3771,9 +4026,13 @@ class Component extends DCLogic {
     // CSS 讀不到 JS 變數,拖曳提示只能走 custom property;
     // JSON.stringify 會補上 CSS content 需要的雙引號與跳脫。
     document.documentElement.style.setProperty('--ai-drop-hint', JSON.stringify(txt('dropHint')));
-    // 還沒被按掉的 CTA 按鈕算外框,跟著換;它上面那句招呼語是對話紀錄,不動。
-    var cta = body.querySelector('.ai-cta');
-    if (cta) cta.textContent = txt('ctaButton');
+    // 畫面上那組 CTA 的兩顆按鈕算外框,跟著換;它上面那句前言是對話紀錄,不動。
+    var reg = body.querySelector('.ai-cta-row [data-cta="register"]');
+    if (reg) reg.textContent = registerLabel();
+    var alt = body.querySelector('.ai-cta-row [data-cta="email"]');
+    if (alt) alt.textContent = txt('ctaEmail');
+    var cancel = body.querySelector('.ai-cta-row [data-cta="cancel"]');
+    if (cancel) cancel.textContent = txt('ctaCancelLead');
     // 例外:畫面上只有開場白那一則(使用者還沒講過話)時才換開場白,
     // 不然英文使用者一打開看到的會是中文招呼語。
     if (greetingBub && body.children.length === 1 && body.firstElementChild === greetingBub.parentNode) {
@@ -3798,8 +4057,34 @@ class Component extends DCLogic {
 
   function postJSON(url, payload) {
     return fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
-      .then(function (r) { return r.text().then(function (t) { var j = null; try { j = JSON.parse(t); } catch (e) {} return { ok: r.ok, status: r.status, json: j }; }); });
+      .then(function (r) { return r.text().then(function (t) { var j = null; try { j = JSON.parse(t); } catch (e) {} return { ok: r.ok, status: r.status, json: j, retryAfter: r.headers.get('Retry-After') }; }); });
   }
+  function withTimeout(promise, ms) {
+    return new Promise(function (resolve, reject) {
+      var timer = setTimeout(function () { reject(new Error('timeout')); }, ms);
+      promise.then(function (v) { clearTimeout(timer); resolve(v); }, function (e) { clearTimeout(timer); reject(e); });
+    });
+  }
+
+  // ---- 輸入列狀態:忙碌鎖 / 對話鎖 / 註冊交接中,只在這裡算 ----
+  // 用 aria-disabled + readOnly,不用 disabled:disabled 會把焦點踢出去,用鍵盤的人會迷路。
+  // 收聯絡資料時輸入框一定要能用 —— 對話鎖住了也還能留 Email。
+  function toggleOff(el, off) {
+    if (off) el.setAttribute('aria-disabled', 'true');
+    else el.removeAttribute('aria-disabled');
+  }
+  function syncComposer() {
+    var aiClosed = !!locked && !collect.active;
+    toggleOff(sendBtn, aiBusy || registering || aiClosed);
+    toggleOff(uploadBtn, registering || !!locked);
+    textInput.readOnly = registering || aiClosed;
+    toggleOff(textInput, registering || aiClosed);
+    var askingEmail = collect.active && collect.step === 'email';
+    textInput.setAttribute('inputmode', askingEmail ? 'email' : 'text');
+    textInput.setAttribute('autocomplete', askingEmail ? 'email' : (collect.active && collect.step === 'name' ? 'name' : 'off'));
+    textInput.placeholder = currentPlaceholder();
+  }
+  function setBusy(on) { aiBusy = on; syncComposer(); }
 
   // 開場
   var greetingBub = addMsg('bot', txt('greeting'));
@@ -3810,73 +4095,325 @@ class Component extends DCLogic {
 
   // 外框的字先填一次,之後跟著語系走
   applyStaticStrings();
+  syncComposer();
   if (window.IfmI18n && typeof window.IfmI18n.onChange === 'function') {
     window.IfmI18n.onChange(window, applyStaticStrings);
   }
 
+  // ---- 記下後端給的 analysisId + claimToken(規則在 nextPair)----
+  function adoptPair(analysisId, claimToken, replace) {
+    var next = nextPair(conv, analysisId, claimToken, replace);
+    conv.analysisId = next.analysisId;
+    conv.claimToken = next.claimToken;
+  }
+  function markSaved() { savedUserCount = userTextCount(history); }
+
+  // ---- 存檔:ai-extract(analyze-chat)。reason = register / lead / close(SPEC §5)----
+  function extractPayload(reason) {
+    var p = { messages: saveMessages(history), lang: curLang(), reason: reason };
+    if (conv.analysisId) p.analysisId = conv.analysisId;   // 只有 id 沒 token = 舊版 ai,它靠 id 就會合併
+    if (conv.analysisId && conv.claimToken) p.claimToken = conv.claimToken;
+    return p;
+  }
+  function postExtract(reason, opts) {
+    opts = opts || {};
+    function send() {
+      var ctrl = opts.timeoutMs && typeof AbortController === 'function' ? new AbortController() : null;
+      var timer = ctrl ? setTimeout(function () { ctrl.abort(); }, opts.timeoutMs) : 0;
+      // payload 在真的要送時才組:前一筆存檔回來的 analysisId / claimToken 才帶得上
+      var init = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(extractPayload(reason)) };
+      if (opts.keepalive) init.keepalive = true;
+      if (ctrl) init.signal = ctrl.signal;
+      return fetch('/api/ai-extract', init)
+        .then(function (r) { return r.json().catch(function () { return null; }); })
+        .then(function (j) {
+          clearTimeout(timer);
+          if (j && j.data) {
+            adoptPair(j.data.analysisId, j.data.claimToken, true);
+            if (j.data.ingredients && j.data.ingredients.length) lastAnalysis = { summary: j.data.summary || '', ingredients: j.data.ingredients };
+          }
+          return j;
+        }, function (e) { clearTimeout(timer); throw e; });
+    }
+    var p = Promise.resolve(saveChain).then(send, send);
+    saveChain = p.then(function () {}, function () {});
+    return p;
+  }
+  // 按「免費註冊」/ 送出 Email 時把整段對話存一次,最多等 10 秒。回傳「這次有沒有存成功」。
+  // 只傳過照片、沒打字:新版 ai 已經把每張菜單併進同一筆(R1),手上那組就是要交接的那筆,不用再打;
+  // 但舊版 ai 每張都另開一筆(recordsSplit)—— 這時還是要存一次,靠對話裡每張菜單的 note 把食材併進手上那筆。
+  // 失敗、逾時、舊版 ai 都不擋路:手上有什麼就交什麼,什麼都沒有就單純去註冊。
+  function saveForExit(reason) {
+    if (!exitNeedsSave(userTextCount(history), recordsSplit)) return Promise.resolve(false);
+    return withTimeout(postExtract(reason, { timeoutMs: AI_LIMITS.extractTimeoutMs }), AI_LIMITS.extractTimeoutMs)
+      .then(function (j) { return !!(j && j.data); }, function () { return false; });
+  }
+  // 關面板(keepalive fetch)/ 離開頁面(sendBeacon):使用者訊息 ≥ 2 則、而且有還沒存過的內容才存(reason = close)
+  function saveOnLeave(viaBeacon) {
+    var n = userTextCount(history);
+    if (registering || !shouldSaveOnLeave(n, savedUserCount)) return;
+    savedUserCount = n;
+    if (!viaBeacon) { postExtract('close', { keepalive: true }).catch(function () {}); return; }
+    try {
+      var data = JSON.stringify(extractPayload('close'));
+      var sent = !!navigator.sendBeacon && navigator.sendBeacon('/api/ai-extract', new Blob([data], { type: 'application/json' }));
+      if (!sent) fetch('/api/ai-extract', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: data, keepalive: true }).catch(function () {});
+    } catch (e) {}
+  }
+
+  // ---- 結尾導流 CTA:主要出口「免費註冊」、次要出口「留 Email」----
+  // 可以出現很多次(第一則回覆、done、ended、額度用完、菜單分析完、出錯),但畫面上永遠只有一組:新的取代舊的。
+  function removeCTA() {
+    var rows = body.querySelectorAll('.ai-cta-row');
+    for (var i = 0; i < rows.length; i++) rows[i].remove();
+  }
+  function registerLabel() {
+    if (registering) return txt('ctaRegisterBusy');
+    return txt(collect.active ? 'ctaSwitchRegister' : 'ctaRegister');
+  }
+  function setCTADisabled(off) {
+    var btns = body.querySelectorAll('.ai-cta-row [data-cta]');
+    for (var i = 0; i < btns.length; i++) toggleOff(btns[i], off);
+  }
+  function showCTA(prefix) {
+    ctaSeq++;
+    removeCTA();
+    var b = addRow('bot');
+    b.parentNode.classList.add('ai-cta-row');
+    if (prefix) { var p = document.createElement('div'); p.className = 'ai-cta-prefix'; p.textContent = prefix; b.appendChild(p); }
+    var reg = document.createElement('button');
+    reg.type = 'button'; reg.className = 'ai-cta'; reg.setAttribute('data-cta', 'register');
+    reg.textContent = registerLabel();
+    if (registering) reg.setAttribute('aria-disabled', 'true');
+    reg.addEventListener('click', function () { goRegister(reg); });
+    b.appendChild(reg);
+    // 收 Email 收到一半(R10):出口是「改成免費註冊」(上面那顆換字)與「取消」,對話與交接資料都留著
+    if (collect.active) {
+      var cancel = document.createElement('button');
+      cancel.type = 'button'; cancel.className = 'ai-cta-alt'; cancel.setAttribute('data-cta', 'cancel');
+      cancel.textContent = txt('ctaCancelLead');
+      cancel.addEventListener('click', cancelCollect);
+      b.appendChild(cancel);
+    }
+    // 已經在留、已經留過(或被防灌水擋下)Email 的人,不再出現這顆
+    if (!collect.active && collect.step !== 'done' && collect.step !== 'limited') {
+      var alt = document.createElement('button');
+      alt.type = 'button'; alt.className = 'ai-cta-alt'; alt.setAttribute('data-cta', 'email');
+      alt.textContent = txt('ctaEmail');
+      alt.addEventListener('click', function () {
+        if (registering) return;
+        removeCTA();
+        startCollect();
+      });
+      b.appendChild(alt);
+    }
+    scrollDown();
+  }
+
+  // 按「免費註冊」:先把對話存成一筆(拿 analysisId + claimToken),再帶著 #handoff= 去產品站的註冊頁(SPEC §7)
+  function goRegister(btn) {
+    if (registering || collect.sending) return;
+    registering = true;
+    btn.textContent = txt('ctaRegisterBusy');
+    setCTADisabled(true);
+    imageQueue = [];
+    syncComposer();
+    saveForExit('register').then(function () {
+      // 這段對話已經跟著這次交接存過了 —— 等一下 pagehide 不要再用 close 存一次
+      markSaved();
+      window.location.assign(handoffUrl(window.IFM_PRODUCT_BASE_URL, conv.analysisId, conv.claimToken));
+      // 8 秒後還在原頁 = 沒導走(被擋、取消、網路斷了):按鈕恢復,讓他可以再按一次(R10)
+      setTimeout(resetRegistering, AI_LIMITS.navigateGraceMs);
+    });
+  }
+  // 解除「正在前往註冊…」:沒導走(8 秒)或從註冊頁按上一頁回來(bfcache)時用
+  function resetRegistering() {
+    if (!registering) return;
+    registering = false;
+    setCTADisabled(false);
+    var reg = body.querySelector('.ai-cta-row [data-cta="register"]');
+    if (reg) reg.textContent = registerLabel();
+    syncComposer();
+  }
+
+  // 鎖住對話:之後不再呼叫 AI。'ended' = AI 判定離題 / 越權而結束;'quota' = 免費額度用完(429 或滿 20 則)
+  function lockFor(reason) {
+    if (!locked || locked === 'cooldown') {
+      clearTimeout(cooldownTimer);
+      locked = reason;
+      imageQueue = [];
+      if (reason === 'quota') addMsg('bot', txt('quotaUsed'));
+      syncComposer();
+    }
+    remindLocked();
+  }
+  // 鎖住時又想做事(傳照片、拖曳):把註冊出口拉回眼前
+  function remindLocked() {
+    showCTA(locked === 'ended' ? txt('ctaPrefixEnded') : '');
+  }
+  // 10 分鐘級的 RATE_LIMITED(R10):「請 N 分鐘後再試,或先免費註冊」,時間到自動解鎖;排隊中的照片解鎖後接著送
+  function coolDown(seconds) {
+    if (locked && locked !== 'cooldown') { remindLocked(); return; }
+    locked = 'cooldown';
+    addMsg('bot', txtf('rateLimitedWait', { minutes: Math.max(1, Math.ceil(seconds / 60)) }));
+    syncComposer();
+    showCTA();
+    clearTimeout(cooldownTimer);
+    cooldownTimer = setTimeout(function () {
+      if (locked !== 'cooldown') return;
+      locked = '';
+      syncComposer();
+      addMsg('bot', txt('quotaResumed'));
+      pumpImages();
+    }, seconds * 1000);
+  }
+
+  // AI 沒回出東西:依錯誤碼給文案(SPEC §2)
+  function handleFailure(r, kind, sentText) {
+    var why = classifyFailure(r.status, r.json, kind, r.retryAfter);
+    if (why === 'cooldown') { coolDown(cooldownSeconds(r.status, r.json, r.retryAfter)); return; }
+    if (why === 'quota') { lockFor('quota'); return; }
+    if (why === 'tooLong') {
+      // 後端拒收這一則:從對話紀錄拿掉(不然之後每次都會跟著送,也佔掉 20 則的額度),字放回輸入框讓人改
+      var last = history[history.length - 1];
+      if (sentText && last && last.role === 'user' && last.text === sentText) history.pop();
+      if (sentText && !textInput.value) textInput.value = sentText;
+      addMsg('bot', txtf('tooLong', { max: AI_LIMITS.maxInputChars }));
+      return;
+    }
+    if (why === 'imageTooLarge') { addMsg('bot', txt('imageTooLarge')); return; }
+    if (why === 'imageUnsupported') { addMsg('bot', txt('imageUnsupported')); return; }
+    addMsg('bot', errMsg());
+    showCTA();
+  }
+
+  // 每一則 AI 回覆之後:依 stage 決定要不要出 CTA(舊版 ai 沒有 stage → 只有第一則回覆後出一次)
+  function afterReply(stage) {
+    var first = !firstReplySeen;
+    firstReplySeen = true;
+    if (stage === 'ended') { lockFor('ended'); return; }
+    if (stage === 'done') {
+      showCTA(txt('ctaPrefixDone'));
+    } else if (first) {
+      var seq = ctaSeq;
+      setTimeout(function () { if (seq === ctaSeq && !locked) showCTA(txt('ctaPrefixChat')); }, 500);
+    }
+    if (userTextCount(history) >= AI_LIMITS.maxUserMessages) lockFor('quota');
+  }
+
   // ---- 文字對談 ----
   function sendText() {
+    if (aiBusy || registering) return;           // 忙碌鎖:上一個請求還沒回來
     var v = (textInput.value || '').trim();
     if (!v) return;
+    if (collect.active) { textInput.value = ''; handleCollect(v); return; }
+    if (locked) return;                           // 對話已鎖:只剩 CTA
+    // maxlength 擋得住打字,擋不住程式塞進來的字(首頁搜尋列走 IfmAI.ask)—— 這裡再守一次
+    if (v.length > AI_LIMITS.maxInputChars) { addMsg('bot', txtf('tooLong', { max: AI_LIMITS.maxInputChars })); return; }
+    if (userTextCount(history) >= AI_LIMITS.maxUserMessages) { lockFor('quota'); return; }
     textInput.value = '';
-    if (collect.active) { handleCollect(v); return; }
     history.push({ role: 'user', text: v });
     addMsg('user', v);
     addTyping();
-    var textHistory = history.map(function (m) { return { role: m.role, text: m.text }; }); // 對話回覆不需附圖
-    postJSON('/api/ai-chat', { messages: textHistory, lang: curLang() }).then(function (r) {
+    setBusy(true);
+    postJSON('/api/ai-chat', { messages: chatMessages(history), lang: curLang() }).then(function (r) {
       clearTyping();
-      if (r.ok && r.json && r.json.data && r.json.data.reply) {
-        var reply = r.json.data.reply;
-        history.push({ role: 'bot', text: reply });
-        addMsg('bot', reply);
-        setTimeout(function () { showLeadCTA(txt('ctaPrefixChat')); }, 500);
+      var data = r.ok && r.json ? r.json.data : null;
+      var parsed = parseChatData(data);
+      if (data && (parsed.reply || parsed.stage)) {
+        if (parsed.reply) { history.push({ role: 'bot', text: parsed.reply }); addMsg('bot', parsed.reply); }
+        afterReply(parsed.stage);
       } else {
-        addMsg('bot', errMsg());
-        showLeadCTA();
+        handleFailure(r, 'text', v);
       }
-    }).catch(function () { clearTyping(); addMsg('bot', errMsg()); showLeadCTA(); });
+    }).catch(function () {
+      clearTyping();
+      handleFailure({ ok: false, status: 0, json: null }, 'text', v);
+    }).then(releaseAfterText, releaseAfterText);
   }
+  function releaseAfterText() { setBusy(false); pumpImages(); }
 
-  // ---- 菜單圖：前端縮圖 → 分析 ----
+  // ---- 菜單圖：前端縮圖 → 分析(一張一張來,每段對話最多 3 張)----
+  // 透明背景的 PNG 轉 JPEG 會變全黑,先鋪白底。太大就一階一階縮,壓到後端上限以內。
+  function encodeJpeg(img, max, quality) {
+    var w = img.width, h = img.height;
+    if (w > max || h > max) { if (w >= h) { h = Math.round(h * max / w); w = max; } else { w = Math.round(w * max / h); h = max; } }
+    var c = document.createElement('canvas'); c.width = w; c.height = h;
+    var ctx = c.getContext('2d');
+    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, w, h);
+    ctx.drawImage(img, 0, 0, w, h);
+    return c.toDataURL('image/jpeg', quality);
+  }
   function downscale(file) {
     return new Promise(function (resolve, reject) {
       var img = new Image(); var url = URL.createObjectURL(file);
       img.onload = function () {
-        var max = 1600, w = img.width, h = img.height;
-        if (w > max || h > max) { if (w >= h) { h = Math.round(h * max / w); w = max; } else { w = Math.round(w * max / h); h = max; } }
-        var c = document.createElement('canvas'); c.width = w; c.height = h;
-        c.getContext('2d').drawImage(img, 0, 0, w, h);
         URL.revokeObjectURL(url);
-        resolve(c.toDataURL('image/jpeg', 0.82));
+        var steps = [[1600, 0.82], [1280, 0.75], [1024, 0.7]];
+        var out = '';
+        for (var i = 0; i < steps.length; i++) {
+          out = encodeJpeg(img, steps[i][0], steps[i][1]);
+          if (dataUrlBytes(out) <= AI_LIMITS.imageMaxBytes) break;
+        }
+        resolve(out);
       };
       img.onerror = function () { URL.revokeObjectURL(url); reject(new Error('image_load_failed')); };
       img.src = url;
     });
   }
 
-  function handleImageFile(f) {
-    if (!f) return;
-    if (f.type.indexOf('image/') !== 0) { addMsg('bot', txt('uploadImageOnly')); return; }
+  // 收照片(選檔或拖曳):非圖片直接拒絕;超過 3 張請他註冊;收下的排隊,一張一張送
+  function acceptImages(files, notImageKey) {
+    if (registering) return;
+    if (locked) { remindLocked(); return; }
+    var images = [];
+    for (var i = 0; i < files.length; i++) {
+      var f = files[i];
+      if (f && typeof f.type === 'string' && f.type.indexOf('image/') === 0) images.push(f);
+    }
+    if (!images.length) { if (files.length) addMsg('bot', txt(notImageKey)); return; }
+    var room = AI_LIMITS.maxImages - imagesUsed - imageQueue.length;
+    for (var j = 0; j < images.length && j < room; j++) imageQueue.push(images[j]);
+    if (images.length > room) {
+      addMsg('bot', txtf('uploadLimit', { max: AI_LIMITS.maxImages }));
+      showCTA();
+    }
+    pumpImages();
+  }
+
+  function pumpImages() {
+    if (aiBusy || registering || locked || !imageQueue.length) return;
+    var f = imageQueue.shift();
+    var analysed = false;
+    imagesUsed++;
+    setBusy(true);
+    function release() {
+      if (!analysed) imagesUsed--;   // 沒分析成功的照片不算進 3 張的額度,可以換一張再傳
+      setBusy(false);
+      pumpImages();
+    }
     downscale(f).then(function (dataUrl) {
       var b = addRow('user'); var im = document.createElement('img'); im.src = dataUrl; im.alt = txt('menuImageAlt'); b.appendChild(im); scrollDown();
-      history.push({ role: 'user', text: '', image: dataUrl });   // 把圖片放進對話序列
       addTyping();
-      return postJSON('/api/ai-menu', { image: dataUrl, mimeType: 'image/jpeg', fileName: f.name || 'menu.jpg', lang: curLang() });
-    }).then(function (r) {
-      clearTyping();
-      if (r && r.ok && r.json && r.json.data) {
-        renderAnalysis(r.json.data);
-      } else {
-        addMsg('bot', errMsg()); showLeadCTA();
-      }
-    }).catch(function () { clearTyping(); addMsg('bot', errMsg()); showLeadCTA(); });
+      // 同一段對話的後續照片帶上手上那組(R1):新版 ai 會併進同一筆、回同一組
+      var pair = pairFields(conv);
+      return postJSON('/api/ai-menu', { image: dataUrl, mimeType: 'image/jpeg', lang: curLang(), analysisId: pair.analysisId, claimToken: pair.claimToken }).then(function (r) {
+        clearTyping();
+        if (r.ok && r.json && r.json.data) { analysed = true; renderAnalysis(r.json.data); }
+        else handleFailure(r, 'image');
+      }, function () {
+        clearTyping();
+        handleFailure({ ok: false, status: 0, json: null }, 'image');
+      });
+    }, function () {
+      addMsg('bot', txt('uploadImageOnly'));   // 瀏覽器解不開的檔案(副檔名像圖片、內容不是)
+    }).then(release, release);
   }
 
   fileInput.addEventListener('change', function () {
     var f = fileInput.files && fileInput.files[0];
     fileInput.value = '';
-    handleImageFile(f);
+    if (f) acceptImages([f], 'uploadImageOnly');
   });
 
   // 桌機：直接把圖片拖曳進面板即上傳分析
@@ -3887,16 +4424,18 @@ class Component extends DCLogic {
     e.preventDefault(); e.stopPropagation(); panel.classList.remove('ai-drag');
     var files = e.dataTransfer && e.dataTransfer.files;
     if (!files || !files.length) return;
-    var found = false;
-    for (var i = 0; i < files.length; i++) {
-      if (files[i].type.indexOf('image/') === 0) { handleImageFile(files[i]); found = true; }
-    }
-    if (!found) addMsg('bot', txt('dropImageOnly'));
+    var list = [];
+    for (var i = 0; i < files.length; i++) list.push(files[i]);
+    acceptImages(list, 'dropImageOnly');
   });
 
   function renderAnalysis(data) {
-    lastAnalysis = { summary: data.summary || '', ingredients: data.ingredients || [] };
-    if (data.analysisId) lastAnalysisId = data.analysisId;
+    // 這段對話的那筆紀錄、那筆紀錄的食材、有沒有被舊版 ai 拆成好幾筆:規則在 menuOutcome(R1)
+    var outcome = menuOutcome(conv, lastAnalysis, data);
+    conv.analysisId = outcome.conv.analysisId;
+    conv.claimToken = outcome.conv.claimToken;
+    lastAnalysis = outcome.view;
+    if (outcome.split) recordsSplit = true;
     var b = addRow('bot');
     var head = document.createElement('div'); head.textContent = data.summary || txt('analysisFallback'); b.appendChild(head);
     if (data.ingredients && data.ingredients.length) {
@@ -3908,86 +4447,86 @@ class Component extends DCLogic {
       });
       b.appendChild(chips);
     }
+    // 分析結果以 AI 的身分記進對話紀錄(只跟著存檔走,不送給 chat):註冊交接時這張菜單的食材才不會漏掉
+    var note = analysisNote(data, txt('analysisFallback'), curLang() === 'en' ? ', ' : '、');
+    if (note) history.push({ role: 'bot', text: note, note: true });
     scrollDown();
-    showLeadCTA(txt('ctaPrefixAnalysis'));
+    showCTA(txt('ctaPrefixAnalysis'));
   }
 
-  // ---- 留名媒合 ----
-  // 把對話需求送進後台媒合佇列（analysis_records，pending_review）
-  function persistConversation() {
-    var conv = history.filter(function (m) { return m && (m.text || m.image); });
-    if (!conv.length || conv.length <= lastPersistedLen) return;   // 沒有新訊息就不重送
-    lastPersistedLen = conv.length;
-    // 串接在上一個請求之後：確保第一次拿到 analysisId 後，後續追加都更新同一筆（不另開）
-    extractPromise = Promise.resolve(extractPromise).then(function () {
-      var payload = { messages: conv, lang: curLang() };
-      if (lastAnalysisId) payload.analysisId = lastAnalysisId;
-      return fetch('/api/ai-extract', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
-        .then(function (r) { return r.json(); })
-        .then(function (j) { if (j && j.data && j.data.analysisId) lastAnalysisId = j.data.analysisId; });
-    }).catch(function () {});
-  }
-  function showLeadCTA(prefix) {
-    if (leadShown || ctaShown) return; ctaShown = true;
-    var b = addRow('bot');
-    if (prefix) { var p = document.createElement('div'); p.textContent = prefix; p.style.marginBottom = '4px'; b.appendChild(p); }
-    var btn = document.createElement('button'); btn.className = 'ai-cta'; btn.textContent = txt('ctaButton');
-    btn.addEventListener('click', function () { if (b.parentNode) b.parentNode.remove(); startCollect(); });
-    b.appendChild(btn); scrollDown();
-  }
-
-  // 對話式收集：先問姓名，再問手機，最後寫入 landing_leads
+  // ---- 留 Email(次要出口)----
+  // 對話式收集:先問稱呼,再問 Email(不再收電話);稱呼與 Email 只顯示在畫面上,不進對話紀錄、不送給 AI。
+  // 收集中畫面上那組 CTA 換成「改成免費註冊」+「取消」(R10):改主意不用重新整理,對話與交接資料都還在。
   function startCollect() {
-    if (collect.active || collect.step === 'done') return;
-    persistConversation();
+    if (collect.active || collect.step === 'done' || collect.step === 'limited') return;
     collect.active = true; collect.step = 'name';
     addMsg('bot', txt('askName'));
-    textInput.placeholder = currentPlaceholder(); textInput.focus();
+    showCTA();
+    syncComposer(); textInput.focus();
   }
 
   function handleCollect(v) {
     addMsg('user', v);
     if (collect.step === 'name') {
-      collect.name = v; collect.step = 'phone';
-      addMsg('bot', txtf('askPhone', { name: v }));
-      textInput.placeholder = currentPlaceholder();
+      collect.name = v.slice(0, 60); collect.step = 'email';
+      addMsg('bot', txtf('askEmail', { name: collect.name }));
+      showCTA();   // 出口跟著移到最新一則下面
+      syncComposer();
       return;
     }
-    if (collect.step === 'phone') {
-      // 放寬成國際號碼:+ 開頭與各種分隔符號照收,只看數字位數(8–15 碼)。
-      // 對中文版是純放寬 —— 原本收的 8–11 碼一樣照收,不會變嚴。
-      var digits = v.replace(/[^0-9]/g, '');
-      if (digits.length < 8 || digits.length > 15) {
-        addMsg('bot', txt('phoneInvalid'));
-        return;
-      }
-      collect.phone = v; saveLead();
+    if (collect.step === 'email') {
+      if (!validEmail(v)) { addMsg('bot', txt('emailInvalid')); showCTA(); return; }
+      collect.email = v; saveLead();
     }
   }
 
+  // 「取消」:回到一般對話。對話紀錄、analysisId / claimToken 都不動,之後還能註冊或重新留 Email
+  function cancelCollect() {
+    if (!collect.active || collect.sending || registering) return;
+    collect.active = false; collect.step = ''; collect.name = ''; collect.email = '';
+    addMsg('bot', txt('leadCancelled'));
+    showCTA();
+    syncComposer(); textInput.focus();
+  }
+
+  // 先用 reason 'lead' 把對話存成一筆(拿 analysisId),再寫 landing_leads
   function saveLead() {
-    var detail = '【AI 採購助手】客戶姓名：' + collect.name;
-    var items = '';
-    if (lastAnalysis && lastAnalysis.summary) detail += '\n' + lastAnalysis.summary;
-    if (lastAnalysis && lastAnalysis.ingredients && lastAnalysis.ingredients.length) {
-      items = lastAnalysis.ingredients.map(function (i) { return i.name + (i.quantity || '') + (i.unit || ''); }).join('、');
-      detail += '\n採購清單：' + items;
-    } else if (history.length) {
-      detail += '\n對話：' + history.map(function (m) { return (m.role === 'user' ? '客' : 'AI') + '：' + m.text; }).join(' / ');
-    }
     var bub = addMsg('bot', txt('sending'));
-    Promise.resolve(extractPromise).then(function () {
+    collect.sending = true;
+    setCTADisabled(true);
+    setBusy(true);
+    saveForExit('lead').then(function (saved) {
+      if (saved) markSaved();
+      // lastAnalysis 是 conv.analysisId 那一筆的食材(menuOutcome / 存檔回應維護):analysis_id 與品項一定對得上
+      var row = leadRow({ name: collect.name, email: collect.email }, lastAnalysis, history, conv.analysisId, navigator.userAgent);
       return fetch(SUPA_URL + '/rest/v1/landing_leads', {
         method: 'POST',
         headers: { 'apikey': SUPA_ANON, 'Authorization': 'Bearer ' + SUPA_ANON, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
-        body: JSON.stringify({ company_name: collect.name, contact_phone: collect.phone, items_text: items || null, detail: detail, source: 'ai_widget', analysis_id: lastAnalysisId || null, user_agent: (navigator.userAgent || '').slice(0, 300) })
+        body: JSON.stringify(row)
       });
     }).then(function (r) {
-      if (r.status === 201 || r.ok) {
-        bub.textContent = txtf('leadSuccess', { name: collect.name, phone: collect.phone });
-        collect.active = false; collect.step = 'done'; textInput.placeholder = currentPlaceholder();
-      } else { bub.textContent = txt('leadFailure'); }
-    }).catch(function () { bub.textContent = txt('leadFailure'); });
+      if (r.status === 201 || r.ok) return { ok: true };
+      return r.json().then(function (j) { return { ok: false, status: r.status, json: j }; },
+        function () { return { ok: false, status: r.status, json: null }; });
+    }).then(function (res) {
+      if (res.ok) {
+        bub.textContent = txtf('leadSuccess', { name: collect.name, email: collect.email });
+        collect.active = false; collect.step = 'done';
+      } else if (isLeadRateLimited(res.status, res.json)) {
+        // 後端防灌水(同一個 Email 24 小時內第 3 筆、或全站當天太多):重送也沒用,改給友善說明 + 註冊出口
+        bub.textContent = txt('leadRateLimited');
+        collect.active = false; collect.step = 'limited';
+      } else {
+        bub.textContent = txt('leadFailure');   // 停在 Email 這一步,再送一次就會重試
+      }
+    }).catch(function () { bub.textContent = txt('leadFailure'); })
+      .then(function () {
+        collect.sending = false;
+        setBusy(false);
+        if (collect.step === 'done') removeCTA();   // 留好了:收集中那組(含「取消」)收掉
+        else showCTA();                             // 被擋下 → 只剩註冊;失敗 → 還在收,出口留著
+        pumpImages();   // 送 Email 期間排進來的照片,現在輪到它
+      });
   }
 
   // ---- open / close ----
@@ -4022,7 +4561,7 @@ class Component extends DCLogic {
   }
   function closePanel() {
     if (!panel.classList.contains('ai-open')) return;
-    persistConversation();
+    saveOnLeave(false);
     panel.classList.remove('ai-open');
     fab.classList.remove('ai-open');
     fabTip.classList.remove('ai-tip-hide');
@@ -4077,35 +4616,38 @@ class Component extends DCLogic {
 
   // ---- 對外 API:首頁搜尋列 / 分類籤把關鍵字直接帶進對話 ----
   // ask(text):打開面板並把 text 當成使用者的一句話送出,AI 會接著訪談。
-  // 正在收聯絡資料(collect.active)時只開面板不送字,免得把關鍵字當成姓名存起來。
+  // 正在收聯絡資料(collect.active)時只開面板不送字,免得把關鍵字當成姓名存起來;
+  // 對話已鎖住就只開面板(畫面上那組 CTA 就是下一步);上一則還沒回來就先放進輸入框,等它回來再按送出。
   window.IfmAI = {
     open: openPanel,
     ask: function (text) {
       var v = String(text || '').trim();
       if (!panel.classList.contains('ai-open')) openPanel();
-      if (!v || collect.active) return;
+      if (!v || collect.active || locked || registering) return;
       textInput.value = v;
-      sendText();
+      if (!aiBusy) sendText();
     }
   };
   panel.querySelector('.ai-x').addEventListener('click', closePanel);
   backdrop.addEventListener('click', closePanel);
-  panel.querySelector('.ai-upload').addEventListener('click', function () { fileInput.click(); });
-  sendBtn.addEventListener('click', sendText);
-  textInput.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); sendText(); } });
-
-  // 離開頁面時，若還沒記錄過對話就用 beacon 補記（確保「所有對話」都留存）
-  window.addEventListener('pagehide', function () {
-    var conv = history.filter(function (m) { return m && (m.text || m.image); });
-    if (!conv.length || conv.length <= lastPersistedLen) return;
-    lastPersistedLen = conv.length;
-    try {
-      var bp = { messages: conv, lang: curLang() };
-      if (lastAnalysisId) bp.analysisId = lastAnalysisId;
-      var blob = new Blob([JSON.stringify(bp)], { type: 'application/json' });
-      navigator.sendBeacon('/api/ai-extract', blob);
-    } catch (e) {}
+  uploadBtn.addEventListener('click', function () {
+    if (registering) return;
+    if (locked) { remindLocked(); return; }   // 鎖住之後不再分析照片,改把註冊出口拉回眼前
+    fileInput.click();
   });
+  sendBtn.addEventListener('click', sendText);
+  textInput.addEventListener('keydown', function (e) {
+    if (e.key !== 'Enter') return;
+    if (e.isComposing || e.keyCode === 229) return;   // 中文輸入法選字的 Enter 不是送出
+    e.preventDefault();
+    if (aiBusy) return;                               // 忙碌鎖:上一則還沒回來,按 Enter 不送
+    sendText();
+  });
+
+  // 離開頁面時:還有沒存過的對話(使用者訊息 ≥ 2 則)就用 beacon 補存
+  window.addEventListener('pagehide', function () { saveOnLeave(true); });
+  // 從註冊頁按「上一頁」回來(bfcache 原封不動還原):解除交接中的狀態,不然整個面板會卡在「正在前往註冊…」
+  window.addEventListener('pageshow', function (e) { if (e.persisted) resetRegistering(); });
 })();
 </script>
 </body>

@@ -1,0 +1,25 @@
+# 部署產物裡不要出現的東西:給維護者看的文件、測試、建置腳本、舊版離線檔。
+# 沒有這個檔的時候,Vercel 的靜態輸出只排除 api/**、package*.json、README.md 等少數幾個,
+# 其他全部原樣公開(2026-10-07 實測正式站 /tests/*.test.cjs、/scripts/*.mjs、/supabase_schema.sql 都是 200)。
+#
+# 為什麼這個檔在 CI 上有效:landing-deploy.yml 在 landing/ 裡跑 `vercel build` 再 `vercel deploy --prebuilt`。
+#   - vercel build 收集來源檔用的是 getVercelIgnore(workPath)(內建清單 + 本檔),
+#     合併 static 輸出時也再用同一個 filter 清一次;
+#   - deploy --prebuilt 只上傳 .vercel/output。
+#   預渲染(node scripts/prerender.mjs --in-place)是 vercel build 之前的獨立步驟,不受這裡影響。
+#
+# 🔴 規則:只寫「錨定在根目錄的字面路徑」(開頭 /、不用萬用字元、不用 !)。
+#    tests/vercelignore.test.cjs 會逐條比對這份清單,並確認網站要用的檔
+#    (index.html、執行期 js、assets、api、預渲染出來的頁面、favicon、og 圖…)一個都沒被排除。
+# standalone.html:只有 README / DEPLOY.md 提到它(舊版離線視覺基準),站上沒有任何地方連到它。
+#    哪天要在站上連它,記得把下面那行拿掉(測試會擋)。
+/tests
+/scripts
+/docs
+/DEPLOY.md
+/README.md
+/supabase_schema.sql
+/.env.example
+/.claude
+/standalone.html
+/.vercelignore
