@@ -561,3 +561,194 @@ anon 對 `profiles` 沒有任何權限;登入者只讀得到自己、自己已�
   `order_expiry.test.sql`(27)、`order_receipt_dispute_rpc.test.sql`(39)。
 - 🔴 **開 `NOTIFY_LIVE` 之前要先決定**:訂單逾時、以及從逾時取消,要不要寄信給原供應商?目前兩種都不寄,靠管理員打電話
   (取消對話框會提醒管理員另外聯絡供應商)。
+
+## AI 防濫用與註冊導流(2026-10-07,migration 20261007100000 / 100100 / 100200、Edge Function `ai`)
+
+形象站 ifoodmap.ai 的 AI 對話免註冊就能用、聊完導去註冊;註冊後剛剛聊的需求自動變成採購單草稿。
+原本 `ai` 沒有身分驗證、限流、字數或輸出上限(任何人都能繞過網站直接打),這次一起補上。
+
+**呼叫者分三級**(`supabase/functions/ai/guard.ts`,純邏輯,vitest:`guard.test.ts`、`crypto.test.ts`):
+
+| tier | 判定 | 可用 action |
+|---|---|---|
+| landing | header `x-ifm-proxy-secret` = secret `IFM_AI_PROXY_SECRET`(常數時間比較;secret 沒設永不成立) | chat、analyze-menu、analyze-chat |
+| user | `Authorization: Bearer <使用者 access token>`,`auth.getUser` 驗得過(anon key、匿名使用者不算) | 全部 |
+| legacy | 以上皆非,且 `AI_ENFORCE_AUTH` ≠ `"1"`(過渡期相容舊前端) | 全部 |
+| 拒絕 | 以上皆非,且 `AI_ENFORCE_AUTH` = `"1"` | 401 `UNAUTHORIZED` |
+
+- 額度(每天 = 台北日):landing / legacy 以 IP 計(IP 只以 `HMAC-SHA256(IFM_AI_PROXY_SECRET, ip)` 前 16 hex 落地;
+  **IPv6 一律取 /64、IPv4 用完整位址**)—— chat 20 次/10 分、60 次/天;analyze-menu 5/10 分、10/天;analyze-chat 10/天;
+  legacy 的其他 action 5/10 分、20/天(契約沒寫,自訂)。兩級的個人額度數字一樣,但 bucket 分開。
+  **全站每天的上限兩級分開計、各自封頂**:landing chat 500、analyze-menu 100、analyze-chat 200;legacy chat 100、analyze-menu 20、analyze-chat 40、其他 100
+  (legacy 的 IP 取自 `x-forwarded-for` 第一段、可以偽造;分開之後燒光 legacy 的額度也鎖不到形象站的真訪客)。
+  user tier 全部 action 合計 60/10 分、200/天,不佔全站額度。
+- 字數:landing / legacy 最新一則 300 字、送給 Gemini 的歷史最後 20 則且 ≤ 4,000 字;user tier 2,000 字、歷史 ≤ 12,000 字。
+  圖片與 body:landing jpeg/png/webp ≤ 1.5 MB、body ≤ 2.5 MB;**legacy 跟 user tier 一樣**(任何 image/* ≤ 10 MB、body ≤ 15 MB,
+  過渡期還開著的舊產品站分頁才不會被擋)。
+- 存進 `analysis_records` 的 `messages` / `transcript` 是**完整對話**(不含圖片、每則照上面的字數截斷、最多 40 則);只有送給 Gemini 的才照上面截斷。
+- 形象站同一段對話只有一筆:analyze-chat 與 analyze-menu 帶 `analysisId` + `claimToken`(驗證通過)就併進那一筆 ——
+  食材以名稱去重合併、菜單照片附加到 `images`(同一筆最多 3 張);更新帶 `updated_at` 樂觀鎖,同時兩個請求改同一筆時後到的會重查再併。
+- 輸出上限(思考 token 也算在裡面):chat 400 token(不思考)、analyze-chat 1024(不思考)、analyze-menu 4096(思考預算 512)、其他 4096(思考 1024)。
+  analyze-menu 原本定 2560:2026-07-28 實測大菜單輸出到 1,703 token,扣掉思考只剩約 20% 餘裕,超過會截斷成壞掉的 JSON,所以調成 4096。
+- 最壞成本(每一次都打滿字數與輸出上限,以 Gemini 2.5 Flash 公告價估:輸入 US$0.30/1M、輸出含思考 US$2.50/1M,
+  同 `src/pages/admin/aiCost.ts`;中文以 1 字 ≈ 1 token 從寬估,菜單照片輸入以 2,000 token 計,實測約 451):
+  形象站(landing)全站每天 chat 500 次 ≤ US$1.40、analyze-chat 200 次 ≤ 0.80、analyze-menu 100 次 ≤ 1.11(上限還是 2560 時 0.72)
+  → **合計 ≤ 約 US$3.3/天(約 US$100/月)**。
+  相容模式期間 legacy 另外封頂:chat 100 次 ≤ 0.25、analyze-chat 40 次 ≤ 0.16、analyze-menu 20 次 ≤ 0.22、其他 100 次 ≤ 1.34 → ≤ 約 US$2.0/天
+  (兩級分開計,所以相容模式期間合計上限是 ≤ 約 US$5.3/天;開了強制模式 legacy 就沒了)。
+  登入使用者每個帳號每天最多 200 次:chat ≤ US$0.95、analyze-menu ≤ 2.19,最壞(每次都是 6 萬字的 dish-ideas / quote-draft)≤ 5.68。
+- 菜單照片存進 `analysis_records.images` 每天有總量(三級分開:landing 20 MB、legacy 20 MB、登入使用者 40 MB);超過時紀錄照存、只是不存圖
+  (`ai_guard_daily` 記 `IMAGE_NOT_STORED`)。
+- 錯誤一律 `{ code, message, retryAfterSeconds? }`,429 另帶 `Retry-After`;形象站與舊前端拿不到 Gemini 原始錯誤。
+- 形象站(landing tier)的 chat 用 `landing-prompt.ts`(四題訪談 → 導「免費註冊」、Email 為輔、`[[DONE]]` / `[[END]]` 由伺服器轉成 `stage`;
+  英文版另外接上 `LANDING_EN_BUTTONS`,按鈕名稱照英文網站寫「Sign up free」。按鈕文字以 `landing/i18n.js` 的 `ctaRegister` / `ctaEmail` 為準,改了要一起改);
+  **產品站登入後(與 legacy)的 `CHAT_SYSTEM` 一字未改**。
+- 資料庫:
+  - **100000 `ai_rate_limits`**:`ai_usage` 加 `tier`、`thoughts_tokens`;計數表 `ai_rate_counters` + 原子化 RPC `ai_rate_take`(只給 service_role;
+    `INSERT … ON CONFLICT` 鎖列計數,任何一條超過就整批退回、不吃額度);被擋統計 `ai_guard_daily` + `ai_note_rejection(p_tier, p_action, p_code, p_hits)`;
+    pg_cron `ifoodmap-ai-guard-cleanup`(19:40 UTC = 台北 03:40)清 2 天前的計數、90 天前的統計。
+  - **100100 `landing_analysis_claim`**:`analysis_records` 加 `claim_token_hash`(DB 只存 sha256 hex)、`claimed_at`、`claimed_restaurant_id`、`claimed_order_id`;
+    認領 RPC `claim_landing_analysis(p_handoff text, p_restaurant_id uuid default null)`(只有這一個兩參數版本,只給 authenticated):
+    有帶 `p_restaurant_id`(產品站一律帶畫面上那家店)→ 呼叫者必須是那家店已接受、啟用中的成員,branch 取自那筆成員資格,否則 `no_restaurant`;
+    沒帶 → 最近接受的那家。驗證通過就建一張 `status='draft'` 的 `supplier_orders`(不送出、不寫事件)。
+  - **100200 `lead_guards`**:`landing_leads` 加 `contact_email`;兩張 lead 表的長度檢查與 Email 格式;landing_leads 至少要有電話、Email、LINE 其中一種
+    (產品站 ContactGate 允許只留 LINE);同 Email / 電話 / LINE 24 小時 ≥ 3 筆、或全表 24 小時 ≥ 100 筆(異業合作:同 Email ≥ 3、全表 ≥ 50)
+    → `LEAD_RATE_LIMITED`(PostgREST 400)。長文字(品項、補充說明、合作訊息、瀏覽器)超過上限是截斷、不是擋。
+    **Email 規則全站一字不差**(DB constraint、notify-lead 的 reply-to、形象站 widget、異業合作表單):
+    長度 ≤ 254 且符合 `^[A-Za-z0-9._%+-]+@([A-Za-z0-9-]+\.)+[A-Za-z]{2,}$`(擋掉 `a@b..c`、結尾逗號 / 分號、空白、一次多個地址)。
+    2026-10-07 查:partnership_leads 0 筆、landing_leads 9 筆(還沒有 Email 欄位),沒有不符合的既有資料,constraint 都 VALIDATE 得過。
+- **notify-lead(業主的 lead 通知信)一起改**:`contact_email` 在信裡標成「Email」(排在店名後面);沒留名字時主旨用 Email
+  (順序 店名 → Email → 電話 → LINE);Email 格式有效時設成 reply-to(業主直接回信就是回給訪客;異業合作表單的 reply-to 也改成格式有效才設,
+  格式不對就不設、照樣寄)。規則在 `notify-lead/lead-email.ts`(vitest 會檢查跟 migration 的 regex 一字不差);
+  Resend 回 4xx 而且信上有 reply_to 時,拿掉 reply_to 重寄一次。收件人、`LEAD_NOTIFY_TO`、寄件網域、供應商入駐申請的寄信與閘門都沒動。
+- 驗證:2026-10-07 在正式庫 BEGIN…ROLLBACK 乾跑三支 migration + 97 項檢查全過(認領的各種結果含指定 / 不指定店家、別人的店、pending 成員;
+  草稿過得了 guard / 狀態機;合併用的 UPDATE 與樂觀鎖;anon / authenticated 執行不了限流 RPC;lead 限流、長度、ContactGate 只留 LINE 的 payload、
+  16 種壞 Email;既有資料全部符合新 constraint),事後查證沒有殘留。
+
+### 兩個新 secret
+
+- `IFM_AI_PROXY_SECRET`:形象站代理與 `ai` 共用的密鑰。**Supabase secret 與 Vercel `ifoodmap-landing` 專案的 env 要設同一個值**
+  (Production;要讓 preview 部署在強制模式下也能用 AI,Preview 也要設)。沒設 = landing tier 永不成立(形象站會落到 legacy)。
+- `AI_ENFORCE_AUTH`:`"1"` = 強制模式(沒有合法身分一律 401);沒設 = 相容模式。**只有字串 `1` 才算**。
+
+### 部署順序(一定照這個順序)
+
+先讓新前端帶上身分、再換 ai:新前端遇到舊版 ai(不回 `stage` / `claimToken`、錯誤沒有 `code`)會退化成舊行為;
+ai 換上去的那一刻兩站已經在帶身分,不會有「舊形象站代理不轉發訪客 IP、所有訪客共用一個出口 IP 額度」的空窗。
+
+1. **migration**(依序 100000 → 100100 → 100200,用上面「寫了新 migration 之後」的方式逐支套,再補 ledger):
+   ```sql
+   insert into supabase_migrations.schema_migrations (version, name) values
+     ('20261007100000', 'ai_rate_limits'),
+     ('20261007100100', 'landing_analysis_claim'),
+     ('20261007100200', 'lead_guards')
+   on conflict (version) do nothing;
+   ```
+   套完確認:`select jobname, schedule from cron.job;` 有 `ifoodmap-ai-guard-cleanup`;
+   `select conname, convalidated from pg_constraint where conname like '%leads_%' and contype = 'c';` 應全部 `true`
+   (若有 `false` 代表當下有舊資料不符合,新寫入仍會檢查,不影響部署)。
+   新函式要等 PostgREST 重新載入 schema 才叫得到;之後若 `ai_rate_take` / `claim_landing_analysis` 回 404(`PGRST202`),跑一次 `notify pgrst, 'reload schema';`。
+   **notify-lead** 在 migration 之後就可以部署(跟 ai 的順序無關;沒有 contact_email 的舊資料照常寄):
+   ```bash
+   SUPABASE_ACCESS_TOKEN=sbp_... supabase functions deploy notify-lead --project-ref cwvpehqcvbfuynabpqop --no-verify-jwt --use-api
+   ```
+   (2026-10-07 以 `GET /v1/projects/cwvpehqcvbfuynabpqop/functions/notify-lead` 查:v6、`verify_jwt: false`,跟 `supabase/config.toml` 一致;
+   它靠 `LEAD_HOOK_SECRET` 驗證 DB trigger 的呼叫,**一定要帶 `--no-verify-jwt`**,部署後再 GET 一次確認還是 false。)
+2. **Supabase secret**(值不要印出來,下一步 Vercel 要用同一個;這時線上還是舊版 ai,不會讀它 —— 改 secret 只會讓各 function 用現有程式重啟一次):
+   ```bash
+   IFM_AI_PROXY_SECRET=$(openssl rand -hex 32)
+   SUPABASE_ACCESS_TOKEN=sbp_... supabase secrets set IFM_AI_PROXY_SECRET="$IFM_AI_PROXY_SECRET" --project-ref cwvpehqcvbfuynabpqop
+   ```
+3. **Vercel**:`ifoodmap-landing` 專案設 env `IFM_AI_PROXY_SECRET`(同第 2 步的值;Production,要讓 preview 也能用就 Preview 也設)。
+   env 在部署時才帶進 function,**一定要在第 4 步建置之前設好**。
+4. **push 前端**(形象站 + 產品站同一個 push),等 `landing-deploy.yml` 與 `deploy-vercel.yml` 兩邊都部署完。
+   這時新前端對的是舊版 ai:形象站沒有 `stage` / `claimToken`(註冊不帶 handoff)、產品站多帶的 Bearer 會被舊版 ai 忽略 —— 都是預期中的退化。
+5. **部署 ai**(`AI_ENFORCE_AUTH` 先不要設 = 相容模式;本機沒有 Docker,所以 `--use-api`,`guard.ts` / `crypto.ts` / `landing-prompt.ts` 會一起上傳):
+   ```bash
+   SUPABASE_ACCESS_TOKEN=sbp_... supabase functions deploy ai --project-ref cwvpehqcvbfuynabpqop --no-verify-jwt --use-api
+   ```
+   部署後 `GET https://api.supabase.com/v1/projects/cwvpehqcvbfuynabpqop/functions/ai` 確認 `verify_jwt: false`(打開會讓形象站全部 401)。
+6. **確認兩站都帶了身分**(兩站各實際用一次 AI 之後):
+   ```sql
+   select tier, action, count(*), max(created_at)
+   from public.ai_usage where created_at > now() - interval '1 hour'
+   group by 1, 2 order by 1, 2;
+   ```
+   要看到 `landing`(形象站)與 `user`(產品站)。ai 換上去之後還出現的 `legacy` = 還開著舊分頁的訪客,會自己消失;
+   一直有、或兩站有一邊沒出現,就先停在這步查(function log 裡 `[ai] ai_rate_take failed` / `auth.getUser failed` 是限流或驗證出問題)。
+7. **開強制模式**:`supabase secrets set AI_ENFORCE_AUTH=1 --project-ref cwvpehqcvbfuynabpqop`
+8. **確認直打被擋、兩站正常**:
+   ```bash
+   # 沒有身分 → 401(在讀 body 之前就擋掉,不會呼叫 Gemini、不花錢)
+   curl -s -o /dev/null -w '%{http_code}\n' -X POST https://cwvpehqcvbfuynabpqop.supabase.co/functions/v1/ai \
+     -H "apikey: <anon key>" -H "Content-Type: application/json" -d '{"action":"chat","messages":[{"role":"user","text":"hi"}]}'
+   ```
+   再到兩站各用一次 AI;`ai_guard_daily` 會出現 `tier = 'none'`、`code = 'UNAUTHORIZED'` 的計數。
+
+### 怎麼查擋了多少
+
+```sql
+-- 每天被擋的請求(day = 台北日期;tier none = 強制模式下沒有身分)
+-- RATE_LIMITED / DAILY_CAP / IMAGE_NOT_STORED 是 DB 端逐筆記的精確值;
+-- UNAUTHORIZED、TOO_LONG、BODY_TOO_LARGE、ACTION_NOT_ALLOWED、UNSUPPORTED_IMAGE、IMAGE_TOO_LARGE、CONVERSATION_LIMIT 是 Edge Function
+-- 在記憶體累計、每個 isolate 最多每 60 秒寫一次的「近似值」(isolate 被回收前沒寫到的會少算,只會少、不會多)
+select day, tier, action, code, hits from public.ai_guard_daily order by day desc, hits desc;
+
+-- 今天誰用得最兇(IP 只有 HMAC,看不出原始 IP;user: 後面是 user id)
+select bucket, window_start, hits from public.ai_rate_counters
+where window_start >= now() - interval '1 day' order by hits desc limit 20;
+
+-- 用量與思考 token(thoughts_tokens 跟輸出 token 同價;/admin/ai-ops 的成本估算還沒算進去)
+select tier, action, count(*), sum(prompt_tokens), sum(completion_tokens), sum(thoughts_tokens)
+from public.ai_usage where created_at > now() - interval '7 days' group by 1, 2 order by 1, 2;
+
+-- 清理排程的執行紀錄
+select status, return_message, start_time from cron.job_run_details
+where jobid = (select jobid from cron.job where jobname = 'ifoodmap-ai-guard-cleanup') order by runid desc limit 5;
+```
+
+### 還原順序
+
+1. **先退回相容模式**(最輕、立即生效):`supabase secrets unset AI_ENFORCE_AUTH --project-ref cwvpehqcvbfuynabpqop`
+2. **退回舊版 ai**:舊版程式在 `62d342e`(`git -C /Users/aimand/.gemini/File/ifoodmap show 62d342e:supabase/functions/ai/index.ts`),
+   從那個 commit 的 checkout 用同一行指令部署(`--no-verify-jwt --use-api`)。舊版 ai 跟新的資料庫相容(新欄位都可為 NULL,不碰新表);
+   新前端拿不到 `claimToken` / `stage` 時會退化成舊行為。notify-lead 要退也一樣從 `62d342e` 部署(`--no-verify-jwt --use-api`;
+   舊版只是把 `contact_email` 顯示成欄位名、不設 reply-to)。
+3. **前端**:需要時 Vercel Instant Rollback(兩個專案)。🔴 產品站會呼叫 `claim_landing_analysis`,**要先退掉產品站的新版**才能做第 4 步。
+4. **資料庫**(只有在第 2、3 步都完成之後;順序 100200 → 100100 → 100000;各支包在 BEGIN … COMMIT 裡跑)。
+   原則:**只拆行為(trigger、constraint、函式、排程),不丟資料** —— 留下的欄位舊版程式都不會碰,之後重新套用 migration 也是冪等的:
+   ```sql
+   -- 100200 lead_guards:只拆 trigger 與 constraint;landing_leads.contact_email 欄位與已經收到的 Email 保留
+   drop trigger if exists trg_landing_leads_guard on public.landing_leads;
+   drop trigger if exists trg_partnership_leads_guard on public.partnership_leads;
+   drop function if exists public.landing_leads_guard();
+   drop function if exists public.partnership_leads_guard();
+   alter table public.landing_leads drop constraint if exists landing_leads_contact_email_format,
+     drop constraint if exists landing_leads_has_contact, drop constraint if exists landing_leads_field_lengths;
+   alter table public.partnership_leads drop constraint if exists partnership_leads_contact_email_format,
+     drop constraint if exists partnership_leads_field_lengths;
+   -- (landing_leads_created_at_idx / partnership_leads_created_at_idx 兩個 index 留著無妨)
+
+   -- 100100 landing_analysis_claim:拿掉認領 RPC(只有這個兩參數的簽名)與格式檢查;
+   -- 認領紀錄的 4 個欄位留著(已建出的採購單草稿不受影響,後台還查得到是從哪段對話來的)
+   drop function if exists public.claim_landing_analysis(text, uuid);
+   alter table public.analysis_records drop constraint if exists analysis_records_claim_token_hash_format;
+
+   -- 100000 ai_rate_limits:排程用 jobid 取消(排程不存在時不會報錯);計數表與被擋統計是營運資料,直接拿掉
+   select cron.unschedule(jobid) from cron.job where jobname = 'ifoodmap-ai-guard-cleanup';
+   drop function if exists public.ai_rate_take(text, text, jsonb);
+   drop function if exists public.ai_note_rejection(text, text, text, integer);
+   drop function if exists public.ai_guard_cleanup();
+   drop table if exists public.ai_rate_counters;
+   drop table if exists public.ai_guard_daily;
+   -- ai_usage.tier / thoughts_tokens 留著(舊版 ai 不寫這兩欄,之後的列會是 NULL)
+
+   delete from supabase_migrations.schema_migrations where version in ('20261007100000', '20261007100100', '20261007100200');
+
+   -- 只有在確定要連資料一起丟掉時才另外跑(先匯出):
+   -- alter table public.analysis_records drop column if exists claimed_order_id, drop column if exists claimed_restaurant_id,
+   --   drop column if exists claimed_at, drop column if exists claim_token_hash;
+   -- alter table public.ai_usage drop column if exists thoughts_tokens, drop column if exists tier;
+   -- alter table public.landing_leads drop column if exists contact_email;
+   ```
+   還原資料庫之後,repo 裡的三支 migration 也要一起 revert,否則 `check-migrations` 會一直紅。

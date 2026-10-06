@@ -25,6 +25,7 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 import { type Db, defaultLog } from "../_shared/db.ts";
 import { createResendSender, mailConfigFromEnv } from "../_shared/supplier-mail.ts";
 import { NotFoundError, processSupplierApplication } from "./supplier-application.ts";
+import { replyToAddress, shouldRetryWithoutReplyTo } from "./lead-email.ts";
 
 const RESEND_KEY = Deno.env.get("RESEND_API_KEY") ?? "";
 const HOOK_SECRET = Deno.env.get("LEAD_HOOK_SECRET") ?? "";
@@ -66,7 +67,7 @@ interface Spec {
   /** 欄位順序 = 信裡的顯示順序;沒列到的欄位會自動補在最後,不會漏 */
   fields: Record<string, string>;
   subject: (r: Record<string, unknown>) => string;
-  /** 可以直接回信的聯絡信箱欄位 */
+  /** 可以直接回信的聯絡信箱欄位(格式有效才會設成 reply-to,見 replyToFor) */
   replyToField?: string;
 }
 
@@ -96,8 +97,11 @@ const SPECS: Record<string, Spec> = {
   },
   landing_leads: {
     label: "食材需求",
+    // 2026-10-07 起形象站以 Email 取代電話(migration 20261007100200 加的 contact_email)
+    replyToField: "contact_email",
     fields: {
       company_name: "公司／店名",
+      contact_email: "Email",
       contact_phone: "電話",
       contact_line: "LINE",
       items_text: "需要的品項",
@@ -107,14 +111,22 @@ const SPECS: Record<string, Spec> = {
       analysis_id: "菜單分析 ID",
       user_agent: "瀏覽器",
     },
-    // landing_leads 沒有 contact_name 欄位,用店名 → 電話 → LINE 依序當標題
+    // landing_leads 沒有 contact_name 欄位,用店名 → Email → 電話 → LINE 依序當標題
+    // (資料庫規定電話或 Email 至少要有一個,所以最後那個備用字樣只會出現在 constraint 之前的舊資料)
     subject: (r) => {
-      const who = [r.company_name, r.contact_phone, r.contact_line]
+      const who = [r.company_name, r.contact_email, r.contact_phone, r.contact_line]
         .map((v) => String(v ?? "").trim()).find(Boolean) ?? "(未留聯絡方式)";
       return `【食材需求】${who}`;
     },
   },
 };
+
+/**
+ * reply-to 只用格式有效的 Email(全站統一的規則在 lead-email.ts,跟資料庫 constraint 一字不差)。
+ * 格式不對就不設 —— reply_to 不合法時寄信 API 可能整封拒收,業主反而收不到通知。
+ */
+const replyToFor = (spec: Spec, record: Record<string, unknown>): string | undefined =>
+  spec.replyToField ? replyToAddress(record[spec.replyToField]) : undefined;
 
 const buildHtml = (spec: Spec, record: Record<string, unknown>, table: string) => {
   const known = Object.keys(spec.fields);
@@ -169,7 +181,7 @@ const buildHtml = (spec: Spec, record: Record<string, unknown>, table: string) =
 };
 
 const sendMail = async (subject: string, html: string, replyTo?: string) => {
-  if (!RESEND_KEY) return { ok: false, err: "RESEND_API_KEY 未設定", id: null as string | null };
+  if (!RESEND_KEY) return { ok: false, err: "RESEND_API_KEY 未設定", id: null as string | null, status: null as number | null };
   const payload: Record<string, unknown> = { from: FROM, to: TO, subject, html };
   if (replyTo) payload.reply_to = replyTo;
   try {
@@ -179,12 +191,12 @@ const sendMail = async (subject: string, html: string, replyTo?: string) => {
       body: JSON.stringify(payload),
     });
     const text = await res.text();
-    if (!res.ok) return { ok: false, err: `Resend ${res.status}: ${text.slice(0, 300)}`, id: null };
+    if (!res.ok) return { ok: false, err: `Resend ${res.status}: ${text.slice(0, 300)}`, id: null, status: res.status };
     let id: string | null = null;
     try { id = (JSON.parse(text) as { id?: string }).id ?? null; } catch { /* ignore */ }
-    return { ok: true, err: null as string | null, id };
+    return { ok: true, err: null as string | null, id, status: res.status };
   } catch (e) {
-    return { ok: false, err: e instanceof Error ? e.message : "unknown", id: null };
+    return { ok: false, err: e instanceof Error ? e.message : "unknown", id: null, status: null };
   }
 };
 
@@ -250,11 +262,15 @@ Deno.serve(async (req) => {
   }
 
   const subject = spec.subject(record);
-  const replyTo = spec.replyToField
-    ? String(record[spec.replyToField] ?? "").trim() || undefined
-    : undefined;
+  const replyTo = replyToFor(spec, record);
+  const html = buildHtml(spec, record, table);
 
-  const r = await sendMail(subject, buildHtml(spec, record, table), replyTo);
+  let r = await sendMail(subject, html, replyTo);
+  // 保險(SPEC 修訂 2 R4):Resend 回 4xx 而且信上有 reply_to → 拿掉 reply_to 重寄一次,業主至少收得到
+  if (!r.ok && shouldRetryWithoutReplyTo(r.status, replyTo)) {
+    console.warn("[notify-lead] Resend rejected the mail with reply_to; retrying without it:", r.err);
+    r = await sendMail(subject, html, undefined);
+  }
   if (!r.ok) return json({ message: "send failed", error: r.err }, 502);
 
   return json({ data: { sent: true, to: TO, subject, resend_id: r.id, record_id: record.id } });
