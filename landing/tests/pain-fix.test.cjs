@@ -69,6 +69,23 @@ test('說明文字的間距壓得過 .ifm-v2 p{margin:0}(不然黑底標題、�
   assert.ok(desktop, '桌機版要有上方間距、下方 0(它是左欄最後一個元素)');
 });
 
+test('大標下方的間距壓得過 .ifm-v2 h2{margin:0}(不然大標直接貼著第 01 列)', () => {
+  // 同上一條的雷:.ifm-v2 h2 的權重 (0,1,1) 比 .pf-title(0,1,0)高,
+  // 只寫 .pf-title 的 margin 會被整個歸零 —— 2026-10-07 實測大標與第 01 列之間 0px
+  const at = html.indexOf('<style id="pf">\n');
+  const css = html.slice(at, html.indexOf('</style>', at)).replace(/\/\*[\s\S]*?\*\//g, '');
+  const titleRules = css.match(/[^{}]*\.pf-title[^{}]*\{[^}]*\}/g) || [];
+  assert.ok(titleRules.length > 0, '找不到 .pf-title 的樣式');
+  for (const rule of titleRules) {
+    if (!/margin/.test(rule)) continue;
+    const selector = rule.slice(0, rule.indexOf('{')).trim();
+    assert.match(selector, /^\.pf \.pf-title$/, `設 margin 的選擇器要寫成 .pf .pf-title,現在是「${selector}」`);
+  }
+  // 數值照舊:上 0、下 clamp(32px,4vw,52px)
+  const desktop = titleRules.find((r) => /\.pf \.pf-title\s*\{[^}]*margin:\s*0 0 clamp\(32px,\s*4vw,\s*52px\)/.test(r));
+  assert.ok(desktop, '大標下方要有 clamp(32px,4vw,52px) 的間距');
+});
+
 test('版面不寫行內 grid(support.js 會把行內多欄 grid 在手機上強制改單欄)', () => {
   const sec = home.slice(home.indexOf('class="ifm-v2 pf"'), home.indexOf('</section>', home.indexOf('class="ifm-v2 pf"')));
   assert.doesNotMatch(sec, /style="[^"]*grid-template-columns/);

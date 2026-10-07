@@ -64,6 +64,13 @@
         "pfLeadA": "告訴食材地圖你的採購需求，",
         "pfLeadB": "快速媒合合適的產地、加工廠與各級供應商。",
         "pfTypesAria": "可以媒合的供應商類型",
+        "rpTitlePre": "每天叫貨，你也",
+        "rpTitleHl": "遇過這些問題嗎？",
+        "rpSolPre": "現在，例行採購",
+        "rpSolHl": "可以更簡單！",
+        "rpLeadA": "透過食材地圖集中管理每日叫貨，",
+        "rpLeadB": "從下單、進度追蹤、訂單彙整到月底對帳一次掌握。",
+        "rpFeaturesAria": "例行採購的功能",
         "categoriesSub": "從產地、工廠、大盤到小盤商",
         "testimonialsTitle": "使用者怎麼說",
         "quoteOpen": "「",
@@ -129,6 +136,19 @@
             "大盤商",
             "中盤商",
             "小盤商"
+          ],
+          "rpProblems": [
+            "訂單散落在 LINE、電話與紙本，訊息太多容易漏單",
+            "每天反覆確認品項、數量、價格與到貨時間，耗時又容易出錯",
+            "訂單與對帳資料分散，月底整理費時又增加人力成本",
+            "不清楚確切食材成本與採購數量，難以掌握餐廳實際賺賠"
+          ],
+          "rpFeatures": [
+            "集中下單",
+            "訂單彙整",
+            "進度追蹤",
+            "歷史查詢",
+            "快速對帳"
           ],
           "audiences": [
             {
@@ -741,6 +761,13 @@
         "pfLeadA": "Tell iFoodmap what you need to buy,",
         "pfLeadB": "and we'll quickly match you with the right farms, processors and suppliers at every tier.",
         "pfTypesAria": "Types of suppliers we match you with",
+        "rpTitlePre": "Daily ordering — ",
+        "rpTitleHl": "sound familiar?",
+        "rpSolPre": "Now, routine purchasing ",
+        "rpSolHl": "can be much simpler!",
+        "rpLeadA": "Manage all your daily orders in one place with\u00a0iFoodmap,",
+        "rpLeadB": "and stay on top of everything from ordering and delivery tracking to order summaries and month\u2011end\u00a0reconciliation.",
+        "rpFeaturesAria": "Routine purchasing features",
         "categoriesSub": "From farms and factories to wholesalers and local distributors",
         "testimonialsTitle": "What Users Say",
         "quoteOpen": "“",
@@ -806,6 +833,22 @@
             "Large wholesalers",
             "Mid‑size wholesalers",
             "Small wholesalers"
+          ],
+          // 首頁「每天叫貨」:英文每句(含下面的 rpLeadA / rpLeadB)最後兩個字用不換行空白 \u00a0 黏住,
+          // 手機上最後一行才不會只剩一個字(Chrome 的 text-wrap:pretty 只管四行以內的段落,320px 的英文問題列有九行)。
+          // 改英文時請保留;結尾不要用帶連字號的字(error-prone 這種),連字號後面還是會斷。
+          "rpProblems": [
+            "Orders are scattered across LINE, phone calls and paper, and with so many messages, some get\u00a0missed",
+            "Every day you re-check items, quantities, prices and delivery times, which takes time and is easy to get\u00a0wrong",
+            "Order and reconciliation records are spread out, so month-end bookkeeping eats up hours and adds labor\u00a0costs",
+            "Without exact ingredient costs and purchase volumes, it's hard to tell if the restaurant is really making\u00a0money"
+          ],
+          "rpFeatures": [
+            "Central ordering",
+            "Order summaries",
+            "Delivery tracking",
+            "Order history",
+            "Quick reconciliation"
           ],
           "audiences": [
             {

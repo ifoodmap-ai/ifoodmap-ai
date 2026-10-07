@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120">
+
+<g transform="rotate(-16 34 56)"><rect x="14" y="26" width="36" height="48" rx="7" fill="#FFFFFF" stroke="#CFE6DA" stroke-width="3"/><rect x="22" y="38" width="18" height="5" rx="2.5" fill="#CFE6DA"/><rect x="22" y="48" width="12" height="5" rx="2.5" fill="#CFE6DA"/></g>
+<g transform="rotate(-5 40 62)"><rect x="20" y="34" width="38" height="52" rx="7" fill="#FFFFFF" stroke="#7ECBA5" stroke-width="3"/><rect x="28" y="46" width="20" height="5" rx="2.5" fill="#CFE6DA"/><rect x="28" y="56" width="14" height="5" rx="2.5" fill="#CFE6DA"/><rect x="28" y="66" width="18" height="5" rx="2.5" fill="#CFE6DA"/></g>
+<g transform="rotate(14 92 26)"><rect x="80" y="10" width="24" height="30" rx="5" fill="#FFFFFF" stroke="#7ECBA5" stroke-width="3"/><rect x="86" y="19" width="12" height="4.5" rx="2.25" fill="#CFE6DA"/><rect x="86" y="27" width="8" height="4.5" rx="2.25" fill="#CFE6DA"/></g>
+
+<rect x="46" y="48" width="62" height="58" rx="8" fill="#FFFFFF"/>
+<path d="M46 63 v-7 a8 8 0 0 1 8 -8 h46 a8 8 0 0 1 8 8 v7 z" fill="#CFE6DA"/>
+<g stroke="#CFE6DA" stroke-width="2.5"><line x1="67" y1="63" x2="67" y2="106"/><line x1="87" y1="63" x2="87" y2="106"/><line x1="46" y1="77.5" x2="108" y2="77.5"/><line x1="46" y1="91.5" x2="108" y2="91.5"/></g>
+<rect x="89.5" y="80" width="16" height="9" rx="2.5" fill="#E9A83A"/>
+<line x1="46" y1="63" x2="108" y2="63" stroke="#128A54" stroke-width="3"/>
+<rect x="46" y="48" width="62" height="58" rx="8" fill="none" stroke="#128A54" stroke-width="3"/>
+
+</svg>

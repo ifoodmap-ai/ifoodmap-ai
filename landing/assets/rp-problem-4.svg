@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120">
+
+<line x1="70" y1="100" x2="111" y2="100" stroke="#CFE6DA" stroke-width="3" stroke-linecap="round"/>
+<rect x="72" y="74" width="10" height="26" rx="3" fill="#7ECBA5"/>
+<rect x="86" y="56" width="10" height="44" rx="3" fill="#128A54"/>
+<g fill="none" stroke="#E9A83A" stroke-width="3" stroke-dasharray="6 4" stroke-linecap="round"><path d="M105 34 h-2 a3 3 0 0 0 -3 3 V99"/><path d="M105 34 h2 a3 3 0 0 1 3 3 V99"/></g>
+
+<rect x="14" y="22" width="50" height="76" rx="9" fill="#FFFFFF" stroke="#128A54" stroke-width="3"/>
+<rect x="22" y="30" width="34" height="15" rx="4" fill="#CFE6DA"/>
+<rect x="38" y="35" width="13" height="5" rx="2.5" fill="#128A54"/>
+<g fill="#CFE6DA">
+<rect x="22" y="53" width="10" height="8" rx="3"/><rect x="34" y="53" width="10" height="8" rx="3"/>
+<rect x="22" y="65" width="10" height="8" rx="3"/><rect x="34" y="65" width="10" height="8" rx="3"/><rect x="46" y="65" width="10" height="8" rx="3"/>
+<rect x="22" y="77" width="10" height="8" rx="3"/><rect x="34" y="77" width="10" height="8" rx="3"/>
+</g>
+<rect x="46" y="53" width="10" height="8" rx="3" fill="#7ECBA5"/>
+<rect x="46" y="77" width="10" height="8" rx="3" fill="#E9A83A"/>
+
+</svg>

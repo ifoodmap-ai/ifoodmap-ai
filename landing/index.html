@@ -856,6 +856,51 @@
       </div>
     </section>
 
+    <!-- ============ 每天叫貨(例行採購)的問題 → 解法(業主 2026-10-07)============
+         緊接在「找食材」(pf)之下。版型照業主給的參考圖,畫風、字級、圓角卡片、編號圓、深色標題條、箭頭比照 pf:
+         上半:左邊忙著叫貨的廚師,右邊大標 + 01–04 四個問題。
+         下半:「現在，例行採購可以更簡單！」+ 兩行說明 + 五個功能(圖示＋字,中間有分隔線),右邊筆電訂單畫面。
+         兩區標題只差開頭幾個字,所以要一眼分得出是兩件事:這區整片鋪淡綠底(pf 是淡綠漸層到白,交界一刀切開),
+         大標放在右欄、跟問題列靠左對齊(pf 是整行置中)。左右不鏡像 —— 參考圖就是廚師在左、筆電在右。
+         插圖一律不含文字(中英雙語);五個功能的小圖示是裝飾(alt=""),功能名稱是旁邊的字。
+         版面全部走 class(<style id="rp">),不寫行內 grid —— 理由同 pf。 -->
+    <section class="ifm-v2 rp" aria-labelledby="rp-title">
+      <div class="rp-wrap">
+        <div class="rp-top">
+          <h2 id="rp-title" class="rp-title">{{ L.home.rpTitlePre }}<span class="rp-hl">{{ L.home.rpTitleHl }}</span></h2>
+          <img class="rp-chef" src="/assets/rp-chef.svg" alt="" width="200" height="240" loading="lazy" decoding="async">
+          <ol class="rp-problems">
+            <sc-for list="{{ rpProblems }}" as="rq" hint-placeholder-count="4">
+              <li class="rp-problem">
+                <span class="rp-no" aria-hidden="true">{{ rq.no }}</span>
+                <img class="rp-icon" src="{{ rq.icon }}" alt="" width="120" height="120" loading="lazy" decoding="async">
+                <p class="rp-text">{{ rq.text }}</p>
+              </li>
+            </sc-for>
+          </ol>
+        </div>
+        <div class="rp-arrow" aria-hidden="true"></div>
+        <div class="rp-bottom">
+          <div class="rp-copy">
+            <h3 class="rp-sol">{{ L.home.rpSolPre }}<mark>{{ L.home.rpSolHl }}</mark></h3>
+            <p class="rp-lead">{{ L.home.rpLeadA }}<br>{{ L.home.rpLeadB }}</p>
+          </div>
+          <!-- 五個功能只有這一組,所以是有名字的 group;圖示 alt="",螢幕閱讀器唸的是旁邊的功能名稱 -->
+          <div class="rp-feats" role="group" aria-label="{{ L.home.rpFeaturesAria }}">
+            <ul class="rp-featlist">
+              <sc-for list="{{ rpFeatures }}" as="rf" hint-placeholder-count="5">
+                <li class="rp-feat">
+                  <img src="{{ rf.icon }}" alt="" width="32" height="32" loading="lazy" decoding="async">
+                  <span class="rp-featname">{{ rf.label }}</span>
+                </li>
+              </sc-for>
+            </ul>
+          </div>
+          <img class="rp-solution" src="/assets/rp-solution.svg" alt="" width="560" height="360" loading="lazy" decoding="async">
+        </div>
+      </div>
+    </section>
+
     <section class="ifm-v2" style="background:#F7F9F8;border-bottom:1px solid #E6EAE7">
       <div class="mc-sec" style="max-width:1240px;margin:0 auto;padding:clamp(52px,8vw,88px) 20px">
         <div style="max-width:560px">
@@ -1983,6 +2028,8 @@
 /* 首頁資料陣列裡「不是文字」的部分。文案在 i18n.js 的字典,兩邊靠陣列順序對齊 ——
    改順序要兩邊一起改(tests/content.test.cjs 會擋住長度對不上的情況)。 */
 const NO_LABELS = ['01', '02', '03', '04'];
+// 首頁「每天叫貨」五個功能的小圖示 /assets/rp-feat-<key>.svg,順序對齊字典的 home.data.rpFeatures
+const RP_FEATURE_ICONS = ['order', 'summary', 'tracking', 'history', 'reconcile'];
 // 首頁「適用對象」四格的 bento 節奏:寬窄交錯,第二與第三格再各自上下推開
 const AUDIENCE_SPANS = ['bt-7', 'bt-5 bt-drop', 'bt-5 bt-rise', 'bt-7'];
 const FLOW_IMGS = [
@@ -2800,6 +2847,16 @@ class Component extends DCLogic {
         const key = ['origin', 'processor', 'large', 'mid', 'small'][i];
         return { key, label, img: '/assets/pf-type-' + key + '.svg' };
       }),
+      // 每天叫貨的問題 → 解法。文字在字典(home.data.rpProblems / rpFeatures),圖在這裡,靠 index 對齊。
+      rpProblems: list('rpProblems').map((text, i) => ({
+        no: NO_LABELS[i],
+        icon: `/assets/rp-problem-${i + 1}.svg`,
+        text,
+      })),
+      rpFeatures: list('rpFeatures').map((label, i) => ({
+        label,
+        icon: '/assets/rp-feat-' + RP_FEATURE_ICONS[i] + '.svg',
+      })),
       audiences: list('audiences').map((a, i) => ({
         no: NO_LABELS[i], title: a.title, desc: a.desc,
         icon: `/assets/home-aud-${i + 1}.svg`,
@@ -3119,7 +3176,9 @@ class Component extends DCLogic {
      所以列與列之間、段落之間都拉開,內文 18px、行高 1.7 以上。 */
   .pf { background:linear-gradient(180deg,#F3FAF6 0%,#FFFFFF 78%); border-bottom:1px solid #E6EAE7; }
   .pf-wrap { max-width:1180px; margin:0 auto; padding:clamp(56px,8vw,96px) 26px; }
-  .pf-title { text-align:center; font-size:clamp(26px,3.4vw,40px); line-height:1.4; margin:0 0 clamp(32px,4vw,52px); color:#0E1A14; }
+  /* 一定要寫成 .pf .pf-title:.ifm-v2 h2{margin:0} 的權重 (0,1,1) 比單一 class 高,
+     只寫 .pf-title 的話下方間距會被歸零,大標直接貼著第 01 列(2026-10-07 量到 0px,同 .pf-lead 那個雷) */
+  .pf .pf-title { text-align:center; font-size:clamp(26px,3.4vw,40px); line-height:1.4; margin:0 0 clamp(32px,4vw,52px); color:#0E1A14; }
   .pf-hl { background:linear-gradient(transparent 62%, rgba(195,213,67,.55) 62%); padding:0 .08em; }
 
   .pf-top { display:grid; grid-template-columns:200px minmax(0,1fr); gap:36px; align-items:center; }
@@ -3131,7 +3190,7 @@ class Component extends DCLogic {
            display:grid; place-items:center; font-family:'Space Grotesk',sans-serif; font-weight:700; font-size:18px; }
   .pf-icon { flex:0 0 auto; width:64px; height:64px; box-sizing:border-box; padding:8px;
              background:#F3FAF6; border-radius:16px; }   /* 同餐廳頁 .ifm-art--pad 的淡綠底 */
-  .pf-text { margin:0; font-size:18px; line-height:1.7; font-weight:500; color:#0E1A14; }
+  .pf-text { margin:0; font-size:18px; line-height:1.7; font-weight:500; color:#0E1A14; text-wrap:pretty; }   /* 避免最後一行只剩一個字(同 .rp-text) */
 
   .pf-arrow { width:0; height:0; margin:clamp(28px,4vw,40px) auto;
               border-left:30px solid transparent; border-right:30px solid transparent; border-top:28px solid #0B6B40; }
@@ -3189,6 +3248,111 @@ class Component extends DCLogic {
     .pf-node--small { grid-column:4 / span 2 !important; }
     .pf-node img { width:84px; height:84px; }
     .pf-node figcaption { font-size:12px; padding:4px 8px; margin-bottom:-10px; border-radius:12px; }
+  }
+</style>
+<style id="rp">
+  /* 每天叫貨的問題 → 解法(首頁,緊接在 pf 之下,業主 2026-10-07)。版型照參考圖,
+     字級、間距、白色膠囊列、編號圓、深色標題條、箭頭、白卡全部比照 pf,看起來是同一家。
+     兩區標題只差開頭幾個字(找食材／每天叫貨),要一眼分得出是兩件事:
+       ① 整片淡綠底 #EAF6F0(站上既有色:hero「完全免費」那排藥丸的底)。pf 是淡綠漸層到白,
+          所以交界是「白 → 綠」一刀切開;下一區 WHO IT'S FOR 是灰底 #F7F9F8,上下都切得開。
+       ② 大標放在右欄、跟問題列靠左對齊(參考圖的位置);pf 的大標是整行置中。手機上也維持靠左。
+       不做左右鏡像:參考圖就是廚師在左、筆電在右,鏡像等於不照業主的版型。
+     ⚠️ p / ul 的 margin 一律寫成 .rp .rp-xxx(兩層 class):.ifm-v2 p / .ifm-v2 ul {margin:0}
+        的權重 (0,1,1) 比單一 class 高,只寫 .rp-xxx 的 margin 會被整個歸零(pf 2026-09-29 踩過)。
+        h2 也一樣會被 .ifm-v2 h2{margin:0} 歸零,所以大標與問題列的距離交給 grid 的 gap,不靠 margin。 */
+  .rp { background:#EAF6F0; border-bottom:1px solid #E6EAE7; }
+  .rp-wrap { max-width:1180px; margin:0 auto; padding:clamp(56px,8vw,96px) 26px; }
+
+  /* 上半:左欄廚師跨兩列,右欄是大標 + 四個問題。DOM 順序 h2 → 廚師 → 問題列,大標永遠第一個被讀到 */
+  .rp-top { display:grid; grid-template-columns:clamp(200px,24vw,280px) minmax(0,1fr);
+            grid-template-areas:"chef title" "chef list"; column-gap:clamp(28px,4vw,48px); row-gap:clamp(24px,3vw,32px);
+            align-items:center; }
+  .rp-title { grid-area:title; text-align:left; font-size:clamp(26px,3.4vw,40px); line-height:1.4; color:#0E1A14; }
+  .rp-hl { background:linear-gradient(transparent 62%, rgba(195,213,67,.55) 62%); padding:0 .08em; }
+  .rp-chef { grid-area:chef; width:100%; height:auto; }
+  .rp-problems { grid-area:list; list-style:none; margin:0; padding:0; display:grid; gap:16px; }
+  .rp-problem { display:flex; align-items:center; gap:20px; background:#fff; border:1px solid #DCE7E0;
+                border-radius:999px; padding:12px 32px 12px 12px; box-shadow:0 6px 20px rgba(15,43,26,.05); }
+  .rp-no { flex:0 0 auto; width:48px; height:48px; border-radius:50%; background:#0B6B40; color:#fff;
+           display:grid; place-items:center; font-family:'Space Grotesk',sans-serif; font-weight:700; font-size:18px; }
+  .rp-icon { flex:0 0 auto; width:64px; height:64px; box-sizing:border-box; padding:8px;
+             background:#F3FAF6; border-radius:16px; }
+  .rp-text { margin:0; font-size:18px; line-height:1.7; font-weight:500; color:#0E1A14; text-wrap:pretty; }   /* 避免最後一行只剩一個字 */
+
+  .rp-arrow { width:0; height:0; margin:clamp(28px,4vw,40px) auto;
+              border-left:30px solid transparent; border-right:30px solid transparent; border-top:28px solid #0B6B40; }
+
+  /* 下半白卡:左欄 標題條 + 說明 + 五個功能,右欄筆電插圖跨兩列(參考圖的排法) */
+  .rp-bottom { display:grid; grid-template-columns:minmax(0,1.45fr) minmax(0,1fr); grid-template-areas:"copy art" "feats art";
+               column-gap:clamp(24px,3.5vw,48px); row-gap:28px; align-items:center;
+               background:#fff; border:1px solid #DCE7E0; border-radius:32px; padding:clamp(28px,4vw,52px);
+               box-shadow:0 18px 44px rgba(15,43,26,.07); }
+  .rp-copy { grid-area:copy; align-self:end; }
+  .rp-sol { display:inline-block; margin:0; background:#0E1A14; color:#fff; border-radius:18px;
+            padding:16px 26px; font-size:clamp(24px,2.4vw,30px); line-height:1.4; font-weight:800; text-wrap:balance; }
+  .rp-sol mark { background:none; color:#C3D543; }
+  /* 中文只斷在前後兩段之間(「現在，例行採購／可以更簡單！」「每天叫貨，你也／遇過這些問題嗎？」)。
+     大標的螢光段兩種語言都不拆(英文 "sound familiar?" 在 320px 寬也放得下);
+     標題條的英文螢光段很長,不能 nowrap,否則 320px 會撐出框 */
+  .rp-sol mark:lang(zh), .rp-hl { white-space:nowrap; }
+  .rp-sol:lang(zh) { text-wrap:wrap; }
+  .rp-lead:lang(zh) { word-break:keep-all; overflow-wrap:break-word; }
+  .rp .rp-lead { margin:20px 0 0; font-size:18px; line-height:1.7; color:#2F3D35; text-wrap:pretty; }
+  .rp-solution { grid-area:art; width:100%; height:auto; }
+
+  /* 五個功能:「圖示＋字」並排,項目之間一條直線(參考圖)。放不下時整個項目換到下一行,不拆字。
+     直線是每個項目的左框線:清單 overflow:hidden、每項往左挪 1px,每一行第一項的左線就藏到框外 ——
+     不管在哪裡折行,行首都不會多一條線,也不會橫向溢出。
+     中文五項在 1181px 以上的左欄剛好排一行;英文字長,在左欄排成兩行(3 + 2)。 */
+  .rp-feats { grid-area:feats; align-self:start; justify-self:start; max-width:100%; box-sizing:border-box;
+              background:#F3FAF6; border:1px solid #DCE7E0; border-radius:24px; padding:8px 4px; }
+  .rp .rp-featlist { margin:0; padding:0; list-style:none; display:flex; flex-wrap:wrap; row-gap:6px; overflow:hidden; }
+  .rp .rp-feat { margin-left:-1px; }
+  .rp-feat { display:flex; align-items:center; gap:8px; padding:4px 9px; border-left:1px solid #CFE0D6;
+             font-size:15px; line-height:1.4; font-weight:700; color:#0E1A14; }
+  .rp-feat img { flex:0 0 auto; width:24px; height:24px; }
+  .rp-featname { min-width:0; }   /* 不准在單字中間斷開(不用 overflow-wrap:anywhere);放不下的寬度改排法,見下面手機的規則 */
+  .rp-featname:lang(zh) { word-break:keep-all; }
+
+  /* 窄桌機(881–1180px):左欄放不下中文五項排一行(會變成 4 + 1),改成橫跨整張卡片、放在最下面 */
+  @media (max-width: 1180px) {
+    .rp-bottom { grid-template-areas:"copy art" "feats feats"; }
+    .rp-copy { align-self:center; }
+  }
+
+  @media (max-width: 880px) {
+    .rp-top { grid-template-columns:minmax(0,1fr); grid-template-areas:"title" "list"; row-gap:20px; }
+    .rp-chef { display:none; }                    /* 裝飾,手機上不佔高度(同 pf) */
+    .rp-problems { gap:14px; }
+    .rp-problem { border-radius:20px; padding:14px 18px 14px 14px; gap:14px; align-items:flex-start; }
+    .rp-no { width:38px; height:38px; font-size:15px; margin-top:2px; }
+    .rp-icon { width:48px; height:48px; padding:6px; border-radius:12px; }
+    .rp-text { font-size:16px; line-height:1.7; }
+    .rp-arrow { border-left-width:22px; border-right-width:22px; border-top-width:20px; }
+    .rp-bottom { grid-template-columns:minmax(0,1fr); grid-template-areas:"copy" "feats" "art"; row-gap:20px;
+                 border-radius:24px; padding:24px 14px; }
+    .rp .rp-lead { font-size:16px; margin-top:16px; }
+    /* 筆電插圖手機上照樣顯示(2026-10-07:不然整區一張圖都沒有,太單調),
+       放在功能格線下面、置中,最寬 340px;比卡片窄的時候就是卡片寬(width:100%),不會撐出橫向捲軸 */
+    .rp-solution { justify-self:center; max-width:340px; }
+    /* 五個功能改兩欄,第五格獨佔一整列。格線橫直都有:每格畫左線 + 上線,
+       清單往左上各挪 1px、外框 overflow:hidden,把第一欄的左線與第一列的上線藏到框外 */
+    .rp-feats { justify-self:stretch; overflow:hidden; padding:0; border-radius:18px; }
+    .rp .rp-featlist { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); row-gap:0; margin:-1px 0 0 -1px; }
+    .rp .rp-feat { margin-left:0; }
+    .rp-feat { border-top:1px solid #CFE0D6; padding:12px 10px; font-size:16px; }
+    .rp-feat:last-child { grid-column:1 / -1; }
+  }
+  /* 英文功能名稱長:兩欄要 459px 以上才每項都排得進一行(實測),再窄就折成兩行、第二行只剩一個字,
+     320–360px 甚至會被擠到在單字中間斷開。所以 480px 以下英文改單欄;中文四個字,320px 兩欄也放得下 */
+  @media (max-width: 480px) {
+    .rp .rp-featlist:lang(en) { grid-template-columns:minmax(0,1fr); }
+  }
+  /* 320px 級的窄手機:中文說明第一行「透過食材地圖集中管理每日叫貨，」要 240px、中間不能斷(keep-all),
+     卡片左右內距 14 → 10px 才放得下;不然逗號會被擠到下一行自己一行 */
+  @media (max-width: 340px) {
+    .rp-bottom { padding-left:10px; padding-right:10px; }
   }
 </style>
 
