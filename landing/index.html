@@ -3201,8 +3201,9 @@ class Component extends DCLogic {
   .pf-sol { display:inline-block; margin:0; background:#0E1A14; color:#fff; border-radius:18px;
             padding:16px 26px; font-size:clamp(24px,2.4vw,30px); line-height:1.4; font-weight:800; text-wrap:balance; }
   .pf-sol mark { background:none; color:#C3D543; }
-  /* 中文要斷行時只斷在前後兩段之間(「現在，找食材／可以更有效率！」),不要把「效率」拆開 */
-  .pf-sol mark:lang(zh), .pf-hl:lang(zh) { white-space:nowrap; }
+  /* 中文要斷行時只斷在前後兩段之間(「現在，找食材／可以更有效率！」),不要把「效率」拆開。
+     大標的螢光段兩種語言都不拆:英文 "sound familiar?" 拆開的話,460–500px 會剩 "familiar?" 一個字(2026-10-08) */
+  .pf-sol mark:lang(zh), .pf-hl { white-space:nowrap; }
   .pf-sol:lang(zh) { text-wrap:wrap; }   /* balance 會為了等長把「找食材」拆開,中文改回一般斷行 */
   /* 說明文字只在標點後斷行(「…產地、／加工廠與各級供應商。」),不把「供應商」拆兩半;太長時仍可強制斷 */
   .pf-lead:lang(zh) { word-break:keep-all; overflow-wrap:break-word; }
@@ -3218,10 +3219,11 @@ class Component extends DCLogic {
   .pf-match { grid-area:match; position:relative; z-index:1; width:100%; max-width:260px; height:auto; }
   .pf-node { position:relative; z-index:1; margin:0; max-width:100%; display:flex; flex-direction:column; align-items:center; }
   .pf-node img { width:118px; height:118px; }
-  /* 標籤可以換行:英文的 "Mid-size wholesalers" 不換行會超出欄寬、壓到隔壁 */
+  /* 標籤可以換行:英文的 "Mid-size wholesalers" 不換行會超出欄寬、壓到隔壁。
+     但只准在空白處換行,不准在單字中間斷開 —— 以前有 hyphens:auto,窄手機會斷成 "wholesa-lers"(2026-10-08 拿掉) */
   .pf-node figcaption { position:relative; z-index:2; max-width:100%; box-sizing:border-box; margin-bottom:-12px;
                         background:#0B6B40; color:#fff; font-size:14px; font-weight:700; line-height:1.3; text-align:center;
-                        padding:5px 12px; border-radius:14px; text-wrap:balance; -webkit-hyphens:auto; hyphens:auto; }
+                        padding:5px 12px; border-radius:14px; text-wrap:balance; }
   .pf-node--origin { grid-area:origin; align-self:start; }
   .pf-node--processor { grid-area:processor; }
   .pf-node--large { grid-area:large; }
@@ -3248,6 +3250,16 @@ class Component extends DCLogic {
     .pf-node--small { grid-column:4 / span 2 !important; }
     .pf-node img { width:84px; height:84px; }
     .pf-node figcaption { font-size:12px; padding:4px 8px; margin-bottom:-10px; border-radius:12px; }
+  }
+  /* 英文標籤不在單字中間斷開之後,最長的字 "wholesalers"(12px 粗體約 71px)在 352px 以下塞不進標籤:
+     360px 以下英文標籤字級 12→11px、左右內距 8→4px。圓形圖、上 3 下 2 的排法都不動;中文不受影響 */
+  @media (max-width: 360px) {
+    .pf-node figcaption:lang(en) { font-size:11px; padding-left:4px; padding-right:4px; }
+  }
+  /* 英文問題列最後兩個字用不換行空白黏住(見 i18n.js),最長的 "delivery coverage" 約 134px,
+     340px 以下文字欄不夠寬:英文版把編號、圖示、文字之間的距離 14→7px、右內距 18→14px */
+  @media (max-width: 340px) {
+    .pf-problem:lang(en) { gap:7px; padding-right:14px; }
   }
 </style>
 <style id="rp">

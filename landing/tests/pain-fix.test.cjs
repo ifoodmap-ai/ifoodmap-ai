@@ -118,3 +118,41 @@ test('手機版五個圓排成上 3 下 2,標籤可以換行', () => {
   assert.doesNotMatch(caption, /nowrap/);
   assert.match(caption, /max-width:\s*100%/);
 });
+
+test('英文標籤只准在空白處換行,不准在單字中間斷開(不准 hyphens:auto、overflow-wrap:anywhere)', () => {
+  // 2026-10-08 以前標籤有 hyphens:auto,窄手機的英文會斷成 "wholesa-lers"
+  const at = html.indexOf('<style id="pf">\n');
+  const css = html.slice(at, html.indexOf('</style>', at)).replace(/\/\*[\s\S]*?\*\//g, '');
+  const captionRules = css.match(/[^{}]*\.pf-node figcaption[^{}]*\{[^}]*\}/g) || [];
+  assert.ok(captionRules.length >= 3, '找不到標籤的樣式');
+  for (const rule of captionRules) {
+    assert.doesNotMatch(rule, /hyphens:\s*auto|overflow-wrap:\s*(anywhere|break-word)|word-break:\s*break-all/,
+      `標籤不准在單字中間斷開:${rule.trim()}`);
+  }
+  // 拿掉斷字之後,最長的 "wholesalers"(12px 粗體約 71px)在 352px 以下塞不進標籤 →
+  // 360px 以下英文標籤 11px、左右內距 4px;圓形圖與上 3 下 2 的排法不動,中文標籤不跟著改
+  assert.ok(css.includes('@media (max-width: 360px)'), '少了窄手機英文標籤的斷點');
+  const narrow = css.slice(css.indexOf('@media (max-width: 360px)'));
+  assert.match(narrow, /\.pf-node figcaption:lang\(en\)\s*\{[^}]*font-size:\s*11px;\s*padding-left:\s*4px;\s*padding-right:\s*4px/);
+  assert.doesNotMatch(css, /figcaption:lang\(zh\)/);
+});
+
+test('英文句尾最後兩個字黏住,大標螢光段不拆:手機上最後一行不會只剩一個字', () => {
+  // Chrome 的 text-wrap:pretty 只管四行以內的段落,窄手機的英文問題列有五、六行,"names"、"coverage" 會自己一行
+  const NBSP = String.fromCharCode(0xa0);
+  const en = dict('en').home;
+  for (const s of [...en.data.pfProblems, en.pfLeadA, en.pfLeadB]) {
+    const tail = s.slice(s.lastIndexOf(' ') + 1);
+    assert.ok(tail.includes(NBSP), `最後兩個字要用不換行空白黏住:${s}`);
+    assert.doesNotMatch(tail, /-/, `黏住的結尾不要有一般連字號(連字號後面還是會斷):${s}`);
+  }
+  assert.doesNotMatch(JSON.stringify(dict('zh').home), new RegExp(NBSP), '中文不准有不換行空白');
+  const at = html.indexOf('<style id="pf">\n');
+  const css = html.slice(at, html.indexOf('</style>', at)).replace(/\/\*[\s\S]*?\*\//g, '');
+  // 大標的螢光段兩種語言都不拆:英文 "sound familiar?" 拆開的話,460–500px 會剩 "familiar?" 一個字
+  assert.match(css, /(^|[,{}\s])\.pf-hl\s*[,{][^}]*white-space:\s*nowrap/);
+  // 最長的黏字 "delivery coverage" 約 134px:340px 以下英文問題列把間距收窄才放得下
+  assert.ok(css.includes('@media (max-width: 340px)'), '少了窄手機英文問題列的斷點');
+  const narrow = css.slice(css.indexOf('@media (max-width: 340px)'));
+  assert.match(narrow, /\.pf-problem:lang\(en\)\s*\{[^}]*gap:\s*7px;\s*padding-right:\s*14px/);
+});

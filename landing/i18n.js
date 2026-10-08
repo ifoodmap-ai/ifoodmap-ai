@@ -758,8 +758,8 @@
         "pfTitleHl": "sound familiar?",
         "pfSolPre": "Now, sourcing ingredients ",
         "pfSolHl": "can be far more efficient!",
-        "pfLeadA": "Tell iFoodmap what you need to buy,",
-        "pfLeadB": "and we'll quickly match you with the right farms, processors and suppliers at every tier.",
+        "pfLeadA": "Tell iFoodmap what you need to\u00a0buy,",
+        "pfLeadB": "and we'll quickly match you with the right farms, processors and suppliers at every\u00a0tier.",
         "pfTypesAria": "Types of suppliers we match you with",
         "rpTitlePre": "Daily ordering — ",
         "rpTitleHl": "sound familiar?",
@@ -822,10 +822,12 @@
             "",
             ""
           ],
+          // 首頁「找食材」:英文每句(含上面的 pfLeadA / pfLeadB)最後兩個字用不換行空白 \u00a0 黏住,手機上最後一行才不會只剩一個字。
+          // 改英文時請保留;結尾不要用帶連字號的字,連字號後面還是會斷。
           "pfProblems": [
-            "Finding suppliers mostly depends on word of mouth, and online searches keep turning up the same few names",
-            "Product details are incomplete, so you still have to call around for prices and delivery coverage",
-            "You leave your contact details, then wait days without hearing back"
+            "Finding suppliers mostly depends on word of mouth, and online searches keep turning up the same few\u00a0names",
+            "Product details are incomplete, so you still have to call around for prices and delivery\u00a0coverage",
+            "You leave your contact details, then wait days without hearing\u00a0back"
           ],
           "pfTypes": [
             "Farms & growers",
