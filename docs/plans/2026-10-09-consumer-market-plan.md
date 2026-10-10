@@ -17074,3 +17074,38 @@ Expected:`orders_by_status` 有 `completed` 1、`rejected` 1;`market_mails_24h` 
 6. Supabase 升級 Pro。
 7. 限流額度(每 IP 每小時 5 單 / 每天 20、每 Email 每小時 3 / 每天 10、每電話每天 10、全站每天 500)是否合適;上線後依實際情況調。
 8. 之後要不要做線上刷卡、平台抽成、消費者帳號(本次都不做;訂單已預留 `payment_status` / `payment_ref`)。
+
+## 勘誤
+
+### 2026-10-10:Task 1 的 `scripts/supabase-sql.mjs` 審查後加固(commit `359f69f`,分支 `market`)
+
+Task 1–2 照本計畫做完後,獨立審查找出工具本身的漏洞,已修正。**repo 裡的 `scripts/supabase-sql.mjs` 與 `scripts/supabase-sql.test.mjs` 以這個 commit 為準,不要再照抄 Task 1 的程式碼區塊。** 乾跑(`乾跑 <檔名>(migration N 支、rollback M 支、K 句):共 X 項,失敗 Y 項`)與 `ro` 的輸出格式沒變。
+
+**改了什麼、為什麼**
+
+1. **乾跑可能被繞過而真的 commit**:舊的靜態切字跟 Postgres 不一致,`E'a\'b'`、識別字 `"it's"`、`a$x$`、巢狀註解 `/* /* */ $x$ */`、`--` 後面只有 `\r`、非 ASCII 的 `$標$` 都能夾帶真的 COMMIT 通過檢查。
+   - **伺服器端保險**:`composeDryRun` 在 BEGIN 之後、共用工具之前多 4 句(`COMMIT_GUARD_SQL`:暫存表 + `DEFERRABLE INITIALLY DEFERRED` 的 constraint trigger + 插一列)。漏網的 COMMIT / END / PREPARE TRANSACTION 在 commit 時 RAISE `乾跑保險:…`(HINT `dry_run_commit_blocked`)、整筆回滾;正常的 ROLLBACK 不受影響。2026-10-10 在正式庫實測(COMMIT 之前只有暫存物件):回 `Management API 400 … P0001: 乾跑保險…`,前後的唯讀指紋(永久 relation / 函式數、最新 ledger 版本)不變,殘留五個 0。
+   - **靜態檢查改照 Postgres 的 `scan.l` 切字**:上面 6 種都切得出 COMMIT 並拒送;沒結束的字串 / 註解 / 識別字直接拒送。repo 現有的 78 個 SQL 檔與本計畫全部 33 個 SQL 程式碼區塊,新舊切法結果完全相同,沒有誤擋。
+   - 還是擋不到的只有「先漏一句 ROLLBACK、再漏一句 COMMIT」(保險跟著第一句 ROLLBACK 消失),這要兩句都騙過靜態檢查。
+2. **經 symlink 或 `/tmp`(實際是 `/private/tmp`)執行時 main() 被跳過、exit 0**:改用 `realpathSync` 比對 `argv[1]` 與本檔。
+3. **token 可能被印出**(中間夾換行時,fetch 的錯誤訊息含 `Bearer <token>`):送出前先驗格式(`sbp_` 加 40 位小寫十六進位;不合格 exit 2,訊息不含 token),所有錯誤訊息印出前一律把 token 遮成 `***`。
+4. **apply 補 ledger**(Task 31、第 2 階段部署會用到):
+   - 先用唯讀端點查 ledger:版本已經在 → `拒送:ledger 已經有版本 …`、exit 2,migration 一個字都不送(舊版會把 migration 再跑一次,而且 exit 0)。
+   - ledger 的 INSERT 拿掉 `ON CONFLICT (version) DO NOTHING`:萬一版本已存在,會在同一個交易裡報 23505、連 migration 一起回滾。
+   - 讀回 version / name 不符 → exit 1。這時 migration 已經套上去了:停下來回報,**不要重跑**。
+   - 同一個請求最前面加 `SET LOCAL lock_timeout = '5s'`、`SET LOCAL statement_timeout = '120s'`(沒有明確 BEGIN 的多語句請求裡 SET LOCAL 有效,2026-10-10 用唯讀端點驗過)。等鎖超過 5 秒會整支回滾、ledger 不寫,等一下重跑同一行即可(Task 31 Step 3 的說明照舊適用)。
+   - 成功時輸出格式不變:`已套用 <檔名>;ledger:[{"version":"…","name":"…"}]`。
+5. `main()` 改成回傳 exit code(0 成功;1 乾跑有失敗 / 一項都沒有、apply 讀回不符;2 拒送、參數錯、API 錯誤),並 export 給測試用。
+
+**Task 1 的測試字串改了哪些**(`scripts/supabase-sql.test.mjs`)
+
+- 「從檔名取出版本與名稱」:`l.sql` 的預期值去掉結尾的 ` ON CONFLICT (version) DO NOTHING`,現在是 `INSERT INTO supabase_migrations.schema_migrations (version, name) VALUES ('20261009120000', 'market_catalog');`。
+- 「migration 與 ledger 放在同一個請求」:不再以 `ON CONFLICT (version) DO NOTHING;` 結尾;改成開頭是兩句 SET LOCAL、結尾是 `VALUES ('20261009120000', 'market_catalog');`、整段不含 `ON CONFLICT`。
+- 其餘 13 項照原樣;另外新增 38 項(6 種繞過寫法、不誤擋、沒結束的字串 / 註解 / 識別字、保險的位置、token、main() 的 exit code、apply、經 symlink 執行)。
+
+**數字跟本計畫不一樣的地方**
+
+- Task 1 Step 4 的 Expected:`Tests  15 passed (15)` → `Tests  53 passed (53)`。
+- 「F. 共用指令與基準數字」的表格與之後各 Task 的 vitest 總數都要**多 38 項**(檔數不變):第 1 階段完成 97 檔 / 1349 項,第 2、3 階段完成 111 檔 / 1466 項。
+- 乾跑輸出的句數 K 比原本多 4(保險那 4 句;本來就不用管 K),各測試的項數不變。
+- Task 1 Step 2 的錯誤訊息:vitest 2.1.9 實際印的是 `Failed to resolve import "./supabase-sql.mjs" … Does the file exist?`(意思相同)。
