@@ -5,7 +5,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Store } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import CategoryChips from "@/components/market/CategoryChips";
-import { useMarketTitle } from "@/components/market/MarketLayout";
+import { MARKET_FOCUS_RING, useMarketTitle } from "@/components/market/MarketLayout";
 import ProductCard from "@/components/market/ProductCard";
 import StoreInfoList from "@/components/market/StoreInfoList";
 import { fetchMarketStore, fetchStoreProducts, isStoreOpen } from "@/lib/market/catalog";
@@ -102,11 +102,23 @@ export default function MarketStorePage() {
             商品
           </h2>
           <p aria-live="polite" className="text-sm text-slate-600">
-            {productsQuery.isLoading ? "載入中…" : `共 ${shown.length} 項`}
+            {productsQuery.isLoading ? "載入中…" : productsQuery.isError ? "" : `共 ${shown.length} 項`}
           </p>
         </div>
         {categories.length > 1 && <CategoryChips value={category} onChange={setCategory} available={categories} />}
-        {!productsQuery.isLoading && shown.length === 0 ? (
+        {productsQuery.isError ? (
+          // 查詢失敗不能當成「沒有商品」:店家資料正常、商品其實有的時候,會誤導買家以為這家店沒東西賣
+          <div role="alert" className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800">
+            商品載入失敗,請檢查網路後再試一次。
+            <button
+              type="button"
+              onClick={() => productsQuery.refetch()}
+              className={`ml-3 min-h-11 font-semibold underline ${MARKET_FOCUS_RING}`}
+            >
+              重新載入
+            </button>
+          </div>
+        ) : !productsQuery.isLoading && shown.length === 0 ? (
           <p className="rounded-xl bg-white py-12 text-center text-slate-600">這家店還沒有上架的商品。</p>
         ) : (
           <ul className="grid grid-cols-2 gap-3 min-[881px]:grid-cols-4">

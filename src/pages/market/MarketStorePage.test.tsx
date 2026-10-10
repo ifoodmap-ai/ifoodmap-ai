@@ -36,6 +36,20 @@ describe("MarketStorePage", () => {
     expect(screen.getByRole("link", { name: /牛肉片/ })).toHaveAttribute("href", `/market/p/${BEEF.id}`);
   });
 
+  it("商品查詢失敗:顯示錯誤與重新載入,不會誤說「還沒有上架的商品」;按了會重抓", async () => {
+    vi.mocked(fetchMarketStore).mockResolvedValue(STORE_A);
+    vi.mocked(fetchStoreProducts).mockRejectedValueOnce(new Error("network")).mockResolvedValue([CABBAGE]);
+    renderAt(STORE_A.supplier_id);
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("商品載入失敗");
+    expect(screen.getByRole("heading", { level: 1, name: "市集測試 A 店" })).toBeInTheDocument();
+    expect(screen.queryByText("這家店還沒有上架的商品。")).toBeNull();
+    expect(screen.queryByText(/共 \d+ 項/)).toBeNull();
+    await userEvent.click(within(alert).getByRole("button", { name: "重新載入" }));
+    expect(await screen.findByText("共 1 項")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
   it("店家零售停用(登入的店家自己看得到那一列)時顯示沒有開放", async () => {
     vi.mocked(fetchMarketStore).mockResolvedValue({ ...STORE_A, is_enabled: false });
     vi.mocked(fetchStoreProducts).mockResolvedValue([]);
