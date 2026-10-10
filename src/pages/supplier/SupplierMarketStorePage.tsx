@@ -138,8 +138,9 @@ export default function SupplierMarketStorePage() {
 
   if (idLoading || (supplierId && loading)) {
     return (
-      <div className="flex justify-center py-20">
-        <Loader2 className="animate-spin text-emerald-600" size={28} aria-label="載入中" />
+      <div className="flex justify-center py-20" role="status">
+        <Loader2 className="animate-spin text-emerald-600" size={28} aria-hidden="true" />
+        <span className="sr-only">載入中</span>
       </div>
     );
   }
@@ -182,7 +183,7 @@ export default function SupplierMarketStorePage() {
         </p>
         {row ? (
           <p className="mt-2 text-sm">
-            <Link to={`/market/s/${supplierId}`} className="text-emerald-800 underline underline-offset-2">
+            <Link to={`/market/s/${supplierId}`} className="inline-flex min-h-11 items-center text-emerald-800 underline underline-offset-2">
               看消費者看到的店家頁
             </Link>
           </p>
@@ -286,7 +287,8 @@ export default function SupplierMarketStorePage() {
                   value={String(form[key])}
                   onChange={(e) => set(key, e.target.value as never)}
                   aria-invalid={!!errors[key]}
-                  aria-describedby={describe(key) ?? `store-${key}-hint`}
+                  // 提示文字一直接著;出錯時再加上錯誤訊息(提示不會被擠掉)
+                  aria-describedby={[`store-${key}-hint`, describe(key)].filter(Boolean).join(" ")}
                   className={INPUT}
                 />
                 <p id={`store-${key}-hint`} className="mt-1 text-xs text-slate-500">

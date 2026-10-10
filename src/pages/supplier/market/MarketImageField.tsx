@@ -50,7 +50,11 @@ export default function MarketImageField({
       <label htmlFor={id} className="block text-sm font-medium text-slate-700">
         {label}
       </label>
-      {hint ? <p className="text-xs text-slate-500">{hint}</p> : null}
+      {hint ? (
+        <p id={`${id}-hint`} className="text-xs text-slate-500">
+          {hint}
+        </p>
+      ) : null}
       <div className="flex flex-wrap items-center gap-3">
         {value ? (
           <img src={publicImageUrl(value)} alt={`目前的${label}`} width={96} height={96} className="h-24 w-24 rounded-md border border-slate-200 object-cover" />
@@ -64,7 +68,9 @@ export default function MarketImageField({
           type="file"
           accept="image/jpeg,image/png,image/webp"
           disabled={busy}
-          aria-describedby={error ? `${id}-error` : undefined}
+          // 提示文字一直接著;出錯時再加上錯誤訊息(提示不會被擠掉)
+          aria-invalid={!!error}
+          aria-describedby={[hint ? `${id}-hint` : null, error ? `${id}-error` : null].filter(Boolean).join(" ") || undefined}
           onChange={(e) => {
             void onFile(e.target.files?.[0]);
             e.target.value = "";

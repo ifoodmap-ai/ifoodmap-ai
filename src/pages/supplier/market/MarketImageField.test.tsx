@@ -117,6 +117,19 @@ describe("MarketImageField", () => {
     expect(onBusyChange.mock.calls).toEqual([[true], [false], [true], [false]]);
   });
 
+  it("無障礙:提示文字接到 aria-describedby;上傳失敗時標 aria-invalid,說明同時有提示與錯誤", async () => {
+    const upload = vi.fn<Upload>().mockRejectedValue(new MarketImageError("只收 JPG、PNG、WebP 照片"));
+    render(<Harness upload={upload} />);
+    const input = screen.getByLabelText("店家 logo");
+    expect(input).not.toHaveAttribute("aria-invalid", "true");
+    expect(input).toHaveAccessibleDescription("正方形最好看");
+
+    await userEvent.upload(input, photo());
+    await screen.findByRole("alert");
+    expect(input).toHaveAttribute("aria-invalid", "true");
+    expect(input).toHaveAccessibleDescription("正方形最好看 只收 JPG、PNG、WebP 照片");
+  });
+
   it("移除:只是從表單拿掉路徑(不呼叫上傳、不刪檔),顯示「尚未上傳」", async () => {
     const upload = vi.fn<Upload>();
     render(<Harness upload={upload} initial={OLD} />);

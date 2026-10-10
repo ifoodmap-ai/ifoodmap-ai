@@ -482,3 +482,31 @@ describe("SupplierMarketStorePage — 錯誤訊息轉中文、可以重試", () 
     await waitFor(() => expect(toastError).toHaveBeenCalledWith("儲存失敗", { description: "請稍後再試(錯誤代碼 PGRST204)" }));
   });
 });
+
+describe("SupplierMarketStorePage — 無障礙", () => {
+  it("數字欄位出錯時,提示文字還在 aria-describedby 裡(跟錯誤訊息一起)", async () => {
+    renderPage();
+    const fee = await screen.findByLabelText("固定運費(元)");
+    expect(fee).toHaveAccessibleDescription("0 = 免運費");
+    await userEvent.clear(fee);
+    await userEvent.type(fee, "abc");
+    await userEvent.click(screen.getByRole("button", { name: "儲存店家設定" }));
+    await screen.findByText("運費要是 0 到 10,000 的整數");
+    expect(fee).toHaveAttribute("aria-invalid", "true");
+    expect(fee).toHaveAccessibleDescription("0 = 免運費 運費要是 0 到 10,000 的整數");
+  });
+
+  it("「看消費者看到的店家頁」連結的可點範圍至少 44px 高", async () => {
+    vi.mocked(fetchOwnStore).mockResolvedValue({ store: STORE_A, transferInfo: "台灣銀行 004 帳號 123" });
+    renderPage();
+    expect(await screen.findByRole("link", { name: "看消費者看到的店家頁" })).toHaveClass("inline-flex", "min-h-11", "items-center");
+  });
+
+  it("載入中:有 role=status 與「載入中」文字(圖示本身對螢幕報讀隱藏)", async () => {
+    vi.mocked(fetchOwnStore).mockImplementation(() => new Promise(() => {}));
+    renderPage();
+    const status = screen.getByRole("status");
+    expect(status).toHaveTextContent("載入中");
+    expect(status.querySelector("svg")).toHaveAttribute("aria-hidden", "true");
+  });
+});
