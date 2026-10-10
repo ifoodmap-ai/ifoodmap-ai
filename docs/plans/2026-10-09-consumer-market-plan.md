@@ -17077,9 +17077,9 @@ Expected:`orders_by_status` 有 `completed` 1、`rejected` 1;`market_mails_24h` 
 
 ## 勘誤
 
-### 2026-10-10:Task 1 的 `scripts/supabase-sql.mjs` 審查後加固(commit `359f69f`,分支 `market`)
+### 2026-10-10:Task 1 的 `scripts/supabase-sql.mjs` 審查後加固(主要修正在 commit `359f69f`,分支 `market`)
 
-Task 1–2 照本計畫做完後,獨立審查找出工具本身的漏洞,已修正。**repo 裡的 `scripts/supabase-sql.mjs` 與 `scripts/supabase-sql.test.mjs` 以這個 commit 為準,不要再照抄 Task 1 的程式碼區塊。** 乾跑(`乾跑 <檔名>(migration N 支、rollback M 支、K 句):共 X 項,失敗 Y 項`)與 `ro` 的輸出格式沒變。
+Task 1–2 照本計畫做完後,獨立審查找出工具本身的漏洞,已修正。**以 repo(`market` 分支)裡的 `scripts/supabase-sql.mjs` 與 `scripts/supabase-sql.test.mjs` 為準,不要再照抄 Task 1 的程式碼區塊。** 乾跑(`乾跑 <檔名>(migration N 支、rollback M 支、K 句):共 X 項,失敗 Y 項`)與 `ro` 的輸出格式沒變。
 
 **改了什麼、為什麼**
 

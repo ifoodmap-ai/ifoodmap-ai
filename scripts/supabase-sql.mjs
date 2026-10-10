@@ -47,7 +47,7 @@ export const HELPERS_PATH = join(ROOT, "supabase/tests/database/_market_helpers.
 const isIdentStart = (c) => (c >= "a" && c <= "z") || (c >= "A" && c <= "Z") || c === "_" || c.charCodeAt(0) >= 0x80;
 const isIdentCont = (c) => isIdentStart(c) || (c >= "0" && c <= "9") || c === "$";
 // $tag$:tag 的字元規則跟識別字一樣,但不能含 $
-const DOLLAR_TAG = /\$(?:[A-Za-z_\u0080-￿][A-Za-z0-9_\u0080-￿]*)?\$/y;
+const DOLLAR_TAG = /\$(?:[A-Za-z_\u0080-\uFFFF][A-Za-z0-9_\u0080-\uFFFF]*)?\$/y;
 
 // -- 註解到換行為止;Postgres 的換行是 \n 或 \r
 const skipLineComment = (src, i) => {
