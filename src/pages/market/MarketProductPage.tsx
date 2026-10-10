@@ -8,6 +8,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import MarketImage from "@/components/market/MarketImage";
 import { MARKET_FOCUS_RING, useMarketTitle } from "@/components/market/MarketLayout";
 import { MarketStaleNotice } from "@/components/market/MarketNotices";
+import { scrollIntoViewOnFocus } from "@/components/market/focus";
 import StoreInfoList from "@/components/market/StoreInfoList";
 import { fetchMarketProduct, isPubliclyVisible } from "@/lib/market/catalog";
 import { CATEGORY_LABEL, REVIEW_STATUS_LABEL, TEMPERATURES } from "@/lib/market/constants";
@@ -102,7 +103,8 @@ export default function MarketProductPage() {
             className="aspect-square w-full rounded-xl"
           />
           {product.photos.length > 1 && (
-            <div className="flex gap-2 overflow-x-auto">
+            // 捲動列四周留 6px 給焦點框(按鈕外 4px;overflow-x-auto 會讓上下也被裁),-mx-1.5 讓縮圖跟主圖左緣對齊
+            <div className="-mx-1.5 flex scroll-px-1.5 gap-2 overflow-x-auto p-1.5">
               {product.photos.map((p, i) => (
                 <button
                   key={p}
@@ -110,6 +112,7 @@ export default function MarketProductPage() {
                   aria-label={`看第 ${i + 1} 張照片`}
                   aria-pressed={i === photoIndex}
                   onClick={() => setPhotoIndex(i)}
+                  onFocus={scrollIntoViewOnFocus}
                   className={`shrink-0 rounded-md border-2 ${i === photoIndex ? "border-emerald-700" : "border-transparent"} ${MARKET_FOCUS_RING}`}
                 >
                   <MarketImage path={p} category={product.category} alt="" width={64} height={64} className="h-16 w-16 rounded" />

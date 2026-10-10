@@ -189,6 +189,29 @@ describe("CategoryChips", () => {
     expect(onChange).toHaveBeenLastCalledWith(null);
   });
 
+  it("手機的橫向捲動列留出焦點框的空間:上下 padding,捲到邊緣時也留 scroll-padding", () => {
+    render(<CategoryChips value={null} onChange={vi.fn()} />);
+    const row = screen.getByRole("group", { name: "食材分類" });
+    // overflow-x-auto 會讓 overflow-y 也變成 auto:按鈕外 4px 的焦點框(ring-2 + ring-offset-2)超出 padding box 的部分會被切掉
+    expect(row).toHaveClass("overflow-x-auto");
+    expect(row.className).toMatch(/(^|\s)pt-(1|1\.5|2)(\s|$)/);
+    expect(row.className).toMatch(/(^|\s)pb-(1|1\.5|2)(\s|$)/);
+    expect(row.className).toMatch(/(^|\s)scroll-px-\S+/);
+  });
+
+  it("按鈕得到焦點時整顆捲進可見範圍(Chrome 用 Tab 聚焦時,露出一半的按鈕不會自己捲)", () => {
+    const original = Element.prototype.scrollIntoView; // jsdom 沒有這個方法
+    const scrollIntoView = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoView;
+    try {
+      render(<CategoryChips value={null} onChange={vi.fn()} />);
+      screen.getByRole("button", { name: "包材耗材" }).focus();
+      expect(scrollIntoView).toHaveBeenCalledWith({ block: "nearest", inline: "nearest" });
+    } finally {
+      Element.prototype.scrollIntoView = original;
+    }
+  });
+
   it("available 只列這家店有的分類", () => {
     render(<CategoryChips value={null} onChange={vi.fn()} available={["fruit"]} />);
     expect(screen.getAllByRole("button").map((b) => b.textContent)).toEqual(["全部", "水果"]);

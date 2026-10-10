@@ -91,6 +91,32 @@ describe("MarketProductPage", () => {
   });
 });
 
+describe("MarketProductPage:縮圖列的焦點框", () => {
+  it("縮圖列(橫向捲動)四周留出焦點框的空間,捲到邊緣時也留 scroll-padding", async () => {
+    vi.mocked(fetchMarketProduct).mockResolvedValue({ ...CABBAGE, photos: [PHOTO(1), PHOTO(2)] });
+    renderAt(CABBAGE.id);
+    const row = (await screen.findByRole("button", { name: "看第 1 張照片" })).parentElement as HTMLElement;
+    // overflow-x-auto 會讓 overflow-y 也變成 auto:按鈕外 4px 的焦點框(ring-2 + ring-offset-2)會被切掉
+    expect(row).toHaveClass("overflow-x-auto");
+    expect(row.className).toMatch(/(^|\s)p-(1|1\.5|2)(\s|$)/);
+    expect(row.className).toMatch(/(^|\s)scroll-px-\S+/);
+  });
+
+  it("縮圖得到焦點時整顆捲進可見範圍(5 張時最後一張在手機上只露出一半)", async () => {
+    const original = Element.prototype.scrollIntoView; // jsdom 沒有這個方法
+    const scrollIntoView = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoView;
+    try {
+      vi.mocked(fetchMarketProduct).mockResolvedValue({ ...CABBAGE, photos: [PHOTO(1), PHOTO(2)] });
+      renderAt(CABBAGE.id);
+      (await screen.findByRole("button", { name: "看第 2 張照片" })).focus();
+      expect(scrollIntoView).toHaveBeenCalledWith({ block: "nearest", inline: "nearest" });
+    } finally {
+      Element.prototype.scrollIntoView = original;
+    }
+  });
+});
+
 describe("MarketProductPage:離線與背景重抓失敗", () => {
   afterEach(() => onlineManager.setOnline(true));
 
