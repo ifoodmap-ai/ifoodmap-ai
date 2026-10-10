@@ -77,6 +77,7 @@ import {
   DELIST_REASON_MAX,
   fetchAdminProducts,
   fetchProductCounts,
+  MarketReasonRequiredError,
   MarketReviewGoneError,
   MarketStaleReviewError,
   MarketStoreGoneError,
@@ -147,6 +148,15 @@ describe("reviewProduct", () => {
     expect(adminErrorMessage(err, "備援")).toBe("沒有更新到這個商品(可能已被供應商刪除或權限不足),請重新整理後再試");
   });
 
+  it("退回 / 下架的原因看不到字(只有零寬字元)→ 不送出,丟中文錯誤(下架有前綴,資料庫擋不到)", async () => {
+    for (const kind of ["reject", "delist"] as const) {
+      const err = await reviewProduct(product, { kind, reason: "\u{200b}\u{2060} " }).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(MarketReasonRequiredError);
+      expect(adminErrorMessage(err, "備援")).toBe("請填寫原因(會顯示給供應商)");
+    }
+    expect(calls).toHaveLength(0);
+  });
+
   it("下架原因的上限要扣掉前綴:前綴 + 原因剛好是資料庫的 300 字(reject_reason <= 300)", async () => {
     expect(DELIST_PREFIX).toBe("(管理員下架)");
     expect(DELIST_REASON_MAX + DELIST_PREFIX.length).toBe(LIMITS.rejectReason);
@@ -171,6 +181,11 @@ describe("清單與店家", () => {
     await setStoreEnabled("sup-1", true, null);
     expect(calls[1].payload).toEqual({ is_enabled: true });
     expect(calls[1].filters).toEqual([["supplier_id", "sup-1"]]);
+  });
+
+  it("停用原因看不到字 → 不送出,丟中文錯誤", async () => {
+    await expect(setStoreEnabled("sup-1", false, "\u{200b}")).rejects.toBeInstanceOf(MarketReasonRequiredError);
+    expect(calls).toHaveLength(0);
   });
 
   it("停用 / 恢復時一列都沒更新到 → 中文錯誤(不是 PGRST116 的「JSON object requested…」)", async () => {

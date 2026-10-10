@@ -29,6 +29,7 @@ import {
 } from '@/lib/market/admin';
 import { CATEGORY_LABEL, LIMITS, REVIEW_STATUS_LABEL, TEMPERATURES } from '@/lib/market/constants';
 import { formatTaipei, formatTwd, stockLabel } from '@/lib/market/format';
+import { hasVisibleText } from '@/lib/market/productForm';
 import { publicImageUrl, thumbPathOf } from '@/lib/market/images';
 import type { MarketProductRow } from '@/lib/market/types';
 
@@ -172,7 +173,7 @@ const AdminMarketProductsPage = () => {
 
   const approve = (row: MarketProductRow) => act(row, () => reviewProduct(row, { kind: 'approve' }), `已核准「${row.name}」`);
   const submitReason = () => {
-    if (!reasonTarget || !reason.trim()) return;
+    if (!reasonTarget || !hasVisibleText(reason)) return;
     const { row, mode } = reasonTarget;
     void act(row, () => reviewProduct(row, { kind: mode, reason }), mode === 'delist' ? `已下架「${row.name}」` : `已退回「${row.name}」`);
   };
@@ -390,7 +391,7 @@ const AdminMarketProductsPage = () => {
             <Button variant="outline" onClick={() => setReasonTarget(null)}>
               取消
             </Button>
-            <Button className="bg-red-600 text-white hover:bg-red-700" disabled={!reason.trim() || !!busyId} onClick={submitReason}>
+            <Button className="bg-red-600 text-white hover:bg-red-700" disabled={!hasVisibleText(reason) || !!busyId} onClick={submitReason}>
               {reasonTarget?.mode === 'delist' ? '確定下架' : '確定退回'}
             </Button>
           </DialogFooter>

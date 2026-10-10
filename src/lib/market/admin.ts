@@ -9,6 +9,7 @@
 // friendlyDbError 才會照原本的中文顯示、不被備援蓋掉。
 import { LIMITS, type ReviewStatus } from "./constants";
 import { friendlyDbError, MarketDbError, marketDb, unwrap } from "./db";
+import { hasVisibleText } from "./productForm";
 import type { MarketProductRow, MarketStoreRow } from "./types";
 
 export const ADMIN_PRODUCT_COLUMNS = "*, market_stores(supplier_id, is_enabled, suppliers(name))";
@@ -26,6 +27,14 @@ export class MarketStaleReviewError extends Error {
   constructor() {
     super("這個商品剛被供應商修改過,請重新整理後再審核");
     this.name = "MarketStaleReviewError";
+  }
+}
+
+/** 退回 / 下架 / 停用店家的原因看不到字(空白、零寬字元)。下架的原因有前綴,資料庫的 reject_reason_required 擋不到,所以這裡先擋 */
+export class MarketReasonRequiredError extends Error {
+  constructor() {
+    super("請填寫原因(會顯示給供應商)");
+    this.name = "MarketReasonRequiredError";
   }
 }
 
@@ -73,6 +82,7 @@ export const reviewProduct = async (
   product: Pick<MarketProductRow, "id" | "updated_at">,
   action: ReviewAction,
 ): Promise<MarketProductRow> => {
+  if (action.kind !== "approve" && !hasVisibleText(action.reason)) throw new MarketReasonRequiredError();
   const patch =
     action.kind === "approve"
       ? { review_status: "approved" }
@@ -113,6 +123,7 @@ export const fetchProductCounts = async (): Promise<Map<string, { listed: number
 
 /** 停用(要原因)/ 恢復某家店的零售。用 maybeSingle:0 列時 single() 會回英文的 PGRST116,改丟中文的 MarketStoreGoneError */
 export const setStoreEnabled = async (supplierId: string, enabled: boolean, reason: string | null): Promise<AdminStoreRow> => {
+  if (!enabled && !hasVisibleText(reason ?? "")) throw new MarketReasonRequiredError();
   const row = unwrap(
     await marketDb<AdminStoreRow>("market_stores")
       .update(enabled ? { is_enabled: true } : { is_enabled: false, disabled_reason: (reason ?? "").trim() })

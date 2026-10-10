@@ -109,6 +109,20 @@ describe("AdminMarketProductsPage", () => {
     expect(screen.getByLabelText("原因(必填)")).toHaveAttribute("maxlength", String(DELIST_REASON_MAX));
   });
 
+  it("原因只有看不見的字元(零寬空白、WORD JOINER)→ 退回 / 下架都按不下去", async () => {
+    vi.mocked(fetchAdminProducts).mockImplementation(async (filter) => (filter === "approved" ? [{ ...PENDING, review_status: "approved" }] : [PENDING]));
+    render(<AdminMarketProductsPage />);
+    await userEvent.click(await screen.findByRole("button", { name: "退回 有機高麗菜" }));
+    await userEvent.type(screen.getByLabelText("原因(必填)"), "\u{200b}\u{2060}\u{3000}");
+    expect(screen.getByRole("button", { name: "確定退回" })).toBeDisabled();
+    await userEvent.click(screen.getByRole("button", { name: "取消" }));
+    await userEvent.click(screen.getByRole("button", { name: "已核准" }));
+    await userEvent.click(await screen.findByRole("button", { name: "下架 有機高麗菜" }));
+    await userEvent.type(screen.getByLabelText("原因(必填)"), "\u{200b}\u{feff}");
+    expect(screen.getByRole("button", { name: "確定下架" })).toBeDisabled();
+    expect(reviewProduct).not.toHaveBeenCalled();
+  });
+
   it("沒送出的原因不會帶到下一個商品(退回視窗每次都從空白開始)", async () => {
     const OTHER = { ...PENDING, id: "a9300000-0000-4000-8000-0000000000c2", name: "牛番茄" };
     vi.mocked(fetchAdminProducts).mockResolvedValue([PENDING, OTHER]);
@@ -296,6 +310,14 @@ describe("AdminMarketStoresPage", () => {
     expect(await screen.findByText("停用原因:客訴處理中")).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "恢復 市集測試 A 店 的零售" }));
     await waitFor(() => expect(setStoreEnabled).toHaveBeenCalledWith(STORE_A.supplier_id, true, null));
+  });
+
+  it("停用原因只有看不見的字元 → 按不下去", async () => {
+    render(<AdminMarketStoresPage />);
+    await userEvent.click(await screen.findByRole("button", { name: "停用 市集測試 A 店 的零售" }));
+    await userEvent.type(screen.getByLabelText("原因(必填)"), "\u{200b}\u{2060}");
+    expect(screen.getByRole("button", { name: "確定停用" })).toBeDisabled();
+    expect(setStoreEnabled).not.toHaveBeenCalled();
   });
 
   it("沒送出的停用原因不會帶到下一家店", async () => {

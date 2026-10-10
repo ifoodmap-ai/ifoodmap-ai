@@ -20,6 +20,7 @@ import {
 } from '@/lib/market/admin';
 import { LIMITS } from '@/lib/market/constants';
 import { citiesSummary, shippingSummary } from '@/lib/market/format';
+import { hasVisibleText } from '@/lib/market/productForm';
 
 const storeName = (s: AdminStoreRow) => s.suppliers?.name ?? s.supplier_id;
 
@@ -133,7 +134,7 @@ const AdminMarketStoresPage = () => {
             <Button variant="outline" onClick={() => setTarget(null)}>
               取消
             </Button>
-            <Button className="bg-red-600 text-white hover:bg-red-700" disabled={!reason.trim() || busy} onClick={() => target && change(target, false)}>
+            <Button className="bg-red-600 text-white hover:bg-red-700" disabled={!hasVisibleText(reason) || busy} onClick={() => target && change(target, false)}>
               確定停用
             </Button>
           </DialogFooter>
