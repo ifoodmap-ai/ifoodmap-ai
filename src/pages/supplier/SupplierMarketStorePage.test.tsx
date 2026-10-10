@@ -113,6 +113,21 @@ describe("SupplierMarketStorePage — 讀取狀態", () => {
     expect(saveStore).not.toHaveBeenCalled();
   });
 
+  it("按「重新載入」重抓期間只顯示載入中,不會露出空白表單", async () => {
+    let finish: (v: Awaited<ReturnType<typeof fetchOwnStore>>) => void = () => {};
+    vi.mocked(fetchOwnStore)
+      .mockRejectedValueOnce(new Error("boom"))
+      .mockImplementationOnce(() => new Promise((r) => (finish = r)));
+    renderPage();
+    await userEvent.click(await screen.findByRole("button", { name: "重新載入" }));
+    expect(fetchOwnStore).toHaveBeenCalledTimes(2);
+    expect(document.querySelector("form")).toBeNull();
+    expect(screen.queryByRole("button", { name: "儲存店家設定" })).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+    finish({ store: STORE_A, transferInfo: null });
+    expect(await screen.findByLabelText("新北市")).toBeChecked();
+  });
+
   it("讀取成功但這家店還沒建:才顯示新店家表單(沒有錯誤、沒有店家頁連結、欄位是預設值)", async () => {
     renderPage();
     expect(await screen.findByRole("button", { name: "儲存店家設定" })).toBeInTheDocument();

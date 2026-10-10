@@ -70,8 +70,8 @@ export default function SupplierMarketStorePage() {
     };
   }, [supplierId, reloadKey]);
 
+  // 重抓期間 loading 優先(下面先判斷 loading),畫面只有載入中;loadError 只在讀取成功時清掉
   const reload = () => {
-    setLoadError(null);
     setLoading(true);
     setReloadKey((k) => k + 1);
   };
