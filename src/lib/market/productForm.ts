@@ -1,0 +1,182 @@
+// 供應商零售商品的表單邏輯:資料列 ↔ 表單、驗證(跟資料庫 CHECK 一樣的上限)、儲存、各審核狀態下有哪些按鈕。
+//
+// 審核狀態由資料庫決定(market_products_guard):這裡只在「送出審核 / 重新送審」時把 review_status 設成 pending;
+// 一般儲存不送 review_status —— 已核准的商品改了內容,資料庫會自己改回 pending。
+import {
+  CATEGORY_LABEL,
+  isCategoryKey,
+  LIMITS,
+  PHOTO_RULES,
+  type MarketCategoryKey,
+  type ReviewStatus,
+  type Temperature,
+} from "./constants";
+import { marketDb, unwrap } from "./db";
+import type { MarketProductRow } from "./types";
+
+export interface ProductForm {
+  name: string;
+  category: MarketCategoryKey | "";
+  spec: string;
+  price: string;
+  unlimitedStock: boolean;
+  stock: string;
+  temperature: Temperature;
+  origin: string;
+  storageMethod: string;
+  shelfLife: string;
+  description: string;
+  photos: string[];
+  isListed: boolean;
+  supplyId: string | null;
+}
+
+export type ProductFormErrors = Partial<Record<keyof ProductForm, string>>;
+
+/** 從 B2B 商品(supplies)帶入時用得到的欄位 */
+export interface SupplySeed {
+  id: string;
+  name: string;
+  category: string | null;
+  pack_size: string | null;
+  price: number | null;
+  description: string | null;
+}
+
+/** B2B 的分類是自由文字;剛好等於 12 類的中文名稱(或 key)才帶入 */
+const categoryFromText = (text: string | null): MarketCategoryKey | "" => {
+  if (!text) return "";
+  const t = text.trim();
+  if (isCategoryKey(t)) return t;
+  const hit = (Object.entries(CATEGORY_LABEL) as Array<[MarketCategoryKey, string]>).find(([, label]) => label === t);
+  return hit ? hit[0] : "";
+};
+
+export const emptyProductForm = (seed?: SupplySeed | null): ProductForm => ({
+  name: seed?.name ?? "",
+  category: categoryFromText(seed?.category ?? null),
+  spec: seed?.pack_size ?? "",
+  price: "",
+  unlimitedStock: true,
+  stock: "",
+  temperature: "ambient",
+  origin: "",
+  storageMethod: "",
+  shelfLife: "",
+  description: seed?.description ?? "",
+  photos: [],
+  isListed: true,
+  supplyId: seed?.id ?? null,
+});
+
+export const productFormFromRow = (row: MarketProductRow): ProductForm => ({
+  name: row.name,
+  category: row.category,
+  spec: row.spec,
+  price: String(row.price),
+  unlimitedStock: row.stock === null,
+  stock: row.stock === null ? "" : String(row.stock),
+  temperature: row.temperature,
+  origin: row.origin ?? "",
+  storageMethod: row.storage_method ?? "",
+  shelfLife: row.shelf_life ?? "",
+  description: row.description ?? "",
+  photos: [...row.photos],
+  isListed: row.is_listed,
+  supplyId: row.supply_id ?? null,
+});
+
+const toInt = (s: string): number => (/^\d+$/.test(s.trim()) ? Number(s.trim()) : Number.NaN);
+
+export const validateProductForm = (f: ProductForm): ProductFormErrors => {
+  const e: ProductFormErrors = {};
+  const name = f.name.trim();
+  if (!name) e.name = "請填品名";
+  else if (name.length > LIMITS.productName) e.name = `品名最多 ${LIMITS.productName} 字`;
+  if (!f.category) e.category = "請選分類";
+  const spec = f.spec.trim();
+  if (!spec) e.spec = "請填零售規格,例如:600g/盒";
+  else if (spec.length > LIMITS.spec) e.spec = `規格最多 ${LIMITS.spec} 字`;
+  const price = toInt(f.price);
+  if (!Number.isInteger(price) || price < 1 || price > LIMITS.price) e.price = "價格要是 1 到 1,000,000 的整數(新台幣)";
+  if (!f.unlimitedStock) {
+    const stock = toInt(f.stock);
+    if (!Number.isInteger(stock) || stock < 0 || stock > LIMITS.stock) e.stock = "庫存要是 0 到 100,000 的整數(不限庫存請勾選「不限」)";
+  }
+  if (f.origin.trim().length > LIMITS.origin) e.origin = `產地最多 ${LIMITS.origin} 字`;
+  if (f.storageMethod.trim().length > LIMITS.storageMethod) e.storageMethod = `保存方式最多 ${LIMITS.storageMethod} 字`;
+  if (f.shelfLife.trim().length > LIMITS.shelfLife) e.shelfLife = `保存期限最多 ${LIMITS.shelfLife} 字`;
+  if (f.description.trim().length > LIMITS.description) e.description = `說明最多 ${LIMITS.description} 字`;
+  if (f.photos.length > PHOTO_RULES.maxCount) e.photos = `照片最多 ${PHOTO_RULES.maxCount} 張`;
+  return e;
+};
+
+export const productPayload = (f: ProductForm) => ({
+  name: f.name.trim(),
+  category: f.category,
+  spec: f.spec.trim(),
+  price: toInt(f.price),
+  stock: f.unlimitedStock ? null : toInt(f.stock),
+  temperature: f.temperature,
+  origin: f.origin.trim() || null,
+  storage_method: f.storageMethod.trim() || null,
+  shelf_life: f.shelfLife.trim() || null,
+  description: f.description.trim() || null,
+  photos: f.photos,
+  is_listed: f.isListed,
+  supply_id: f.supplyId,
+});
+
+export interface SaveProductInput {
+  supplierId: string;
+  productId: string;
+  isNew: boolean;
+  form: ProductForm;
+  /** true = 送出審核 / 重新送審(review_status → pending) */
+  submit: boolean;
+}
+
+export const saveMarketProduct = async ({ supplierId, productId, isNew, form, submit }: SaveProductInput): Promise<MarketProductRow> => {
+  const fields = productPayload(form);
+  if (isNew) {
+    return unwrap(
+      await marketDb<MarketProductRow>("market_products")
+        .insert({ id: productId, supplier_id: supplierId, ...fields, review_status: submit ? "pending" : "draft" })
+        .select("*")
+        .single(),
+    );
+  }
+  return unwrap(
+    await marketDb<MarketProductRow>("market_products")
+      .update(submit ? { ...fields, review_status: "pending" } : fields)
+      .eq("id", productId)
+      .select("*")
+      .single(),
+  );
+};
+
+export interface ProductActions {
+  /** 次要按鈕(不送審) */
+  secondary: { label: string; submit: false } | null;
+  primary: { label: string; submit: boolean };
+  /** 顯示在按鈕上方的提醒 */
+  notice: string | null;
+}
+
+/** 各審核狀態下的按鈕(null = 新商品) */
+export const productActions = (status: ReviewStatus | null): ProductActions => {
+  switch (status) {
+    case "pending":
+      return { secondary: null, primary: { label: "儲存", submit: false }, notice: "審核中:管理員核准後才會出現在市集。" };
+    case "approved":
+      return {
+        secondary: null,
+        primary: { label: "儲存", submit: false },
+        notice: "修改品名、分類、規格、溫層、產地、保存方式、保存期限、說明或照片後會重新送審(審核通過前消費者看不到);只改價格、庫存、上架開關不用重審。",
+      };
+    case "rejected":
+      return { secondary: { label: "儲存(先不送審)", submit: false }, primary: { label: "重新送審", submit: true }, notice: null };
+    default:
+      return { secondary: { label: "儲存草稿", submit: false }, primary: { label: "送出審核", submit: true }, notice: null };
+  }
+};

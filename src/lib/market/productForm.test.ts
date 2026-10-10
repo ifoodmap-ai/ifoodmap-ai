@@ -1,0 +1,127 @@
+// productForm.ts:B2B 商品帶入、驗證上限、payload、新增 / 修改 / 送審送出的內容、各狀態的按鈕。
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const { calls } = vi.hoisted(() => ({ calls: [] as Array<{ op: string; payload?: unknown; filters: unknown[] }> }));
+
+vi.mock("@/integrations/supabase/client", () => ({
+  supabase: {
+    from: () => {
+      const call = { op: "select", payload: undefined as unknown, filters: [] as unknown[] };
+      calls.push(call);
+      const b = {
+        insert: (v: unknown) => {
+          call.op = "insert";
+          call.payload = v;
+          return b;
+        },
+        update: (v: unknown) => {
+          call.op = "update";
+          call.payload = v;
+          return b;
+        },
+        eq: (c: string, v: unknown) => {
+          call.filters.push([c, v]);
+          return b;
+        },
+        select: () => b,
+        single: async () => ({ data: { id: "p1" }, error: null }),
+      };
+      return b;
+    },
+  },
+}));
+
+import { CABBAGE } from "./testFixtures";
+import {
+  emptyProductForm,
+  productActions,
+  productFormFromRow,
+  productPayload,
+  saveMarketProduct,
+  validateProductForm,
+  type ProductForm,
+} from "./productForm";
+
+const valid = (over: Partial<ProductForm> = {}): ProductForm => ({
+  ...emptyProductForm(),
+  name: "有機高麗菜",
+  category: "vegetable",
+  spec: "1 顆",
+  price: "120",
+  ...over,
+});
+
+beforeEach(() => {
+  calls.length = 0;
+});
+
+describe("emptyProductForm(從 B2B 商品帶入)", () => {
+  it("品名、規格、說明照帶;分類剛好是 12 類的中文名稱才帶入", () => {
+    const f = emptyProductForm({ id: "s1", name: "牛腱心", category: "肉品", pack_size: "5kg/箱", price: 420, description: "澳洲" });
+    expect(f).toMatchObject({ name: "牛腱心", category: "meat", spec: "5kg/箱", description: "澳洲", supplyId: "s1", price: "" });
+    expect(emptyProductForm({ id: "s2", name: "x", category: "肉類", pack_size: null, price: null, description: null }).category).toBe("");
+  });
+});
+
+describe("validateProductForm", () => {
+  it("合法的沒有錯誤", () => {
+    expect(validateProductForm(valid())).toEqual({});
+  });
+
+  it("必填:品名、分類、規格、價格", () => {
+    const e = validateProductForm({ ...emptyProductForm(), price: "" });
+    expect(e).toMatchObject({ name: "請填品名", category: "請選分類", spec: "請填零售規格,例如:600g/盒" });
+    expect(e.price).toMatch(/1 到 1,000,000/);
+  });
+
+  it("上限跟資料庫一樣:品名 60、規格 40、說明 2000、價格整數、庫存 0–100000、照片 5 張", () => {
+    expect(validateProductForm(valid({ name: "菜".repeat(61) })).name).toBe("品名最多 60 字");
+    expect(validateProductForm(valid({ spec: "x".repeat(41) })).spec).toBe("規格最多 40 字");
+    expect(validateProductForm(valid({ description: "x".repeat(2001) })).description).toBe("說明最多 2000 字");
+    expect(validateProductForm(valid({ price: "99.5" })).price).toBeDefined();
+    expect(validateProductForm(valid({ price: "0" })).price).toBeDefined();
+    expect(validateProductForm(valid({ unlimitedStock: false, stock: "" })).stock).toBeDefined();
+    expect(validateProductForm(valid({ unlimitedStock: false, stock: "0" })).stock).toBeUndefined();
+    expect(validateProductForm(valid({ photos: ["a", "b", "c", "d", "e", "f"] })).photos).toBe("照片最多 5 張");
+  });
+});
+
+describe("payload 與儲存", () => {
+  it("資料列 → 表單 → payload 回得去;不限庫存 = null", () => {
+    expect(productPayload(productFormFromRow(CABBAGE))).toMatchObject({ name: "有機高麗菜", price: 100, stock: 10, temperature: "chilled" });
+    expect(productPayload(valid()).stock).toBeNull();
+    expect(productPayload(valid({ origin: "  " })).origin).toBeNull();
+  });
+
+  it("新商品:用畫面先決定的 id 新增;送審 → pending、存草稿 → draft", async () => {
+    await saveMarketProduct({ supplierId: "sup", productId: "p1", isNew: true, form: valid(), submit: true });
+    expect(calls[0]).toMatchObject({ op: "insert", payload: { id: "p1", supplier_id: "sup", review_status: "pending", price: 120 } });
+    await saveMarketProduct({ supplierId: "sup", productId: "p2", isNew: true, form: valid(), submit: false });
+    expect(calls[1].payload).toMatchObject({ review_status: "draft" });
+  });
+
+  it("修改:一般儲存不送 review_status(交給資料庫判斷要不要重審);重新送審才送 pending", async () => {
+    await saveMarketProduct({ supplierId: "sup", productId: "p1", isNew: false, form: valid(), submit: false });
+    expect(calls[0].op).toBe("update");
+    expect(calls[0].payload).not.toHaveProperty("review_status");
+    expect(calls[0].filters).toEqual([["id", "p1"]]);
+    await saveMarketProduct({ supplierId: "sup", productId: "p1", isNew: false, form: valid(), submit: true });
+    expect(calls[1].payload).toMatchObject({ review_status: "pending" });
+  });
+});
+
+describe("productActions", () => {
+  it("新商品 / 草稿:儲存草稿 + 送出審核", () => {
+    expect(productActions(null)).toMatchObject({ secondary: { label: "儲存草稿" }, primary: { label: "送出審核", submit: true } });
+    expect(productActions("draft").primary.label).toBe("送出審核");
+  });
+
+  it("退回:可以先存不送審,或重新送審", () => {
+    expect(productActions("rejected")).toMatchObject({ secondary: { label: "儲存(先不送審)" }, primary: { label: "重新送審", submit: true } });
+  });
+
+  it("審核中、已核准:只有儲存;已核准提醒哪些欄位會重審", () => {
+    expect(productActions("pending")).toMatchObject({ secondary: null, primary: { label: "儲存", submit: false } });
+    expect(productActions("approved").notice).toMatch(/只改價格、庫存、上架開關不用重審/);
+  });
+});
