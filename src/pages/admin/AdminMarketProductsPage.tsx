@@ -7,7 +7,7 @@
 // 縮圖缺了(或根本是另一張圖)審核者看不出來。改用 ReviewImage:主圖、縮圖並排,讀不到就在那一格用紅框寫「讀不到…」,
 // 不退回任何東西。縮圖缺檔時資料庫也會擋核准(22023 photos_not_uploaded,中文訊息在 src/lib/market/db.ts),
 // 訊息除了 toast,也顯示在查看視窗裡(就在讀不到的那一格旁邊)。
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Badge } from '@/components/ui/badge';
@@ -37,7 +37,7 @@ interface ReviewImageProps {
   /** 替代文字;讀不到時改成「<label>:讀不到」 */
   label: string;
   /** 讀不到時那一格寫的字 */
-  missingText: string;
+  missingText: ReactNode;
   width: number;
   height: number;
   className: string;
@@ -192,7 +192,13 @@ const AdminMarketProductsPage = () => {
                   key={r.photos[0]}
                   path={thumbPathOf(r.photos[0])}
                   label={`${r.name} 第 1 張・縮圖`}
-                  missingText="讀不到縮圖"
+                  missingText={
+                    <>
+                      讀不到
+                      <br />
+                      縮圖
+                    </>
+                  }
                   width={64}
                   height={64}
                   className="h-16 w-16 shrink-0 rounded-md object-cover text-[11px]"

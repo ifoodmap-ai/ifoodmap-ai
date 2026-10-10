@@ -196,7 +196,10 @@ describe("AdminMarketProductsPage — 每張照片的主圖和縮圖都要審(�
     const thumb = await screen.findByRole("img", { name: "有機高麗菜 第 1 張・縮圖" });
     expect(thumb).toHaveAttribute("src", publicImageUrl(thumbPathOf(PHOTO_1)));
     fireEvent.error(thumb);
-    expect(screen.getByRole("img", { name: "有機高麗菜 第 1 張・縮圖:讀不到" })).toHaveTextContent("讀不到縮圖");
+    const missing = screen.getByRole("img", { name: "有機高麗菜 第 1 張・縮圖:讀不到" });
+    expect(missing).toHaveTextContent("讀不到縮圖");
+    // 64px 的框裡固定斷成「讀不到 / 縮圖」兩行(自動換行會斷成「讀不到縮 / 圖」)
+    expect(missing.innerHTML).toBe("讀不到<br>縮圖");
     expect(document.querySelectorAll(`img[src="${publicImageUrl(PHOTO_1)}"]`)).toHaveLength(0);
   });
 
