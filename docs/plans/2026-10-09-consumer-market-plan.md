@@ -17307,3 +17307,16 @@ Task 23–25 先照計畫做完(三個 commit 跟計畫的程式碼區塊逐字�
    - 新商品存檔時回應遺失(資料庫其實寫入了)再按一次會撞主鍵 23505,`friendlyDbError` 只顯示英文原文。
    - shadcn `DialogContent` 右上角的關閉鈕 16×16(共用元件,不在這次範圍;底部有 44px 的「取消」)。
 10. **追加(commit `4a9a04c`)**:第 9 點前三項已修 —— 修改既有商品比對讀到的 `updated_at` 原字串,沒更新到任何一列就顯示「這個商品已被其他人更新,請重新載入後再改」、不覆寫(視窗留著但不能再存,按「重新載入」才關視窗並重新讀取;用語同店家設定的「資料已被其他人更新,請重新載入後再改」);狀態文字照消費者實際看到的寫(店家零售或供應商帳號停用 →「已核准・店家停用中(消費者看不到)」、庫存 0 →「已上架・缺貨」,這類徽章改琥珀色);新商品撞主鍵 23505 時讀回那一筆,是自家的就當作已存好(換進清單、提示「已儲存」),否則顯示中文錯誤、不覆寫。`saveMarketProduct` 改回傳 `{ row, alreadySaved }`、多收 `expectedUpdatedAt`;vitest 再多 14 項(`productForm` 12 → 18、`market-supplier-components` 17 → 22、`useSupplierMarketProducts` 3 → 4、`SupplierCatalogPage.market` 10 → 12),`4a9a04c` 實測全套 99 檔 / 1466 項全過(含店家設定同時新增的測試),tsc 72、eslint 錯誤 10,兩種 build 都過。
+
+### 2026-10-10:Task 26–28 複審修正(commit `2cc52ed`,分支 `market`)
+
+接上面「Task 26–28 管理後台審核與零售店家」一節。fresh-context 複審後再修 2 項(都先寫測試、看到失敗才改),以 repo 為準:
+
+1. **核准 / 退回還沒回來就切了篩選**:完成後的重抓用的是按下按鈕那次 render 的 `load`(閉包裡是舊篩選),會把「已核准」分頁換成待審清單 → `load` 改讀 `filterRef`(在篩選的 effect 裡更新)。
+2. **查看視窗裡有任何一格讀不到(紅框)時「核准上架」按不下去**,並寫明「有 N 個檔讀不到,不能核准…補傳後關掉這個視窗重新查看」:原本被 `photos_not_uploaded` 擋下後視窗留著,供應商這時才補傳(可能是另一張圖),再按一次就核准了審核者沒看過的縮圖(Storage 補傳不會改商品的 `updated_at`,樂觀鎖擋不到)。從清單直接按「核准」時只有資料庫把關、顯示 toast。
+3. 測試補強(項數不變):核准只送 `review_status`(`toEqual`)、店家停用 / 恢復帶 `supplier_id`、停用原因 `maxlength`。
+4. **測試數字**:`AdminMarketPages.test.tsx` 19 → **21**(`admin.test.ts` 仍是 7)。`2cc52ed` 乾淨副本(`git archive`)實測全套 **99 檔 / 1477 項**全過(含其他節同時新增的測試),tsc 72、eslint 錯誤 10,兩種 build 都過。
+5. **複審發現、沒有處理(範圍外或規模還沒到)**:
+   - 🔴 migration 120000 `market_stores_guard` 對**所有** UPDATE 檢查「付款方式含 `transfer` 就要有轉帳資訊」,管理員也不例外;供應商可以刪自己的 `market_store_transfer`(FOR ALL + DELETE),之後**管理員停用這家店會被 22023 `transfer_info_required` 擋下**(頁面只跳「接受銀行轉帳要先填寫轉帳資訊」,店照樣開著)。只有直接打 API 才會進到這個狀態(`store.ts` 只 upsert)。建議另開 migration:這項檢查只在 `payment_methods` 有變、或不是管理員時才做。靜態閱讀發現,未在資料庫實跑。
+   - `fetchProductCounts` 一次撈整張 `market_products`,PostgREST 一次最多回 1000 列:超過時「上架 N・待審 M」少算且不報錯;清單的 `.limit(500)` 超過也不提示(同計畫「風險」第 7 點)。
+   - `reviewProduct` 在 `updated_at` 缺值時不上鎖(目前呼叫端都有 `select *`);下架原因只貼零寬字元時前端放行、存成只有「(管理員下架)」;`busyId` 只有一個值,同時審兩筆時先回來的會讓另一筆的按鈕提早可按。
