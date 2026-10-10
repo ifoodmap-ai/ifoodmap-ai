@@ -72,15 +72,18 @@ vi.mock("@/integrations/supabase/client", () => ({
 }));
 
 import {
+  ADMIN_PAGE_SIZE,
   adminErrorMessage,
   DELIST_PREFIX,
   DELIST_REASON_MAX,
   fetchAdminProducts,
+  fetchAdminStores,
   fetchProductCounts,
   MarketReasonRequiredError,
   MarketReviewGoneError,
   MarketStaleReviewError,
   MarketStoreGoneError,
+  nameSearchPattern,
   reviewProduct,
   setStoreEnabled,
 } from "./admin";
@@ -174,6 +177,40 @@ describe("清單與店家", () => {
     expect(calls[1].filters).toEqual([]);
   });
 
+  it("清單分頁:一頁 50 筆、第 3 頁 = range(100, 149),用 count 算總數;排序固定(最後再加 id)", async () => {
+    next.data = [{ id: "p1" }, { id: "p2" }];
+    next.count = 123;
+    const res = await fetchAdminProducts("approved", { page: 2 });
+    expect(ADMIN_PAGE_SIZE).toBe(50);
+    expect(res).toEqual({ rows: [{ id: "p1" }, { id: "p2" }], total: 123 });
+    expect(calls[0].range).toEqual([100, 149]);
+    expect(calls[0].selectOptions).toEqual({ count: "exact" });
+    expect(calls[0].orders).toEqual([
+      ["updated_at", false],
+      ["id", true],
+    ]);
+    await fetchAdminProducts("pending");
+    expect(calls[1].range).toEqual([0, 49]);
+    expect(calls[1].orders).toEqual([
+      ["submitted_at", true],
+      ["id", true],
+    ]);
+  });
+
+  it("品名搜尋:ilike %…%;% _ \\ 當一般字跳脫、* 換成 _;只有空白不搜尋", async () => {
+    next.data = [];
+    await fetchAdminProducts("all", { search: "  高麗菜 " });
+    expect(calls[0].filters).toEqual([["name ilike", "%高麗菜%"]]);
+    await fetchAdminProducts("approved", { search: "100%_純\\*" });
+    expect(calls[1].filters).toEqual([
+      ["review_status", "approved"],
+      ["name ilike", "%100\\%\\_純\\\\_%"],
+    ]);
+    await fetchAdminProducts("all", { search: "   " });
+    expect(calls[2].filters).toEqual([]);
+    expect(nameSearchPattern("")).toBeNull();
+  });
+
   it("停用要帶原因;恢復只送 is_enabled", async () => {
     await setStoreEnabled("sup-1", false, " 客訴處理中 ");
     expect(calls[0].payload).toEqual({ is_enabled: false, disabled_reason: "客訴處理中" });
@@ -198,15 +235,55 @@ describe("清單與店家", () => {
   });
 
   it("商品數:上架中 = 已核准且開著;待審另外算", async () => {
-    next.data = [
-      { supplier_id: "a", review_status: "approved", is_listed: true },
-      { supplier_id: "a", review_status: "approved", is_listed: false },
-      { supplier_id: "a", review_status: "pending", is_listed: true },
-      { supplier_id: "b", review_status: "draft", is_listed: true },
+    next.pages = [
+      [
+        { supplier_id: "a", review_status: "approved", is_listed: true },
+        { supplier_id: "a", review_status: "approved", is_listed: false },
+        { supplier_id: "a", review_status: "pending", is_listed: true },
+        { supplier_id: "b", review_status: "draft", is_listed: true },
+      ],
     ];
     const counts = await fetchProductCounts();
     expect(counts.get("a")).toEqual({ listed: 1, pending: 1 });
     expect(counts.get("b")).toEqual({ listed: 0, pending: 0 });
+  });
+
+  it("商品數超過 1000 列也全部算到:分頁讀到空的一頁為止,id 排序固定", async () => {
+    const approved = { supplier_id: "a", review_status: "approved", is_listed: true };
+    next.pages = [Array.from({ length: 1000 }, () => approved), [approved, approved, { supplier_id: "b", review_status: "pending", is_listed: true }]];
+    const counts = await fetchProductCounts();
+    expect(counts.get("a")).toEqual({ listed: 1002, pending: 0 });
+    expect(counts.get("b")).toEqual({ listed: 0, pending: 1 });
+    expect(calls.map((c) => c.range)).toEqual([
+      [0, 999],
+      [1000, 1999],
+      [1003, 2002],
+    ]);
+    expect(calls.every((c) => JSON.stringify(c.orders) === JSON.stringify([["id", true]]))).toBe(true);
+  });
+
+  it("商品數查詢失敗 → 丟 MarketDbError(不會把讀到一半的數字當成結果)", async () => {
+    next.data = null;
+    next.error = { message: "boom", code: "XX000" };
+    await expect(fetchProductCounts()).rejects.toBeInstanceOf(MarketDbError);
+  });
+
+  it("零售店家也分頁讀完(supplier_id 排序固定),再依 updated_at 新到舊排", async () => {
+    next.pages = [
+      [
+        { supplier_id: "s1", updated_at: "2026-10-01T02:00:00.000001+00:00" },
+        { supplier_id: "s2", updated_at: "2026-10-05T02:00:00.000001+00:00" },
+      ],
+      [{ supplier_id: "s3", updated_at: "2026-10-03T02:00:00.000001+00:00" }],
+    ];
+    const stores = await fetchAdminStores();
+    expect(stores.map((x) => x.supplier_id)).toEqual(["s2", "s3", "s1"]);
+    expect(calls.map((c) => c.range)).toEqual([
+      [0, 999],
+      [2, 1001],
+      [3, 1002],
+    ]);
+    expect(calls[0].orders).toEqual([["supplier_id", true]]);
   });
 });
 

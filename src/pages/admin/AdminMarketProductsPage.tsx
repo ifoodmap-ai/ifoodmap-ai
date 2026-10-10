@@ -9,16 +9,20 @@
 // (可能是另一張圖),再按一次就核准了審核者沒看過的檔;補傳後要關掉重開(每張圖重新載入)、全部看得到才能核准。
 // 縮圖缺檔時資料庫也會擋核准(22023 photos_not_uploaded,中文訊息在 src/lib/market/db.ts),訊息除了 toast,
 // 也顯示在查看視窗裡。
+//
+// 清單分頁(一頁 ADMIN_PAGE_SIZE 筆)加品名搜尋:已核准的商品再多,較舊的也找得到、下得了架。
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import {
   ADMIN_LOAD_FALLBACK,
+  ADMIN_PAGE_SIZE,
   ADMIN_REVIEW_FALLBACK,
   adminErrorMessage,
   DELIST_REASON_MAX,
@@ -89,7 +93,12 @@ const ReviewImage = ({ path, label, missingText, width, height, className, onFai
 
 const AdminMarketProductsPage = () => {
   const [filter, setFilter] = useState<ReviewFilter>('pending');
+  const [page, setPage] = useState(0);
+  /** 送出的搜尋字(按「搜尋」才算);searchInput 是輸入框裡正在打的 */
+  const [search, setSearch] = useState('');
+  const [searchInput, setSearchInput] = useState('');
   const [rows, setRows] = useState<MarketProductRow[]>([]);
+  const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [detail, setDetail] = useState<MarketProductRow | null>(null);
@@ -101,31 +110,53 @@ const AdminMarketProductsPage = () => {
   const [reason, setReason] = useState('');
   const [busyId, setBusyId] = useState<string | null>(null);
   const loadSeq = useRef(0);
-  // load 一律讀「現在」的篩選:審核完的重抓用的是按下按鈕那次 render 的 load,
+  // load 一律讀「現在」的篩選、頁數、搜尋字:審核完的重抓用的是按下按鈕那次 render 的 load,
   // 那之後才切了篩選的話,照閉包裡的舊篩選重抓會把清單換回舊分頁的內容
-  const filterRef = useRef(filter);
+  const queryRef = useRef({ filter, page, search });
 
   const load = useCallback(async () => {
     // 篩選切得快時,比較慢回來的舊查詢不能蓋掉新的:只認最後一次
     const seq = ++loadSeq.current;
+    const query = queryRef.current;
+    let movedPage = false;
     setLoading(true);
     try {
-      const next = await fetchAdminProducts(filterRef.current);
+      const res = await fetchAdminProducts(query.filter, { page: query.page, search: query.search });
       if (seq !== loadSeq.current) return;
-      setRows(next);
+      // 這一頁空了(例如審核完最後一頁只剩的那一筆)→ 換到最後一個有東西的頁(換頁會再觸發一次 load)
+      const lastPage = Math.max(0, Math.ceil(res.total / ADMIN_PAGE_SIZE) - 1);
+      if (res.rows.length === 0 && query.page > lastPage) {
+        movedPage = true;
+        setPage(lastPage);
+        return;
+      }
+      setRows(res.rows);
+      setTotal(res.total);
       setLoadError(null);
     } catch (e) {
       if (seq !== loadSeq.current) return;
       setLoadError(adminErrorMessage(e, ADMIN_LOAD_FALLBACK));
     } finally {
-      if (seq === loadSeq.current) setLoading(false);
+      if (seq === loadSeq.current && !movedPage) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    filterRef.current = filter;
+    queryRef.current = { filter, page, search };
     void load();
-  }, [filter, load]);
+  }, [filter, page, search, load]);
+
+  const chooseFilter = (next: ReviewFilter) => {
+    setFilter(next);
+    setPage(0);
+  };
+  const submitSearch = (term: string) => {
+    setSearchInput(term);
+    setSearch(term.trim());
+    setPage(0);
+  };
+  const filterLabel = FILTERS.find((f) => f.key === filter)?.label;
+  const pageCount = Math.max(1, Math.ceil(total / ADMIN_PAGE_SIZE));
 
   const openDetail = (row: MarketProductRow) => {
     setDetailError(null);
@@ -189,11 +220,39 @@ const AdminMarketProductsPage = () => {
 
       <div role="group" aria-label="審核狀態" className="mb-4 flex flex-wrap gap-2">
         {FILTERS.map((f) => (
-          <Button key={f.key} size="sm" variant={filter === f.key ? 'secondary' : 'outline'} aria-pressed={filter === f.key} onClick={() => setFilter(f.key)}>
+          <Button key={f.key} size="sm" variant={filter === f.key ? 'secondary' : 'outline'} aria-pressed={filter === f.key} onClick={() => chooseFilter(f.key)}>
             {f.label}
           </Button>
         ))}
       </div>
+
+      <form
+        role="search"
+        aria-label="搜尋商品"
+        className="mb-4 flex flex-wrap items-center gap-2"
+        onSubmit={(e) => {
+          e.preventDefault();
+          submitSearch(searchInput);
+        }}
+      >
+        <Input
+          type="search"
+          aria-label="搜尋品名"
+          placeholder="搜尋品名"
+          maxLength={LIMITS.productName}
+          value={searchInput}
+          onChange={(e) => setSearchInput(e.target.value)}
+          className="h-9 w-full max-w-xs"
+        />
+        <Button type="submit" size="sm" variant="outline">
+          搜尋
+        </Button>
+        {search ? (
+          <Button type="button" size="sm" variant="ghost" onClick={() => submitSearch('')}>
+            清除搜尋
+          </Button>
+        ) : null}
+      </form>
 
       {loading ? (
         <div className="flex justify-center py-16">
@@ -207,61 +266,78 @@ const AdminMarketProductsPage = () => {
           </Button>
         </div>
       ) : rows.length === 0 ? (
-        <p className="rounded-md border border-slate-200 bg-white py-10 text-center text-slate-400">沒有{FILTERS.find((f) => f.key === filter)?.label}的商品</p>
+        <p className="rounded-md border border-slate-200 bg-white py-10 text-center text-slate-400">
+          {search ? `${filterLabel}裡找不到品名含「${search}」的商品` : `沒有${filterLabel}的商品`}
+        </p>
       ) : (
-        <ul className="divide-y divide-slate-100 rounded-md border border-slate-200 bg-white">
-          {rows.map((r) => (
-            <li key={r.id} className="flex flex-wrap items-center gap-3 p-3">
-              {r.photos.length > 0 ? (
-                <ReviewImage
-                  key={r.photos[0]}
-                  path={thumbPathOf(r.photos[0])}
-                  label={`${r.name} 第 1 張・縮圖`}
-                  missingText={
-                    <>
-                      讀不到
-                      <br />
-                      縮圖
-                    </>
-                  }
-                  width={64}
-                  height={64}
-                  className="h-16 w-16 shrink-0 rounded-md object-cover text-[11px]"
-                />
-              ) : (
-                <span className="flex h-16 w-16 shrink-0 items-center justify-center rounded-md bg-slate-100 text-center text-[11px] text-slate-500">沒有照片</span>
-              )}
-              <div className="min-w-0 flex-1">
-                <p className="font-medium text-slate-800">{r.name}</p>
-                <p className="text-xs text-slate-500">
-                  {r.market_stores?.suppliers?.name ?? '—'}・{CATEGORY_LABEL[r.category]}・{r.spec}・{formatTwd(r.price)}・送審 {formatTaipei(r.submitted_at)}
-                </p>
-                {r.reject_reason ? <p className="text-xs text-red-700">原因:{r.reject_reason}</p> : null}
-              </div>
-              <Badge variant="outline">{REVIEW_STATUS_LABEL[r.review_status]}</Badge>
-              <div className="flex gap-2">
-                <Button size="sm" variant="outline" onClick={() => openDetail(r)} aria-label={`查看 ${r.name}`}>
-                  查看
-                </Button>
-                {r.review_status === 'pending' ? (
-                  <>
-                    <Button size="sm" className="bg-emerald-600 text-white hover:bg-emerald-700" disabled={busyId === r.id} onClick={() => approve(r)} aria-label={`核准 ${r.name}`}>
-                      核准
-                    </Button>
-                    <Button size="sm" variant="outline" className="text-red-600" onClick={() => openReason(r, 'reject')} aria-label={`退回 ${r.name}`}>
-                      退回
-                    </Button>
-                  </>
-                ) : null}
-                {r.review_status === 'approved' ? (
-                  <Button size="sm" variant="outline" className="text-red-600" onClick={() => openReason(r, 'delist')} aria-label={`下架 ${r.name}`}>
-                    下架
+        <>
+          <ul className="divide-y divide-slate-100 rounded-md border border-slate-200 bg-white">
+            {rows.map((r) => (
+              <li key={r.id} className="flex flex-wrap items-center gap-3 p-3">
+                {r.photos.length > 0 ? (
+                  <ReviewImage
+                    key={r.photos[0]}
+                    path={thumbPathOf(r.photos[0])}
+                    label={`${r.name} 第 1 張・縮圖`}
+                    missingText={
+                      <>
+                        讀不到
+                        <br />
+                        縮圖
+                      </>
+                    }
+                    width={64}
+                    height={64}
+                    className="h-16 w-16 shrink-0 rounded-md object-cover text-[11px]"
+                  />
+                ) : (
+                  <span className="flex h-16 w-16 shrink-0 items-center justify-center rounded-md bg-slate-100 text-center text-[11px] text-slate-500">沒有照片</span>
+                )}
+                <div className="min-w-0 flex-1">
+                  <p className="font-medium text-slate-800">{r.name}</p>
+                  <p className="text-xs text-slate-500">
+                    {r.market_stores?.suppliers?.name ?? '—'}・{CATEGORY_LABEL[r.category]}・{r.spec}・{formatTwd(r.price)}・送審 {formatTaipei(r.submitted_at)}
+                  </p>
+                  {r.reject_reason ? <p className="text-xs text-red-700">原因:{r.reject_reason}</p> : null}
+                </div>
+                <Badge variant="outline">{REVIEW_STATUS_LABEL[r.review_status]}</Badge>
+                <div className="flex gap-2">
+                  <Button size="sm" variant="outline" onClick={() => openDetail(r)} aria-label={`查看 ${r.name}`}>
+                    查看
                   </Button>
-                ) : null}
-              </div>
-            </li>
-          ))}
-        </ul>
+                  {r.review_status === 'pending' ? (
+                    <>
+                      <Button size="sm" className="bg-emerald-600 text-white hover:bg-emerald-700" disabled={busyId === r.id} onClick={() => approve(r)} aria-label={`核准 ${r.name}`}>
+                        核准
+                      </Button>
+                      <Button size="sm" variant="outline" className="text-red-600" onClick={() => openReason(r, 'reject')} aria-label={`退回 ${r.name}`}>
+                        退回
+                      </Button>
+                    </>
+                  ) : null}
+                  {r.review_status === 'approved' ? (
+                    <Button size="sm" variant="outline" className="text-red-600" onClick={() => openReason(r, 'delist')} aria-label={`下架 ${r.name}`}>
+                      下架
+                    </Button>
+                  ) : null}
+                </div>
+              </li>
+            ))}
+          </ul>
+          <nav aria-label="清單分頁" className="mt-3 flex flex-wrap items-center justify-between gap-2 text-sm text-slate-600">
+            <p>
+              第 {page + 1} / {pageCount} 頁・共 {total.toLocaleString('zh-TW')} 筆
+            </p>
+            <div className="flex gap-2">
+              <Button size="sm" variant="outline" disabled={page === 0} onClick={() => setPage((p) => Math.max(0, p - 1))}>
+                上一頁
+              </Button>
+              <Button size="sm" variant="outline" disabled={page + 1 >= pageCount} onClick={() => setPage((p) => p + 1)}>
+                下一頁
+              </Button>
+            </div>
+          </nav>
+        </>
       )}
 
       <Dialog open={!!detail} onOpenChange={(o) => !o && closeDetail()}>

@@ -7,19 +7,61 @@
 //
 // 錯誤訊息一律中文(adminErrorMessage):頁面呼叫時都給中文備援;這裡自己丟的錯名稱一律 Market 開頭,
 // friendlyDbError 才會照原本的中文顯示、不被備援蓋掉。
+//
+// 數量:PostgREST 一次最多回 1000 列(Supabase 的 max rows),超過的會被截掉而且不報錯 ——
+// 商品數、店家清單一律用 fetchAllPages 分頁讀完;審核清單用分頁(一頁 ADMIN_PAGE_SIZE 筆,count 算總數)加品名搜尋,
+// 任何商品都找得到、下得了架。
+import { fetchAllPages } from "@/lib/metrics";
 import { LIMITS, type ReviewStatus } from "./constants";
-import { friendlyDbError, MarketDbError, marketDb, unwrap } from "./db";
+import { friendlyDbError, MarketDbError, marketDb, unwrap, type PgResult } from "./db";
 import { hasVisibleText } from "./productForm";
 import type { MarketProductRow, MarketStoreRow } from "./types";
 
 export const ADMIN_PRODUCT_COLUMNS = "*, market_stores(supplier_id, is_enabled, suppliers(name))";
+const ADMIN_STORE_COLUMNS = "*, suppliers(name, phone, contact_email, is_active)";
 
 export type ReviewFilter = ReviewStatus | "all";
 
-export const fetchAdminProducts = async (filter: ReviewFilter): Promise<MarketProductRow[]> => {
-  let q = marketDb<MarketProductRow[]>("market_products").select(ADMIN_PRODUCT_COLUMNS);
+/** db.ts 的 MarketQuery 沒有 range / ilike / count,這裡用得到的那一小段另外描述(同樣是 loose cast,不用 any) */
+interface PagedQuery<T> extends PromiseLike<PgResult<T> & { count?: number | null }> {
+  eq(column: string, value: unknown): PagedQuery<T>;
+  ilike(column: string, pattern: string): PagedQuery<T>;
+  order(column: string, options: { ascending: boolean }): PagedQuery<T>;
+  range(from: number, to: number): PagedQuery<T>;
+}
+const pagedDb = <T>(table: string) =>
+  marketDb<T>(table) as never as { select(columns: string, options?: { count: "exact" }): PagedQuery<T> };
+
+/** 審核清單一頁幾筆 */
+export const ADMIN_PAGE_SIZE = 50;
+
+export interface AdminProductPage {
+  rows: MarketProductRow[];
+  /** 符合篩選與搜尋的總筆數 */
+  total: number;
+}
+
+/** 品名搜尋的 ilike 樣式:去頭尾空白;% _ \ 當一般字(跳脫);* 在 PostgREST 是 % 的別名,換成 _(任一個字)。只有空白回 null(不搜尋) */
+export const nameSearchPattern = (search: string): string | null => {
+  const term = search.trim();
+  if (!term) return null;
+  return `%${term.replace(/[\\%_]/g, (c) => `\\${c}`).replace(/\*/g, "_")}%`;
+};
+
+/** 審核清單的一頁。排序固定(最後再加 id),翻頁才不會重複或漏掉:待審是先送審的在前,其他是最近更新的在前 */
+export const fetchAdminProducts = async (
+  filter: ReviewFilter,
+  { page = 0, search = "" }: { page?: number; search?: string } = {},
+): Promise<AdminProductPage> => {
+  const from = Math.max(0, Math.floor(page)) * ADMIN_PAGE_SIZE;
+  let q = pagedDb<MarketProductRow[]>("market_products").select(ADMIN_PRODUCT_COLUMNS, { count: "exact" });
   if (filter !== "all") q = q.eq("review_status", filter);
-  return unwrap(await q.order(filter === "pending" ? "submitted_at" : "updated_at", { ascending: filter === "pending" }).limit(500)) ?? [];
+  const pattern = nameSearchPattern(search);
+  if (pattern) q = q.ilike("name", pattern);
+  q = q.order(filter === "pending" ? "submitted_at" : "updated_at", { ascending: filter === "pending" }).order("id", { ascending: true });
+  const res = await q.range(from, from + ADMIN_PAGE_SIZE - 1);
+  const rows = unwrap(res) ?? [];
+  return { rows, total: res.count ?? from + rows.length };
 };
 
 /** 核准 / 退回時這個商品剛被供應商改過(樂觀鎖一列都沒更新到) */
@@ -99,18 +141,25 @@ export interface AdminStoreRow extends MarketStoreRow {
   created_at?: string;
 }
 
-export const fetchAdminStores = async (): Promise<AdminStoreRow[]> =>
-  unwrap(
-    await marketDb<AdminStoreRow[]>("market_stores")
-      .select("*, suppliers(name, phone, contact_email, is_active)")
-      .order("updated_at", { ascending: false }),
-  ) ?? [];
+/** 全部的零售店家:分頁讀完(supplier_id 排序固定),再依 updated_at 新到舊排 */
+export const fetchAdminStores = async (): Promise<AdminStoreRow[]> => {
+  const res = await fetchAllPages((from, to) =>
+    pagedDb<AdminStoreRow[]>("market_stores").select(ADMIN_STORE_COLUMNS).order("supplier_id", { ascending: true }).range(from, to),
+  );
+  if (res.error) throw new MarketDbError(res.error);
+  return [...res.data].sort((a, b) => String(b.updated_at ?? "").localeCompare(String(a.updated_at ?? "")));
+};
 
-/** 每家店的商品數(上架中 / 待審) */
+/** 每家店的商品數(上架中 / 待審)。分頁讀完(id 排序固定):只讀一次的話超過 1000 列會少算、不報錯 */
 export const fetchProductCounts = async (): Promise<Map<string, { listed: number; pending: number }>> => {
-  const rows =
-    unwrap(await marketDb<Array<Pick<MarketProductRow, "supplier_id" | "review_status" | "is_listed">>>("market_products").select("supplier_id, review_status, is_listed")) ??
-    [];
+  const res = await fetchAllPages((from, to) =>
+    pagedDb<Array<Pick<MarketProductRow, "supplier_id" | "review_status" | "is_listed">>>("market_products")
+      .select("supplier_id, review_status, is_listed")
+      .order("id", { ascending: true })
+      .range(from, to),
+  );
+  if (res.error) throw new MarketDbError(res.error);
+  const rows = res.data;
   const counts = new Map<string, { listed: number; pending: number }>();
   for (const r of rows) {
     const c = counts.get(r.supplier_id) ?? { listed: 0, pending: 0 };
@@ -128,7 +177,7 @@ export const setStoreEnabled = async (supplierId: string, enabled: boolean, reas
     await marketDb<AdminStoreRow>("market_stores")
       .update(enabled ? { is_enabled: true } : { is_enabled: false, disabled_reason: (reason ?? "").trim() })
       .eq("supplier_id", supplierId)
-      .select("*, suppliers(name, phone, contact_email, is_active)")
+      .select(ADMIN_STORE_COLUMNS)
       .maybeSingle(),
   );
   if (!row) throw new MarketStoreGoneError();

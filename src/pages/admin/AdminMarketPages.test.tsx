@@ -18,6 +18,7 @@ vi.mock("@/lib/market/admin", async (importOriginal) => ({
 }));
 
 import {
+  type AdminProductPage,
   DELIST_REASON_MAX,
   fetchAdminProducts,
   fetchAdminStores,
@@ -36,9 +37,11 @@ import AdminMarketProductsPage from "./AdminMarketProductsPage";
 import AdminMarketStoresPage from "./AdminMarketStoresPage";
 
 const PENDING = { ...CABBAGE, review_status: "pending" as const, submitted_at: "2026-10-09T04:05:00Z", updated_at: "2026-10-09T04:05:00.1+00:00" };
+/** fetchAdminProducts 回的一頁 */
+const pageOf = (rows: MarketProductRow[], total = rows.length): AdminProductPage => ({ rows, total });
 
 beforeEach(() => {
-  vi.mocked(fetchAdminProducts).mockResolvedValue([PENDING]);
+  vi.mocked(fetchAdminProducts).mockResolvedValue(pageOf([PENDING]));
   vi.mocked(reviewProduct).mockResolvedValue(PENDING);
   vi.mocked(fetchAdminStores).mockResolvedValue([STORE_A]);
   vi.mocked(fetchProductCounts).mockResolvedValue(new Map([[STORE_A.supplier_id, { listed: 3, pending: 1 }]]));
@@ -49,7 +52,7 @@ afterEach(cleanup);
 describe("AdminMarketProductsPage", () => {
   it("預設看待審;查看顯示完整內容;核准送 approve", async () => {
     render(<AdminMarketProductsPage />);
-    expect(fetchAdminProducts).toHaveBeenCalledWith("pending");
+    expect(fetchAdminProducts).toHaveBeenCalledWith("pending", { page: 0, search: "" });
     await userEvent.click(await screen.findByRole("button", { name: "查看 有機高麗菜" }));
     const dialog = await screen.findByRole("dialog");
     expect(within(dialog).getByText("宜蘭三星")).toBeInTheDocument();
@@ -70,7 +73,7 @@ describe("AdminMarketProductsPage", () => {
   });
 
   it("已核准的可以下架(= 退回加原因)", async () => {
-    vi.mocked(fetchAdminProducts).mockResolvedValue([{ ...PENDING, review_status: "approved" }]);
+    vi.mocked(fetchAdminProducts).mockResolvedValue(pageOf([{ ...PENDING, review_status: "approved" }]));
     render(<AdminMarketProductsPage />);
     await userEvent.click(await screen.findByRole("button", { name: "已核准" }));
     await userEvent.click(await screen.findByRole("button", { name: "下架 有機高麗菜" }));
@@ -99,7 +102,7 @@ describe("AdminMarketProductsPage", () => {
   });
 
   it("下架原因的上限扣掉「(管理員下架)」前綴;退回是資料庫的 300 字", async () => {
-    vi.mocked(fetchAdminProducts).mockImplementation(async (filter) => (filter === "approved" ? [{ ...PENDING, review_status: "approved" }] : [PENDING]));
+    vi.mocked(fetchAdminProducts).mockImplementation(async (filter) => pageOf(filter === "approved" ? [{ ...PENDING, review_status: "approved" }] : [PENDING]));
     render(<AdminMarketProductsPage />);
     await userEvent.click(await screen.findByRole("button", { name: "退回 有機高麗菜" }));
     expect(screen.getByLabelText("原因(必填)")).toHaveAttribute("maxlength", String(LIMITS.rejectReason));
@@ -110,7 +113,7 @@ describe("AdminMarketProductsPage", () => {
   });
 
   it("原因只有看不見的字元(零寬空白、WORD JOINER)→ 退回 / 下架都按不下去", async () => {
-    vi.mocked(fetchAdminProducts).mockImplementation(async (filter) => (filter === "approved" ? [{ ...PENDING, review_status: "approved" }] : [PENDING]));
+    vi.mocked(fetchAdminProducts).mockImplementation(async (filter) => pageOf(filter === "approved" ? [{ ...PENDING, review_status: "approved" }] : [PENDING]));
     render(<AdminMarketProductsPage />);
     await userEvent.click(await screen.findByRole("button", { name: "退回 有機高麗菜" }));
     await userEvent.type(screen.getByLabelText("原因(必填)"), "\u{200b}\u{2060}\u{3000}");
@@ -125,7 +128,7 @@ describe("AdminMarketProductsPage", () => {
 
   it("沒送出的原因不會帶到下一個商品(退回視窗每次都從空白開始)", async () => {
     const OTHER = { ...PENDING, id: "a9300000-0000-4000-8000-0000000000c2", name: "牛番茄" };
-    vi.mocked(fetchAdminProducts).mockResolvedValue([PENDING, OTHER]);
+    vi.mocked(fetchAdminProducts).mockResolvedValue(pageOf([PENDING, OTHER]));
     render(<AdminMarketProductsPage />);
     await userEvent.click(await screen.findByRole("button", { name: "退回 有機高麗菜" }));
     await userEvent.type(screen.getByLabelText("原因(必填)"), "照片太暗");
@@ -163,25 +166,25 @@ describe("AdminMarketProductsPage", () => {
   });
 
   it("切換篩選時,比較慢回來的舊查詢不會蓋掉新的清單", async () => {
-    let resolvePending: (rows: MarketProductRow[]) => void = () => {};
+    let resolvePending: (page: AdminProductPage) => void = () => {};
     vi.mocked(fetchAdminProducts).mockImplementation((filter) =>
       filter === "pending"
-        ? new Promise<MarketProductRow[]>((resolve) => {
+        ? new Promise<AdminProductPage>((resolve) => {
             resolvePending = resolve;
           })
-        : Promise.resolve([{ ...PENDING, id: "a9300000-0000-4000-8000-0000000000c1", name: "已核准的商品", review_status: "approved" as const }]),
+        : Promise.resolve(pageOf([{ ...PENDING, id: "a9300000-0000-4000-8000-0000000000c1", name: "已核准的商品", review_status: "approved" as const }])),
     );
     render(<AdminMarketProductsPage />);
     await userEvent.click(screen.getByRole("button", { name: "已核准" }));
     expect(await screen.findByText("已核准的商品")).toBeInTheDocument();
-    await act(async () => resolvePending([PENDING]));
+    await act(async () => resolvePending(pageOf([PENDING])));
     expect(screen.queryByText("有機高麗菜")).toBeNull();
     expect(screen.getByText("已核准的商品")).toBeInTheDocument();
   });
 
   it("核准還沒回來就切到別的篩選 → 核准完重抓的是「現在」的篩選,不會把清單換回待審", async () => {
     const APPROVED_ROW = { ...PENDING, id: "a9300000-0000-4000-8000-0000000000c3", name: "已核准的商品", review_status: "approved" as const };
-    vi.mocked(fetchAdminProducts).mockImplementation(async (filter) => (filter === "approved" ? [APPROVED_ROW] : [PENDING]));
+    vi.mocked(fetchAdminProducts).mockImplementation(async (filter) => pageOf(filter === "approved" ? [APPROVED_ROW] : [PENDING]));
     let finishApprove: () => void = () => {};
     vi.mocked(reviewProduct).mockImplementation(
       () =>
@@ -196,10 +199,106 @@ describe("AdminMarketProductsPage", () => {
     await act(async () => finishApprove());
     await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith("已核准「有機高麗菜」"));
     const calls = vi.mocked(fetchAdminProducts).mock.calls;
-    await waitFor(() => expect(calls[calls.length - 1]).toEqual(["approved"]));
+    await waitFor(() => expect(calls[calls.length - 1]).toEqual(["approved", { page: 0, search: "" }]));
     expect(await screen.findByText("已核准的商品")).toBeInTheDocument();
     expect(screen.queryByText("有機高麗菜")).toBeNull();
     expect(screen.getByRole("button", { name: "已核准" })).toHaveAttribute("aria-pressed", "true");
+  });
+});
+
+describe("AdminMarketProductsPage — 分頁與搜尋(任何商品都找得到、下得了架)", () => {
+  const productOn = (page: number, total: number) =>
+    pageOf([{ ...PENDING, id: `a9300000-0000-4000-8000-${String(900 + page).padStart(12, "0")}`, name: `第 ${page + 1} 頁的商品` }], total);
+
+  it("共 120 筆 → 第 1 / 3 頁;上一頁 / 下一頁抓對的頁,頭尾按不下去", async () => {
+    vi.mocked(fetchAdminProducts).mockImplementation(async (_filter, opts) => productOn(opts?.page ?? 0, 120));
+    render(<AdminMarketProductsPage />);
+    const nav = await screen.findByRole("navigation", { name: "清單分頁" });
+    expect(nav).toHaveTextContent("第 1 / 3 頁・共 120 筆");
+    expect(within(nav).getByRole("button", { name: "上一頁" })).toBeDisabled();
+    await userEvent.click(within(nav).getByRole("button", { name: "下一頁" }));
+    expect(await screen.findByText("第 2 頁的商品")).toBeInTheDocument();
+    expect(fetchAdminProducts).toHaveBeenLastCalledWith("pending", { page: 1, search: "" });
+    await userEvent.click(screen.getByRole("button", { name: "下一頁" }));
+    expect(await screen.findByText("第 3 頁的商品")).toBeInTheDocument();
+    expect(screen.getByRole("navigation", { name: "清單分頁" })).toHaveTextContent("第 3 / 3 頁・共 120 筆");
+    expect(screen.getByRole("button", { name: "下一頁" })).toBeDisabled();
+    await userEvent.click(screen.getByRole("button", { name: "上一頁" }));
+    expect(await screen.findByText("第 2 頁的商品")).toBeInTheDocument();
+  });
+
+  it("搜尋品名 → 從第 1 頁重抓;找不到時說明;清除搜尋回到全部", async () => {
+    vi.mocked(fetchAdminProducts).mockImplementation(async (_filter, opts) =>
+      opts?.search === "文旦" ? pageOf([{ ...PENDING, name: "老欉文旦" }]) : opts?.search ? pageOf([]) : productOn(opts?.page ?? 0, 120),
+    );
+    render(<AdminMarketProductsPage />);
+    await userEvent.click(await screen.findByRole("button", { name: "下一頁" }));
+    expect(await screen.findByText("第 2 頁的商品")).toBeInTheDocument();
+    await userEvent.type(screen.getByRole("searchbox", { name: "搜尋品名" }), "文旦");
+    await userEvent.click(screen.getByRole("button", { name: "搜尋" }));
+    expect(await screen.findByText("老欉文旦")).toBeInTheDocument();
+    expect(fetchAdminProducts).toHaveBeenLastCalledWith("pending", { page: 0, search: "文旦" });
+    await userEvent.clear(screen.getByRole("searchbox", { name: "搜尋品名" }));
+    await userEvent.type(screen.getByRole("searchbox", { name: "搜尋品名" }), "沒有這個{Enter}");
+    expect(await screen.findByText("待審裡找不到品名含「沒有這個」的商品")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "清除搜尋" }));
+    expect(await screen.findByText("第 1 頁的商品")).toBeInTheDocument();
+    expect(fetchAdminProducts).toHaveBeenLastCalledWith("pending", { page: 0, search: "" });
+    expect(screen.getByRole("searchbox", { name: "搜尋品名" })).toHaveValue("");
+  });
+
+  it("已核准超過一頁時,較舊的商品也找得到、下得了架", async () => {
+    const OLD = { ...PENDING, id: "a9300000-0000-4000-8000-0000000000d1", name: "去年的蜂蜜", review_status: "approved" as const };
+    const NEWER = Array.from({ length: 50 }, (_, i) => ({
+      ...PENDING,
+      id: `a9300000-0000-4000-8000-${String(1000 + i).padStart(12, "0")}`,
+      name: `新商品 ${i + 1}`,
+      review_status: "approved" as const,
+    }));
+    vi.mocked(fetchAdminProducts).mockImplementation(async (filter, opts) => {
+      if (filter !== "approved") return pageOf([]);
+      if (opts?.search) return pageOf([OLD]);
+      return opts?.page === 10 ? pageOf([OLD], 501) : pageOf(NEWER, 501);
+    });
+    render(<AdminMarketProductsPage />);
+    await userEvent.click(await screen.findByRole("button", { name: "已核准" }));
+    expect(await screen.findByRole("navigation", { name: "清單分頁" })).toHaveTextContent("第 1 / 11 頁・共 501 筆");
+    expect(screen.queryByText("去年的蜂蜜")).toBeNull();
+    await userEvent.type(screen.getByRole("searchbox", { name: "搜尋品名" }), "蜂蜜");
+    await userEvent.click(screen.getByRole("button", { name: "搜尋" }));
+    await userEvent.click(await screen.findByRole("button", { name: "下架 去年的蜂蜜" }));
+    await userEvent.type(screen.getByLabelText("原因(必填)"), "標示不實");
+    await userEvent.click(screen.getByRole("button", { name: "確定下架" }));
+    await waitFor(() => expect(reviewProduct).toHaveBeenCalledWith(expect.objectContaining({ id: OLD.id }), { kind: "delist", reason: "標示不實" }));
+  });
+
+  it("換篩選回到第 1 頁", async () => {
+    vi.mocked(fetchAdminProducts).mockImplementation(async (_filter, opts) => productOn(opts?.page ?? 0, 120));
+    render(<AdminMarketProductsPage />);
+    await userEvent.click(await screen.findByRole("button", { name: "下一頁" }));
+    expect(await screen.findByText("第 2 頁的商品")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "全部" }));
+    await waitFor(() => expect(fetchAdminProducts).toHaveBeenLastCalledWith("all", { page: 0, search: "" }));
+    expect(await screen.findByText("第 1 頁的商品")).toBeInTheDocument();
+  });
+
+  it("審核完這一頁空了(最後一頁只剩那一筆)→ 回到前一頁", async () => {
+    let total = 51;
+    vi.mocked(fetchAdminProducts).mockImplementation(async (_filter, opts) => {
+      if ((opts?.page ?? 0) === 1) return total === 51 ? pageOf([{ ...PENDING, name: "最後一筆" }], 51) : pageOf([], total);
+      return pageOf([PENDING], total);
+    });
+    vi.mocked(reviewProduct).mockImplementation(async () => {
+      total = 50;
+      return PENDING;
+    });
+    render(<AdminMarketProductsPage />);
+    await userEvent.click(await screen.findByRole("button", { name: "下一頁" }));
+    await userEvent.click(await screen.findByRole("button", { name: "退回 最後一筆" }));
+    await userEvent.type(screen.getByLabelText("原因(必填)"), "照片太暗");
+    await userEvent.click(screen.getByRole("button", { name: "確定退回" }));
+    await waitFor(() => expect(fetchAdminProducts).toHaveBeenLastCalledWith("pending", { page: 0, search: "" }));
+    expect(await screen.findByText("有機高麗菜")).toBeInTheDocument();
   });
 });
 
@@ -215,7 +314,7 @@ describe("AdminMarketProductsPage — 每張照片的主圖和縮圖都要審(�
   };
 
   beforeEach(() => {
-    vi.mocked(fetchAdminProducts).mockResolvedValue([WITH_PHOTOS]);
+    vi.mocked(fetchAdminProducts).mockResolvedValue(pageOf([WITH_PHOTOS]));
   });
 
   it("查看:每張照片並排顯示主圖和縮圖(縮圖是另一個檔 <uuid>_t.jpg)", async () => {
