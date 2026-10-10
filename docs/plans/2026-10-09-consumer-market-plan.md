@@ -17264,3 +17264,7 @@ B. 頁面
 ### 2026-10-10:前端修正第 2 輪(commit `20a0db2`、`4e7e146`,分支 `market`)
 
 離線時第一次載入被 React Query 暫停(`isPending` + `isPaused`)改顯示「目前離線,連線後會自動重新載入」(首頁與店家頁商品區 `MarketOfflineNotice`、商品頁與店家頁整頁 `MarketOffline`),只有 `isLoadingError`(失敗而且沒有資料)才顯示錯誤、`isRefetchError`(背景重抓失敗)保留舊資料並加一行 `MarketStaleNotice`,分類列與縮圖列加 padding / `scroll-px-*` 且按鈕聚焦時 `scrollIntoView({ block: "nearest", inline: "nearest" })`(`src/components/market/focus.ts`;Chrome 用 Tab 不會捲露出一半的按鈕)—— vitest 多 11 項(`MarketHomePage` 8 → 10、`MarketProductPage` 6 → 10、`MarketStorePage` 6 → 9、`market-components` 12 → 14),第 1 階段完成改成 97 檔 / **1387** 項、第 2、3 階段 111 檔 / **1504** 項,Task 46 Step 2 是 3 failed / 24 passed、Step 4 改成 **`Tests  27 passed (27)`(15 + 12)**,第 4611 行之後的「找到 → 換成」沒有新增對不上的。
+
+### 2026-10-10:Task 21 店家設定頁自查修正(commit `b7d52d8`、`235a482`、`f80f7d4`,分支 `market`)
+
+以 repo 的 `src/pages/supplier/SupplierMarketStorePage.tsx`、`src/pages/supplier/market/MarketImageField.tsx` 為準、不要再照抄 Task 21 的程式碼區塊:讀取失敗改成錯誤畫面加「重新載入」、不顯示表單(原本照樣畫出空白的新店家表單,一儲存 upsert 就蓋掉原本的介紹、退換貨說明、logo、封面;只有讀取成功而且查無店家才是新店家表單),勾選框加 `shrink-0`(390 寬的「銀行轉帳」換行時不再被壓小),選檔欄位與裡面的按鈕 `min-h-11`,縣市 / 付款方式出錯時每個勾選框標 `aria-invalid` + `aria-describedby`,儲存成功後表單換成資料庫回傳的值(縣市照官方順序、去掉頭尾空白)—— `SupplierMarketStorePage.test.tsx` 4 → 14 項,第 1 階段完成改成 97 檔 / **1397** 項、第 2、3 階段 111 檔 / **1514** 項。
