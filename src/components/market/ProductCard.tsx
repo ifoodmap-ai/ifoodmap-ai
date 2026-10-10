@@ -1,4 +1,6 @@
 // 商品卡片(首頁、店家頁共用):整張卡片是一個連結,連結名稱包含品名、規格、價格。
+// 外框、圓角、overflow-hidden 都放在連結自己身上:焦點框是畫在連結外面的 box-shadow,
+// 外層若 overflow-hidden 會把它整圈切掉,鍵盤使用者就看不到焦點(WCAG 2.4.7)。
 import { Link } from "react-router-dom";
 import { TEMPERATURES } from "@/lib/market/constants";
 import { formatTwd } from "@/lib/market/format";
@@ -10,8 +12,11 @@ export default function ProductCard({ product, showStore = true }: { product: Ma
   const soldOut = product.stock === 0;
   const storeName = product.market_stores?.suppliers?.name ?? "";
   return (
-    <article className="h-full overflow-hidden rounded-xl border border-slate-200 bg-white">
-      <Link to={`/market/p/${product.id}`} className={`flex h-full flex-col ${MARKET_FOCUS_RING}`}>
+    <article className="h-full">
+      <Link
+        to={`/market/p/${product.id}`}
+        className={`flex h-full flex-col overflow-hidden rounded-xl border border-slate-200 bg-white ${MARKET_FOCUS_RING}`}
+      >
         <MarketImage path={product.photos[0]} category={product.category} alt="" className="aspect-square w-full" />
         <div className="flex flex-1 flex-col gap-1 p-3">
           <h3 className="line-clamp-2 text-sm font-semibold text-slate-900">{product.name}</h3>

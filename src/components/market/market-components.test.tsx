@@ -84,6 +84,20 @@ describe("ProductCard", () => {
     expect(link).not.toHaveTextContent("已售完");
   });
 
+  it("鍵盤焦點框看得到:連結外面(到卡片外框為止)沒有會裁切的 overflow", () => {
+    const { container } = render(
+      <MemoryRouter>
+        <ProductCard product={CABBAGE} />
+      </MemoryRouter>,
+    );
+    const link = screen.getByRole("link", { name: /有機高麗菜/ });
+    expect(link).toHaveClass("focus-visible:ring-2");
+    // 焦點框是畫在連結「外面」的 box-shadow;連結填滿整張卡片,任何一層祖先 overflow-hidden / clip 都會把它整圈切掉
+    for (let el = link.parentElement; el && el !== container; el = el.parentElement) {
+      expect(el.className).not.toMatch(/(^|\s)overflow-(hidden|clip)(\s|$)/);
+    }
+  });
+
   it("庫存 0 標已售完", () => {
     render(
       <MemoryRouter>
