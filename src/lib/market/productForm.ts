@@ -21,6 +21,9 @@ import type { MarketProductRow } from "./types";
  */
 export const INVISIBLE_CHARS =
   "\\s\\u{1}-\\u{1f}\\u{7f}-\\u{a0}\\u{ad}\\u{34f}\\u{600}-\\u{605}\\u{61c}\\u{6dd}\\u{70f}\\u{890}\\u{891}\\u{8e2}\\u{115f}\\u{1160}\\u{1680}\\u{17b4}\\u{17b5}\\u{180b}-\\u{180f}\\u{2000}-\\u{200f}\\u{2028}-\\u{202f}\\u{205f}-\\u{206f}\\u{2800}\\u{3000}\\u{3164}\\u{fe00}-\\u{fe0f}\\u{feff}\\u{ffa0}\\u{fff0}-\\u{fffb}\\u{110bd}\\u{110cd}\\u{13430}-\\u{1343f}\\u{1bca0}-\\u{1bca3}\\u{1d173}-\\u{1d17a}\\u{e0000}-\\u{e0fff}";
+// 字元類裡的組合字元(U+034F)、異體字選擇符(U+FE00–U+FE0F)等都是刻意逐一列出的單一碼位(u 旗標逐碼位比對),
+// 不是「看起來一個字、其實兩個碼位」的誤寫 —— no-misleading-character-class 在這裡是誤判。
+// eslint-disable-next-line no-misleading-character-class
 const VISIBLE_CHAR = new RegExp(`[^${INVISIBLE_CHARS}]`, "u");
 
 /** 至少有一個看得見的字。資料庫把只有看不見字元的品名、規格當成空字串(被 CHECK 擋成 23514),前端先擋、顯示「請填…」 */
