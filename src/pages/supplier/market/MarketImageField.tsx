@@ -55,7 +55,8 @@ export default function MarketImageField({ label, hint, supplierId, value, onCha
             void onFile(e.target.files?.[0]);
             e.target.value = "";
           }}
-          className="text-sm"
+          // 可點範圍至少 44px 高:欄位本身 min-h-11,裡面的選檔按鈕(::file-selector-button)也撐到 44px,樣式比照「全選」「清除」
+          className="min-h-11 max-w-full text-sm file:mr-3 file:min-h-11 file:cursor-pointer file:rounded-md file:border file:border-solid file:border-slate-300 file:bg-white file:px-3 file:text-sm file:font-medium file:text-slate-700 hover:file:bg-slate-50 disabled:file:cursor-not-allowed"
         />
         {busy ? (
           <span className="inline-flex items-center gap-1 text-sm text-slate-600" role="status">

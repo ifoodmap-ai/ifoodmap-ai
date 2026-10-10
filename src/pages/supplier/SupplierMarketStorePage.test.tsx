@@ -133,4 +133,98 @@ describe("SupplierMarketStorePage — 版面", () => {
     expect(boxes).toHaveLength(24); // 22 縣市 + 貨到付款 + 銀行轉帳
     boxes.forEach((box) => expect(box).toHaveClass("h-5", "w-5", "shrink-0"));
   });
+
+  it("logo / 封面的選檔欄位可點範圍至少 44px 高(欄位本身與裡面的選檔按鈕都 min-h-11)", async () => {
+    renderPage();
+    for (const label of ["店家 logo", "店家封面"]) {
+      const input = await screen.findByLabelText(label);
+      expect(input).toHaveAttribute("type", "file");
+      expect(input).toHaveClass("min-h-11", "file:min-h-11");
+    }
+  });
+});
+
+describe("SupplierMarketStorePage — 勾選框的錯誤標示", () => {
+  it("沒選縣市:每個縣市勾選框都標 aria-invalid、指到錯誤訊息;沒出錯前不標", async () => {
+    renderPage();
+    const taipei = await screen.findByLabelText("臺北市");
+    expect(taipei).not.toHaveAttribute("aria-invalid", "true");
+    expect(taipei).not.toHaveAttribute("aria-describedby");
+    await userEvent.click(screen.getByRole("button", { name: "儲存店家設定" }));
+    await screen.findByText("至少選一個配送縣市");
+    for (const city of ["臺北市", "高雄市", "連江縣"]) {
+      expect(screen.getByLabelText(city)).toHaveAttribute("aria-invalid", "true");
+      expect(screen.getByLabelText(city)).toHaveAttribute("aria-describedby", "store-deliveryCities-error");
+    }
+    // 付款方式沒出錯,不標
+    expect(screen.getByLabelText("貨到付款")).not.toHaveAttribute("aria-invalid", "true");
+  });
+
+  it("付款方式都沒勾:兩個付款勾選框都標 aria-invalid、指到錯誤訊息", async () => {
+    renderPage();
+    await userEvent.click(await screen.findByLabelText("臺北市"));
+    await userEvent.click(screen.getByLabelText("貨到付款"));
+    await userEvent.click(screen.getByRole("button", { name: "儲存店家設定" }));
+    await screen.findByText("至少接受一種付款方式");
+    for (const label of ["貨到付款", /銀行轉帳/]) {
+      expect(screen.getByLabelText(label)).toHaveAttribute("aria-invalid", "true");
+      expect(screen.getByLabelText(label)).toHaveAttribute("aria-describedby", "store-acceptCod-error");
+    }
+    expect(screen.getByLabelText("臺北市")).not.toHaveAttribute("aria-invalid", "true");
+    expect(saveStore).not.toHaveBeenCalled();
+  });
+});
+
+// 資料庫的 market_stores_guard 會把縣市照官方順序排好、介紹 / 退換貨說明去掉頭尾空白;
+// 轉帳資訊由 market_store_transfer_touch 去掉頭尾空白。儲存成功後畫面要換成資料庫的值,下一次存的才不會跟資料庫不一致。
+describe("SupplierMarketStorePage — 儲存成功後換成資料庫整理過的值", () => {
+  it("縣市照官方順序、介紹去掉頭尾空白;再存一次送出的就是資料庫的值", async () => {
+    vi.mocked(saveStore).mockResolvedValue({
+      ...STORE_A,
+      intro: "當日採收",
+      return_policy: null,
+      delivery_cities: ["臺北市", "新北市"],
+      payment_methods: ["cod"],
+    });
+    renderPage();
+    await userEvent.click(await screen.findByLabelText("新北市"));
+    await userEvent.click(screen.getByLabelText("臺北市"));
+    await userEvent.type(screen.getByLabelText("店家介紹"), "  當日採收  ");
+    await userEvent.click(screen.getByRole("button", { name: "儲存店家設定" }));
+    await waitFor(() => expect(saveStore).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(saveStore).mock.calls[0][1]).toMatchObject({ deliveryCities: ["新北市", "臺北市"], intro: "  當日採收  " });
+
+    await waitFor(() => expect(screen.getByLabelText("店家介紹")).toHaveValue("當日採收"));
+    expect(screen.getByLabelText("固定運費(元)")).toHaveValue(String(STORE_A.shipping_fee));
+    expect(screen.getByRole("link", { name: "看消費者看到的店家頁" })).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "儲存店家設定" }));
+    await waitFor(() => expect(saveStore).toHaveBeenCalledTimes(2));
+    expect(vi.mocked(saveStore).mock.calls[1][1]).toMatchObject({ deliveryCities: ["臺北市", "新北市"], intro: "當日採收" });
+  });
+
+  it("轉帳資訊存的是去掉頭尾空白的值,畫面也換成那個值", async () => {
+    renderPage();
+    await userEvent.click(await screen.findByLabelText("臺北市"));
+    await userEvent.click(screen.getByLabelText(/銀行轉帳/));
+    await userEvent.type(screen.getByLabelText("轉帳資訊(銀行、分行、帳號、戶名)"), "  台灣銀行 004 帳號 123  ");
+    await userEvent.click(screen.getByRole("button", { name: "儲存店家設定" }));
+    await waitFor(() => expect(saveStore).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.getByLabelText("轉帳資訊(銀行、分行、帳號、戶名)")).toHaveValue("台灣銀行 004 帳號 123"));
+  });
+
+  it("取消勾轉帳再存:轉帳資訊沒有存(資料庫還是舊的),再勾回來看到的是資料庫裡的值", async () => {
+    vi.mocked(fetchOwnStore).mockResolvedValue({ store: STORE_A, transferInfo: "台灣銀行 004 帳號 123" });
+    vi.mocked(saveStore).mockResolvedValue({ ...STORE_A, payment_methods: ["cod"] });
+    renderPage();
+    const info = await screen.findByLabelText("轉帳資訊(銀行、分行、帳號、戶名)");
+    await userEvent.clear(info);
+    await userEvent.type(info, "改過但沒有存的帳號");
+    await userEvent.click(screen.getByLabelText(/銀行轉帳/));
+    await userEvent.click(screen.getByRole("button", { name: "儲存店家設定" }));
+    await waitFor(() => expect(saveStore).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.getByLabelText(/銀行轉帳/)).not.toBeChecked());
+    await userEvent.click(screen.getByLabelText(/銀行轉帳/));
+    expect(screen.getByLabelText("轉帳資訊(銀行、分行、帳號、戶名)")).toHaveValue("台灣銀行 004 帳號 123");
+  });
 });

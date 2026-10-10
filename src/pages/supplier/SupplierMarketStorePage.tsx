@@ -44,6 +44,8 @@ export default function SupplierMarketStorePage() {
   /** 讀取失敗的原因;有值時不顯示表單 */
   const [loadError, setLoadError] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
+  /** 資料庫裡目前的轉帳資訊(沒勾轉帳時儲存不會動它,存完表單要換回這個值) */
+  const [savedTransfer, setSavedTransfer] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -54,6 +56,7 @@ export default function SupplierMarketStorePage() {
         const { store, transferInfo } = await fetchOwnStore(supplierId);
         if (cancelled) return;
         setRow(store);
+        setSavedTransfer(transferInfo);
         setForm(store ? storeFormFromRow(store, transferInfo) : emptyStoreForm());
         setLoadError(null);
       } catch (e) {
@@ -89,7 +92,14 @@ export default function SupplierMarketStorePage() {
     }
     setSaving(true);
     try {
-      setRow(await saveStore(supplierId, form));
+      const saved = await saveStore(supplierId, form);
+      // 畫面換成資料庫整理過的值(market_stores_guard 把縣市照官方順序排好、介紹 / 退換貨說明去掉頭尾空白),
+      // 下一次存的才不會跟資料庫不一致。轉帳資訊:有勾就是剛存的值(saveStore 存的是 trim 過的,資料庫的 btrim
+      // 不會再改);沒勾的話 saveStore 不會動它,換回資料庫裡原本的值。
+      const transfer = form.acceptTransfer ? form.transferInfo.trim() : savedTransfer;
+      setRow(saved);
+      setSavedTransfer(transfer);
+      setForm(storeFormFromRow(saved, transfer));
       toast.success("已儲存店家設定");
     } catch (err) {
       toast.error("儲存失敗", { description: friendlyDbError(err) });
@@ -173,7 +183,8 @@ export default function SupplierMarketStorePage() {
         <h2 id="store-delivery" className="font-semibold text-gray-900">
           配送
         </h2>
-        <fieldset aria-describedby={describe("deliveryCities")}>
+        {/* 錯誤標示放在每個勾選框上(aria-invalid + aria-describedby,跟其他欄位一樣),fieldset 不再重複指一次 */}
+        <fieldset>
           <legend className="mb-2 text-sm font-medium text-slate-700">配送縣市(收件地址不在這裡的訂單不能結帳)</legend>
           <div className="mb-2 flex gap-2">
             <button type="button" onClick={() => set("deliveryCities", [...TW_CITIES])} className="min-h-11 rounded-md border border-slate-300 px-3 text-sm">
@@ -186,7 +197,14 @@ export default function SupplierMarketStorePage() {
           <div className="grid grid-cols-2 gap-1 min-[640px]:grid-cols-4">
             {TW_CITIES.map((c) => (
               <label key={c} className="flex min-h-11 items-center gap-2 text-sm">
-                <input type="checkbox" checked={form.deliveryCities.includes(c)} onChange={() => toggleCity(c)} className={CHECKBOX} />
+                <input
+                  type="checkbox"
+                  checked={form.deliveryCities.includes(c)}
+                  onChange={() => toggleCity(c)}
+                  aria-invalid={!!errors.deliveryCities}
+                  aria-describedby={describe("deliveryCities")}
+                  className={CHECKBOX}
+                />
                 {c}
               </label>
             ))}
@@ -228,14 +246,28 @@ export default function SupplierMarketStorePage() {
         <h2 id="store-payment" className="font-semibold text-gray-900">
           付款(店家自己收款,平台不經手)
         </h2>
-        <fieldset aria-describedby={describe("acceptCod")}>
+        <fieldset>
           <legend className="sr-only">接受的付款方式</legend>
           <label className="flex min-h-11 items-center gap-2 text-sm">
-            <input type="checkbox" checked={form.acceptCod} onChange={(e) => set("acceptCod", e.target.checked)} className={CHECKBOX} />
+            <input
+              type="checkbox"
+              checked={form.acceptCod}
+              onChange={(e) => set("acceptCod", e.target.checked)}
+              aria-invalid={!!errors.acceptCod}
+              aria-describedby={describe("acceptCod")}
+              className={CHECKBOX}
+            />
             貨到付款
           </label>
           <label className="flex min-h-11 items-center gap-2 text-sm">
-            <input type="checkbox" checked={form.acceptTransfer} onChange={(e) => set("acceptTransfer", e.target.checked)} className={CHECKBOX} />
+            <input
+              type="checkbox"
+              checked={form.acceptTransfer}
+              onChange={(e) => set("acceptTransfer", e.target.checked)}
+              aria-invalid={!!errors.acceptCod}
+              aria-describedby={describe("acceptCod")}
+              className={CHECKBOX}
+            />
             銀行轉帳(接單後,消費者會在訂單查詢頁看到下面的轉帳資訊)
           </label>
           <FieldError id="store-acceptCod-error" message={errors.acceptCod} />
