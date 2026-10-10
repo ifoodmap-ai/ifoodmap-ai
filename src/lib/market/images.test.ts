@@ -208,6 +208,6 @@ describe("uploadMarketImage", () => {
 
   it("Storage 回錯就丟出看得懂的錯", async () => {
     const { d } = deps("new row violates row-level security policy");
-    await expect(uploadMarketImage(SUP, PROD, file(), d)).rejects.toThrow("上傳失敗:new row violates row-level security policy");
+    await expect(uploadMarketImage(SUP, PROD, file(), d)).rejects.toThrow("上傳失敗:沒有權限上傳到這個店家的資料夾,請重新登入後再試");
   });
 });

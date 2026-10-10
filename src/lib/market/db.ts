@@ -56,7 +56,7 @@ export interface StorageBucket {
     path: string,
     body: Blob,
     options: { contentType: string; cacheControl: string; upsert: boolean },
-  ): PromiseLike<{ data: unknown; error: { message: string } | null }>;
+  ): PromiseLike<{ data: unknown; error: { message: string; status?: number | string; statusCode?: number | string } | null }>;
 }
 
 export const marketStorage = (): StorageBucket =>
@@ -86,7 +86,13 @@ const HINT_MESSAGES: Record<string, string> = {
 const NETWORK_ERROR_RE = /Failed to fetch|Load failed|NetworkError|Network request failed|fetch failed/i;
 const NETWORK_ERROR_MESSAGE = "連線失敗,請檢查網路後再試一次";
 
-export const friendlyDbError = (e: unknown): string => {
+/**
+ * 錯誤 → 給使用者看的中文。
+ * fallback(選填):認不得的資料庫錯誤、非預期的例外不顯示英文原文,改顯示這句(資料庫錯誤附上錯誤代碼給客服查)。
+ * 市集自己丟的錯(名稱 Market 開頭:MarketImageError、MarketStaleError…)訊息本來就是中文,照原訊息。
+ * 沒給 fallback 時行為跟原本一樣(認不得的照原文)。
+ */
+export const friendlyDbError = (e: unknown, fallback?: string): string => {
   if (e instanceof MarketDbError) {
     // 只認表裡自己的 key:用 HINT_MESSAGES[hint] 判斷的話,"constructor" 這類 hint 會拿到 Object 原型上的函式。
     // (tsconfig 的 lib 是 ES2020,沒有 Object.hasOwn 的型別,所以用 hasOwnProperty.call,效果相同)
@@ -96,10 +102,30 @@ export const friendlyDbError = (e: unknown): string => {
     if (e.code === "42501") return "沒有權限做這個動作";
     // supabase-js 斷網時回 { message: "TypeError: Failed to fetch", hint: "", code: "" }(資料庫沒有回應,所以沒有 code)
     if (!e.hint && !e.code && NETWORK_ERROR_RE.test(e.message)) return NETWORK_ERROR_MESSAGE;
+    if (fallback) return e.code ? `${fallback}(錯誤代碼 ${e.code})` : fallback;
     return e.message;
   }
   if (e instanceof TypeError && NETWORK_ERROR_RE.test(e.message)) return NETWORK_ERROR_MESSAGE;
+  if (e instanceof Error && e.name.startsWith("Market")) return e.message;
+  if (fallback) return fallback;
   return e instanceof Error ? e.message : String(e);
+};
+
+/**
+ * Storage 上傳的錯誤 → 中文。storage-js 的 StorageApiError 帶 HTTP status 與伺服器的 statusCode
+ * (RLS 擋下是 HTTP 400 + statusCode "403"),斷網是 StorageUnknownError("Failed to fetch")。
+ */
+export const friendlyStorageError = (err: { message?: string; status?: number | string; statusCode?: number | string }): string => {
+  const msg = err?.message ?? "";
+  const codes = [err?.status, err?.statusCode].map((c) => Number(c));
+  if (NETWORK_ERROR_RE.test(msg)) return NETWORK_ERROR_MESSAGE;
+  if (codes.includes(401) || codes.includes(403) || /row-level security|unauthorized|not authorized|permission/i.test(msg)) {
+    return "沒有權限上傳到這個店家的資料夾,請重新登入後再試";
+  }
+  if (codes.includes(409) || /already exists|duplicate/i.test(msg)) return "同名的檔案已經存在,請重新選一次照片";
+  if (codes.includes(413) || /maximum allowed size|too large/i.test(msg)) return "照片超過 2 MB,請換一張或先縮小再上傳";
+  if (codes.includes(415) || /mime type/i.test(msg)) return "只收 JPG、PNG、WebP 照片";
+  return "伺服器暫時無法處理,請稍後再試";
 };
 
 export const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

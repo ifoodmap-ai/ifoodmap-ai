@@ -35,7 +35,7 @@ export class MarketPartialSaveError extends Error {
   /** 沒存到的那一部分的錯誤 */
   readonly failure: unknown;
   constructor(saved: "store" | "transfer", store: MarketStoreRow | null, transferInfo: string | null, failure: unknown) {
-    const reason = friendlyDbError(failure);
+    const reason = friendlyDbError(failure, "請稍後再試");
     super(
       saved === "store"
         ? `店家設定已儲存,但轉帳資訊沒有存到:${reason}。消費者看到的仍是原本的轉帳資訊,請再按一次儲存。`

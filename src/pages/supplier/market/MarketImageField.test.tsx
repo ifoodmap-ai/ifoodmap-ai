@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/integrations/supabase/client", () => ({ supabase: {} }));
 
+import { MarketImageError } from "@/lib/market/images";
 import MarketImageField from "./MarketImageField";
 
 const SUP = "a9200000-0000-4000-8000-00000000000a";
@@ -76,7 +77,7 @@ describe("MarketImageField", () => {
   });
 
   it("上傳失敗:顯示原因,原本的圖留著(不會被清掉)", async () => {
-    const upload = vi.fn<Upload>().mockRejectedValue(new Error("只收 JPG、PNG、WebP 照片"));
+    const upload = vi.fn<Upload>().mockRejectedValue(new MarketImageError("只收 JPG、PNG、WebP 照片"));
     render(<Harness upload={upload} initial={OLD} />);
     await userEvent.upload(screen.getByLabelText("店家 logo"), photo());
     expect(await screen.findByRole("alert")).toHaveTextContent("只收 JPG、PNG、WebP 照片");
@@ -85,13 +86,26 @@ describe("MarketImageField", () => {
     expect(screen.getByLabelText("店家 logo")).toBeEnabled();
   });
 
+  it("上傳失敗的原因一律中文:斷網 → 連線失敗;非預期的英文錯誤 → 「上傳失敗,請再試一次」,不顯示原文", async () => {
+    const upload = vi
+      .fn<Upload>()
+      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+      .mockRejectedValueOnce(new SyntaxError("Unexpected token < in JSON at position 0"));
+    render(<Harness upload={upload} />);
+    await userEvent.upload(screen.getByLabelText("店家 logo"), photo());
+    expect(await screen.findByRole("alert")).toHaveTextContent("連線失敗,請檢查網路後再試一次");
+    await userEvent.upload(screen.getByLabelText("店家 logo"), photo());
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("上傳失敗,請再試一次"));
+    expect(screen.getByRole("alert")).not.toHaveTextContent("Unexpected");
+  });
+
   it("onBusyChange:開始上傳回報 true,成功或失敗結束都回報 false(店家設定頁靠它在上傳中停用儲存)", async () => {
     let finish: (path: string) => void = () => {};
     const onBusyChange = vi.fn();
     const upload = vi
       .fn<Upload>()
       .mockImplementationOnce(() => new Promise<string>((r) => (finish = r)))
-      .mockRejectedValueOnce(new Error("只收 JPG、PNG、WebP 照片"));
+      .mockRejectedValueOnce(new MarketImageError("只收 JPG、PNG、WebP 照片"));
     render(<Harness upload={upload} onBusyChange={onBusyChange} />);
     await userEvent.upload(screen.getByLabelText("店家 logo"), photo());
     expect(onBusyChange.mock.calls).toEqual([[true]]);

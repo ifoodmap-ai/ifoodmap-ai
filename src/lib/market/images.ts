@@ -9,7 +9,7 @@
 //   前端不能覆寫也不能刪檔。換掉的舊照片留在 bucket 當孤兒檔(公開 bucket,但網址是猜不到的 uuid);
 //   違規圖片只能由管理員從 Supabase Dashboard 或用 service role 的 Storage API 刪(SQL 刪不了)。
 import { MARKET_IMAGE_BUCKET, PHOTO_RULES } from "./constants";
-import { marketStorage, newUuid, type StorageBucket } from "./db";
+import { friendlyStorageError, marketStorage, newUuid, type StorageBucket } from "./db";
 
 export class MarketImageError extends Error {
   constructor(message: string) {
@@ -123,8 +123,8 @@ export const uploadMarketImage = async (
   const bucket = deps.storage();
   const mainPath = imagePath(supplierId, folder, id);
   const up = await bucket.upload(mainPath, main, options);
-  if (up.error) throw new MarketImageError(`上傳失敗:${up.error.message}`);
+  if (up.error) throw new MarketImageError(`上傳失敗:${friendlyStorageError(up.error)}`);
   const upThumb = await bucket.upload(imagePath(supplierId, folder, id, true), thumb, options);
-  if (upThumb.error) throw new MarketImageError(`縮圖上傳失敗:${upThumb.error.message}`);
+  if (upThumb.error) throw new MarketImageError(`縮圖上傳失敗:${friendlyStorageError(upThumb.error)}`);
   return mainPath;
 };

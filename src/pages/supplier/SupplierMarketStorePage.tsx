@@ -31,6 +31,8 @@ import MarketImageField from "./market/MarketImageField";
 const INPUT = "min-h-11 w-full rounded-md border border-slate-300 bg-white px-3 text-base focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-700";
 /** shrink-0:文字換行時(390 寬的「銀行轉帳」)勾選框才不會被 flex 壓小 */
 const CHECKBOX = "h-5 w-5 shrink-0";
+/** 認不得的錯誤顯示這句(資料庫錯誤附上錯誤代碼),不顯示英文原文 */
+const UNEXPECTED = "請稍後再試";
 
 const FieldError = ({ id, message }: { id: string; message?: string }) =>
   message ? (
@@ -40,7 +42,7 @@ const FieldError = ({ id, message }: { id: string; message?: string }) =>
   ) : null;
 
 export default function SupplierMarketStorePage() {
-  const { supplierId, loading: idLoading, error: idError } = useCurrentSupplier();
+  const { supplierId, loading: idLoading, error: idError, reload: reloadSupplier } = useCurrentSupplier();
   const [row, setRow] = useState<MarketStoreRow | null>(null);
   const [form, setForm] = useState<StoreForm>(emptyStoreForm());
   const [errors, setErrors] = useState<StoreFormErrors>({});
@@ -71,7 +73,7 @@ export default function SupplierMarketStorePage() {
         setStale(false);
         setLoadError(null);
       } catch (e) {
-        if (!cancelled) setLoadError(friendlyDbError(e));
+        if (!cancelled) setLoadError(friendlyDbError(e, UNEXPECTED));
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -128,7 +130,7 @@ export default function SupplierMarketStorePage() {
       }
       // 資料已被其他人更新:店家沒有寫,表單保留剛改的內容,顯示重新載入(重新載入才換成資料庫的值)
       setStale(err instanceof MarketStaleError || (err instanceof MarketPartialSaveError && err.failure instanceof MarketStaleError));
-      toast.error(err instanceof MarketPartialSaveError ? "只存好一部分" : "儲存失敗", { description: friendlyDbError(err) });
+      toast.error(err instanceof MarketPartialSaveError ? "只存好一部分" : "儲存失敗", { description: friendlyDbError(err, UNEXPECTED) });
     } finally {
       setSaving(false);
     }
@@ -141,7 +143,19 @@ export default function SupplierMarketStorePage() {
       </div>
     );
   }
-  if (!supplierId) return <p className="p-6 text-slate-600">{idError ?? "此帳號尚未綁定供應商"}</p>;
+  if (!supplierId) {
+    return (
+      <div className="mx-auto max-w-3xl space-y-4 p-6">
+        <h1 className="text-xl font-bold text-gray-900">店家設定</h1>
+        <div role="alert" className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-800">
+          {idError ?? "此帳號尚未綁定供應商"}
+        </div>
+        <Button type="button" variant="outline" onClick={reloadSupplier} className="min-h-11">
+          重新載入
+        </Button>
+      </div>
+    );
+  }
   if (loadError) {
     return (
       <div className="mx-auto max-w-3xl space-y-4 p-6">

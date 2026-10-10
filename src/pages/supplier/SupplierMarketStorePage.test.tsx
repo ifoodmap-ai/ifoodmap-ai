@@ -4,12 +4,19 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { toastError, toastSuccess } = vi.hoisted(() => ({ toastError: vi.fn(), toastSuccess: vi.fn() }));
+type SupplierState = { supplierId: string | null; loading: boolean; error: string | null; reload: () => void };
+const { toastError, toastSuccess, supplier } = vi.hoisted(() => ({
+  toastError: vi.fn(),
+  toastSuccess: vi.fn(),
+  /** null = 預設(已登入的 A 店);個別測試換成讀不到供應商帳號的狀態 */
+  supplier: { current: null as SupplierState | null },
+}));
 
 vi.mock("@/integrations/supabase/client", () => ({ supabase: {} }));
 vi.mock("sonner", () => ({ toast: { error: toastError, success: toastSuccess } }));
 vi.mock("@/hooks/use-current-supplier", () => ({
-  useCurrentSupplier: () => ({ supplierId: "a9200000-0000-4000-8000-00000000000a", loading: false, error: null }),
+  useCurrentSupplier: () =>
+    supplier.current ?? { supplierId: "a9200000-0000-4000-8000-00000000000a", loading: false, error: null, reload: () => {} },
 }));
 vi.mock("@/lib/market/store", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/market/store")>()),
@@ -36,6 +43,7 @@ const renderPage = () =>
   );
 
 beforeEach(() => {
+  supplier.current = null;
   vi.mocked(fetchOwnStore).mockResolvedValue({ store: null, transferInfo: null });
   vi.mocked(saveStore).mockResolvedValue(STORE_A);
 });
@@ -115,7 +123,7 @@ describe("SupplierMarketStorePage — 讀取狀態", () => {
     renderPage();
     await userEvent.click(await screen.findByRole("button", { name: "重新載入" }));
     await waitFor(() => expect(fetchOwnStore).toHaveBeenCalledTimes(2));
-    expect(await screen.findByRole("alert")).toHaveTextContent("boom");
+    expect(await screen.findByRole("alert")).toHaveTextContent("讀取店家設定失敗:請稍後再試");
     expect(document.querySelector("form")).toBeNull();
     expect(saveStore).not.toHaveBeenCalled();
   });
@@ -441,5 +449,36 @@ describe("SupplierMarketStorePage — 只存好一部分", () => {
     await userEvent.click(screen.getByRole("button", { name: "儲存店家設定" }));
     await waitFor(() => expect(saveStore).toHaveBeenCalledTimes(2));
     expect(vi.mocked(saveStore).mock.calls[1][2]).toEqual({ updatedAt: SAVED_AT, transferInfo: "舊帳號 1111" });
+  });
+});
+
+// 錯誤原文(TypeError: Failed to fetch、PostgREST 英文訊息)不直接顯示:走 db.ts 的中文轉換,而且可以重試。
+describe("SupplierMarketStorePage — 錯誤訊息轉中文、可以重試", () => {
+  it("讀不到供應商帳號:顯示中文原因與「重新載入」,按了會重查(不顯示表單)", async () => {
+    const reload = vi.fn();
+    supplier.current = { supplierId: null, loading: false, error: "連線失敗,請檢查網路後再試一次", reload };
+    renderPage();
+    expect(screen.getByRole("heading", { name: "店家設定" })).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("連線失敗,請檢查網路後再試一次");
+    expect(document.querySelector("form")).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "重新載入" }));
+    expect(reload).toHaveBeenCalledTimes(1);
+    expect(fetchOwnStore).not.toHaveBeenCalled();
+  });
+
+  it("讀取店家設定時資料庫回英文錯誤:顯示中文 + 錯誤代碼,不顯示原文", async () => {
+    vi.mocked(fetchOwnStore).mockRejectedValue(new MarketDbError({ message: "JWT expired", code: "PGRST301" }));
+    renderPage();
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("讀取店家設定失敗:請稍後再試(錯誤代碼 PGRST301)");
+    expect(alert).not.toHaveTextContent("JWT");
+  });
+
+  it("儲存時資料庫回英文錯誤:toast 顯示中文 + 錯誤代碼,不顯示原文", async () => {
+    vi.mocked(fetchOwnStore).mockResolvedValue({ store: STORE_A, transferInfo: "台灣銀行 004 帳號 123" });
+    vi.mocked(saveStore).mockRejectedValue(new MarketDbError({ message: "Could not find the 'x' column", code: "PGRST204" }));
+    renderPage();
+    await userEvent.click(await screen.findByRole("button", { name: "儲存店家設定" }));
+    await waitFor(() => expect(toastError).toHaveBeenCalledWith("儲存失敗", { description: "請稍後再試(錯誤代碼 PGRST204)" }));
   });
 });

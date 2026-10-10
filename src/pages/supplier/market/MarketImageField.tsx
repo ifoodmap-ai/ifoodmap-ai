@@ -3,6 +3,7 @@
 // 上傳中用 onBusyChange 告訴父層:店家設定頁上傳中不能儲存(否則存進去的是舊圖,或存完才冒出資料庫沒有的新圖)。
 import { useId, useState } from "react";
 import { Loader2 } from "lucide-react";
+import { friendlyDbError } from "@/lib/market/db";
 import { publicImageUrl, uploadMarketImage } from "@/lib/market/images";
 
 interface MarketImageFieldProps {
@@ -36,7 +37,8 @@ export default function MarketImageField({
     try {
       onChange(await upload(supplierId, "store", file));
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      // 走 db.ts 的中文轉換:images.ts 丟的 MarketImageError 本來就是中文;斷網、非預期的英文錯誤換成中文
+      setError(friendlyDbError(e, "上傳失敗,請再試一次"));
     } finally {
       setBusy(false);
       onBusyChange?.(false);

@@ -10,7 +10,7 @@ vi.mock("@/integrations/supabase/client", () => ({
   },
 }));
 
-import { friendlyDbError, isUuid, MarketDbError, marketRpc, newUuid, unwrap } from "./db";
+import { friendlyDbError, friendlyStorageError, isUuid, MarketDbError, marketRpc, newUuid, unwrap } from "./db";
 
 describe("unwrap / marketRpc", () => {
   it("沒錯就回 data", async () => {
@@ -69,6 +69,61 @@ describe("friendlyDbError", () => {
     // 資料庫真的回了錯誤碼就不是斷網,照原本的規則
     expect(friendlyDbError(new MarketDbError({ message: "Failed to fetch policy", code: "42501" }))).toBe("沒有權限做這個動作");
     expect(friendlyDbError(new TypeError("x is not a function"))).toBe("x is not a function");
+  });
+});
+
+// 有給中文備援的地方(店家設定頁、useCurrentSupplier、圖片欄位):英文原文不會直接出現在畫面上。
+describe("friendlyDbError 的中文備援", () => {
+  const FB = "讀取供應商帳號失敗,請重新載入";
+
+  it("認不得的資料庫錯誤 → 備援文字 + 錯誤代碼(不顯示英文原文);沒有代碼就只有備援", () => {
+    expect(friendlyDbError(new MarketDbError({ message: "JWT expired", code: "PGRST301" }), FB)).toBe(`${FB}(錯誤代碼 PGRST301)`);
+    expect(friendlyDbError(new MarketDbError({ message: "something odd" }), FB)).toBe(FB);
+  });
+
+  it("認得的照舊:hint、權限、斷網都還是原本的中文", () => {
+    expect(friendlyDbError(new MarketDbError({ message: "x", code: "42501" }), FB)).toBe("沒有權限做這個動作");
+    expect(friendlyDbError(new MarketDbError({ message: "TypeError: Failed to fetch", code: "", hint: "" }), FB)).toBe(
+      "連線失敗,請檢查網路後再試一次",
+    );
+    expect(friendlyDbError(new TypeError("Failed to fetch"), FB)).toBe("連線失敗,請檢查網路後再試一次");
+  });
+
+  it("市集自己丟的錯(名稱 Market 開頭,訊息本來就是中文)照原訊息;其他非預期的錯誤用備援", () => {
+    class MarketImageError extends Error {
+      constructor(m: string) {
+        super(m);
+        this.name = "MarketImageError";
+      }
+    }
+    expect(friendlyDbError(new MarketImageError("只收 JPG、PNG、WebP 照片"), FB)).toBe("只收 JPG、PNG、WebP 照片");
+    expect(friendlyDbError(new TypeError("x is not a function"), FB)).toBe(FB);
+    expect(friendlyDbError("boom", FB)).toBe(FB);
+  });
+
+  it("沒給備援時行為不變(其他頁面照舊)", () => {
+    expect(friendlyDbError(new MarketDbError({ message: "原文", code: "PGRST301" }))).toBe("原文");
+    expect(friendlyDbError(new Error("一般錯誤"))).toBe("一般錯誤");
+  });
+});
+
+// Storage 上傳的錯誤(storage-js 的 StorageApiError:HTTP status + 伺服器的 statusCode;斷網是 StorageUnknownError)
+describe("friendlyStorageError", () => {
+  it("權限:RLS 擋下(HTTP 400 + statusCode 403)、401 / 403", () => {
+    const msg = "沒有權限上傳到這個店家的資料夾,請重新登入後再試";
+    expect(friendlyStorageError({ message: "new row violates row-level security policy", status: 400, statusCode: "403" })).toBe(msg);
+    expect(friendlyStorageError({ message: "Unauthorized", status: 401 })).toBe(msg);
+    expect(friendlyStorageError({ message: "new row violates row-level security policy" })).toBe(msg);
+  });
+
+  it("同名檔案、太大、格式不對、斷網、其他", () => {
+    expect(friendlyStorageError({ message: "The resource already exists", status: 409 })).toBe("同名的檔案已經存在,請重新選一次照片");
+    expect(friendlyStorageError({ message: "The object exceeded the maximum allowed size", status: 413 })).toBe(
+      "照片超過 2 MB,請換一張或先縮小再上傳",
+    );
+    expect(friendlyStorageError({ message: "mime type image/gif is not supported", statusCode: "415" })).toBe("只收 JPG、PNG、WebP 照片");
+    expect(friendlyStorageError({ message: "Failed to fetch" })).toBe("連線失敗,請檢查網路後再試一次");
+    expect(friendlyStorageError({ message: "Internal Server Error", status: 500 })).toBe("伺服器暫時無法處理,請稍後再試");
   });
 });
 
