@@ -17158,3 +17158,33 @@ Task 3–7 照本計畫做完、規格審查逐位元相同之後,品質審查�
    - Task 13 `images.ts` 上傳一律 `upsert: false`,不刪檔;Task 21(logo / 封面「移除」)與 Task 24(商品照片「移除」)只是從表單 / 清單拿掉路徑,不刪 Storage 的檔。
    - 全計畫沒有任何對 `market_*` 資料表的 `.delete()`,也沒有 Storage 的 `.remove()`(出現的 `remove` 都是購物車的,`listeners.delete` 是 JS 的 Set)。供應商刪商品在資料庫層仍然允許,但沒有任何 Task 的前端用到。
 4. 編輯含 Unicode 跳脫序列(反斜線 + u + 四位十六進位,例如正規式裡的全形空白)的檔案時,agent 的工具可能把跳脫直接換成看不見的字元本身(`009e8e0` 與這次都發生過)。改完用程式掃一次 Unicode 類別 Zs / Zl / Zp / Cf / Cc 的字元。
+
+### 2026-10-10:migration 修正(第 2 輪複審)(commit `242204c`,分支 `market`)
+
+上一節(第 1 輪)的修正經複審,攻擊都還擋得住;另外補 1 個 Important、3 個 Minor。**以 repo(`market` 分支)為準。** 只改了 120000(migration、還原檔、兩支測試),120100 沒有變。
+
+**改了什麼、為什麼**
+
+1. 【Important】**照片「只能寫一次」只保護核准時已經存在的檔**:photos 先填還沒上傳的路徑、或只傳主圖不傳縮圖,等核准後才第一次上傳 —— Storage 放行,商品仍是已核准,anon 看得到;前端 MarketImage 讀不到縮圖會改顯示主圖,審核畫面看不出缺了縮圖。
+   - 管理員核准(含直接建成已核准)、以及已核准時改了照片,guard 檢查 photos 每張照片與它的縮圖(`<uuid>_t.<副檔名>`,照 120100 的路徑格式,跟主圖同一個副檔名)都已經在 `storage.objects`(bucket `market-images`);缺任何一張 → 22023,HINT `photos_not_uploaded`(前端已對應中文,commit `cd05649`)。錯誤訊息帶第一個缺檔的路徑。
+   - 只在「變成已核准」與「已核准時改了照片」檢查:改價格、庫存(含第 2 階段下單扣庫存、取消補庫存)不檢查,管理員之後從 Storage 刪掉違規圖也不會讓這些操作失敗。photos 是空陣列時沒有東西要查,照樣能核准(審核頁會顯示「沒有照片」)。
+   - 🔴 **還沒解決的落差(要擇一處理)**:前端 `thumbPathOf`(`src/lib/market/images.ts`)把縮圖一律換成 `_t.jpg`,資料庫照指示推成 `_t.<同一個副檔名>`。前端上傳的主圖一律是 `.jpg`,兩邊一致;但供應商若直接打 API 把 photos 填成 `.png` / `.jpeg` / `.webp`,核准時檢查的是 `_t.png` 等,商品卡顯示的卻是 `_t.jpg` —— 核准後才上傳 `_t.jpg` 就繞過了。修法二選一:前端 `thumbPathOf` 保留副檔名(正常流程不受影響),或資料庫把商品照片限定 `.jpg`。
+2. 【Minor】`market_stores_guard` 擁有權檢查的例外改看 `auth.role()`:NULL(資料庫擁有者直接寫,沒有 JWT)與 `service_role` 不擋,其他一律檢查。原本看 `auth.uid()` 有沒有值,沒有 sub 的 authenticated JWT 會被當成擁有者放過,又能用 42501 / 22023 分辨別家有沒有轉帳資訊。第 2 階段測試(Task 32、35、36)用資料庫擁有者身分直接 INSERT 店家,`auth.role()` 是 NULL,照常能跑。
+3. 【Minor】**只填 U+200E、U+00AD、U+3164、U+2800、U+FE0F 這類字元的品名看起來是空白卻存得進去**:新增 `market_visible(text)`,去掉空白、控制字元(Cc)、格式字元(Cf)與看起來空白的字元(韓文填充字 U+115F、U+1160、U+3164、U+FFA0,點字空白 U+2800,異體字選擇符 U+FE00–U+FE0F 與 U+E0100–U+E01EF,組合字形連接符 U+034F,高棉文 U+17B4、U+17B5,蒙古文 U+180B–U+180F)之後至少要剩 1 個字。
+   - 商品 guard 的文字欄位看不到字就當成空的:品名、規格變成空字串、被 `market_products_text_lengths` 擋(23514);產地、保存方式、保存期限、說明、退回原因當成沒填(NULL;管理員退回時原因因此會觸發 `reject_reason_required`)。
+   - 只判斷不改內容:U+FE0F 沒有放進 `market_trim`(emoji 結尾的品名不會被截掉),ZWJ 組合原樣保留。店家欄位與轉帳資訊沒有改(同第 1 輪,審查只點名商品)。
+   - 只給 SECURITY DEFINER 的 guard 用,不開給 API 角色;還原檔與還原測試加 `market_visible`。
+4. 【Minor】**created_at 的測試分不出「保留原值」和「改成 now()」**(同一個交易裡 `now()` 不會變):改成先暫停 guard(`ALTER TABLE … DISABLE TRIGGER`,拿 SHARE ROW EXCLUSIVE 鎖、擋寫不擋讀,交易結束就放),把店家與商品的 created_at 設成 2020-01-01,再驗證供應商改成 2099 時保留 2020-01-01。突變驗證:把兩支 guard 修改分支的 `NEW.created_at := OLD.created_at` 換成 `now()`,正好這兩項失敗(其他 95 項照樣過)。
+5. **測試 fixture**:`market_catalog.test.sql` 只帶 120000,核准又要查 Storage,所以第 2 節開頭先建 bucket `market-images`(已經有就 `ON CONFLICT DO NOTHING`)與 P1 會用到的四個照片物件(兩張主圖、兩張縮圖),都用資料庫擁有者身分直接寫、交易最後 ROLLBACK;第 31 個 Task 套上 120100 之後再跑也一樣。
+
+**測試項數**
+
+| 乾跑 | 第 1 輪後 | 現在 | 差異 |
+|---|---|---|---|
+| `market_catalog` | 87 | **97** | 新增第 4 節 10 項(沒有 sub 的 JWT 1、照片上傳 5、看起來空白的文字 4);created_at 兩項改寫,項數不變 |
+| `market_catalog_rollback` | 3 | 3 | 函式清單 7 → 8 個(多 `market_visible`);只套 migration、不套還原檔時「還原後函式都不在」got 7 → **got 8** |
+| `market_images_storage` | 18 | 18 | 不變 |
+| `market_images_storage_rollback` | 3 | 3 | 不變 |
+
+- 上一節「要跟著改的 Expected」裡 `market_catalog` 的 87 一律改成 **97**(F 節第 116 行、Task 31 第 8291 / 8341 / 8387 行);`market_images_storage` 維持 18,`image_policies` 維持 2。
+- 業主實測(Task 60)或用 Dashboard 手動放照片時:主圖和 `<uuid>_t.<副檔名>` 縮圖都要放,否則核准會被擋(前端上傳本來就兩張都傳)。
