@@ -16,6 +16,7 @@ DROP FUNCTION IF EXISTS public.market_stores_guard();
 DROP FUNCTION IF EXISTS public.market_store_transfer_touch();
 DROP FUNCTION IF EXISTS public.market_store_is_open(uuid);
 DROP FUNCTION IF EXISTS public.market_image_path_matches(text, uuid, text);
+DROP FUNCTION IF EXISTS public.market_trim(text);
 DROP FUNCTION IF EXISTS public.market_tw_cities();
 
 DELETE FROM supabase_migrations.schema_migrations WHERE version = '20261009120000';

@@ -10,13 +10,17 @@
 -- 權限:
 --   anon / 一般登入者:只讀「零售啟用 + 供應商啟用中」的店家,與其中「已核准 + 上架中」的商品(market_store_is_open)
 --   供應商:用 current_supplier_ids() 讀寫自家的店家、轉帳資訊、商品;guard trigger 擋「自己核准」「改零售啟用」「搬到別家」
+--     店家只能讀、建、改,不能刪(刪掉再重建就能洗掉管理員的停用);轉帳資訊、商品可以刪(沒有管理員的決定可洗)
 --   管理員(is_admin()):全部;核准 / 退回 / 下架(= 退回並填原因)/ 停用店家零售(要填原因)
+--   資料表權限先 REVOKE ALL(含 PG17 的 MAINTAIN)再 GRANT 真正需要的,細分交給 RLS
 --
 -- 審核規則(guard trigger 在伺服器端決定,前端只是顯示):
 --   - 供應商只能把商品設成 draft / pending;approved / rejected 只有管理員能設
 --   - 已核准(approved)的商品改了內容欄位(品名、分類、規格、溫層、產地、保存方式、保存期限、說明、照片)→ 自動回到 pending;
 --     改價格、庫存、上架開關(is_listed)、對應的 B2B 商品不用重審
 --   - 退回一定要填原因(會顯示給供應商);核准時清掉原因;reviewed_by / reviewed_at / submitted_at 由伺服器填
+--   - created_at 一律由伺服器填(新增 = now()、修改保留原值):首頁照 created_at 排序,自己帶未來時間就能永遠置頂
+--   - 文字欄位去頭尾空白時連全形空白、零寬字元一起去(market_trim);品名、規格去完是空的 → CHECK 擋
 --
 -- 圖片路徑(Storage bucket 在下一支 migration 20261009120100):<supplier_id>/<商品 id 或 store>/<uuid>.<jpg|jpeg|png|webp>
 --
@@ -59,6 +63,19 @@ AS $$
   SELECT p_path IS NOT NULL
      AND p_path ~ ('^' || p_supplier::text || '/' || p_folder
                    || '/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(jpg|jpeg|png|webp)$')
+$$;
+
+-- 去掉頭尾的空白與看不見的字元。btrim 只去半形空白:全形空白(U+3000)、不換行空白(U+00A0)、
+-- 零寬字元(U+200B–U+200D、U+2060、U+FEFF)都會留下來,只有這些字元的品名看起來是空的卻存得進去。
+-- 字元集合:\s(ASCII 空白)+ Unicode 的 White_Space + 零寬 / BOM。中間的字元不動。
+CREATE OR REPLACE FUNCTION public.market_trim(p_text text)
+RETURNS text
+LANGUAGE sql
+IMMUTABLE
+SET search_path = ''
+AS $$
+  SELECT regexp_replace(p_text, '^' || v.c || '+|' || v.c || '+$', '', 'g')
+    FROM (VALUES ('[\s\u0085\u00a0\u1680\u180e\u2000-\u200d\u2028\u2029\u202f\u205f\u2060\u3000\ufeff]')) AS v(c)
 $$;
 
 -- ---------------------------------------------------------------------
@@ -137,7 +154,18 @@ LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = ''
 AS $$
+DECLARE
+  v_admin boolean := public.is_admin();
 BEGIN
+  -- 先確認是自家的店。這支 SECURITY DEFINER 的 guard 比 RLS 的 WITH CHECK 先跑:不先擋,替別家建店時
+  -- 下面查轉帳資訊(繞過 RLS)回 22023、RLS 回 42501,就能判斷別家有沒有存轉帳資訊。錯誤碼跟 RLS 一樣是 42501。
+  -- 只有 INSERT 要擋:UPDATE 時 RLS 的 USING 已經只留自家的列,supplier_id 又改不了。
+  -- auth.uid() 是 NULL = 資料庫擁有者 / service_role 直接寫(本來就不受 RLS 管),不擋。
+  IF TG_OP = 'INSERT' AND NOT v_admin AND auth.uid() IS NOT NULL
+     AND NOT EXISTS (SELECT 1 FROM public.current_supplier_ids() AS c(id) WHERE c.id = NEW.supplier_id) THEN
+    RAISE EXCEPTION '只能設定自家的零售店家' USING ERRCODE = '42501';
+  END IF;
+
   IF TG_OP = 'UPDATE' AND NEW.supplier_id IS DISTINCT FROM OLD.supplier_id THEN
     RAISE EXCEPTION '不能更改店家所屬的供應商' USING ERRCODE = '42501', HINT = 'supplier_immutable';
   END IF;
@@ -147,7 +175,7 @@ BEGIN
   NEW.disabled_reason := NULLIF(btrim(COALESCE(NEW.disabled_reason, '')), '');
 
   -- 零售啟用 / 停用原因只有管理員能改
-  IF NOT public.is_admin() THEN
+  IF NOT v_admin THEN
     IF TG_OP = 'INSERT' THEN
       NEW.is_enabled := true;
       NEW.disabled_reason := NULL;
@@ -180,6 +208,12 @@ BEGIN
     RAISE EXCEPTION '接受銀行轉帳要先填寫轉帳資訊' USING ERRCODE = '22023', HINT = 'transfer_info_required';
   END IF;
 
+  -- created_at 由伺服器決定:新增 = 現在,修改保留原值(自己帶的值一律蓋掉)
+  IF TG_OP = 'INSERT' THEN
+    NEW.created_at := now();
+  ELSE
+    NEW.created_at := OLD.created_at;
+  END IF;
   NEW.updated_at := now();
   RETURN NEW;
 END;
@@ -215,9 +249,22 @@ CREATE POLICY "market stores public read" ON public.market_stores
   FOR SELECT TO anon, authenticated
   USING (public.market_store_is_open(supplier_id));
 
-DROP POLICY IF EXISTS "market stores supplier manage" ON public.market_stores;
-CREATE POLICY "market stores supplier manage" ON public.market_stores
-  FOR ALL TO authenticated
+-- 供應商對自家店家只有 SELECT / INSERT / UPDATE,沒有 DELETE:guard 在 INSERT 時一律設成啟用,
+-- 能刪的話,被管理員停用的店家刪掉再重建就變回啟用、停用原因也不見了。
+-- (店家設定頁的儲存是 upsert = INSERT … ON CONFLICT DO UPDATE,用到的是 INSERT + UPDATE + SELECT,不受影響。)
+DROP POLICY IF EXISTS "market stores supplier read" ON public.market_stores;
+CREATE POLICY "market stores supplier read" ON public.market_stores
+  FOR SELECT TO authenticated
+  USING (supplier_id IN (SELECT public.current_supplier_ids()));
+
+DROP POLICY IF EXISTS "market stores supplier insert" ON public.market_stores;
+CREATE POLICY "market stores supplier insert" ON public.market_stores
+  FOR INSERT TO authenticated
+  WITH CHECK (supplier_id IN (SELECT public.current_supplier_ids()));
+
+DROP POLICY IF EXISTS "market stores supplier update" ON public.market_stores;
+CREATE POLICY "market stores supplier update" ON public.market_stores
+  FOR UPDATE TO authenticated
   USING (supplier_id IN (SELECT public.current_supplier_ids()))
   WITH CHECK (supplier_id IN (SELECT public.current_supplier_ids()));
 
@@ -226,6 +273,7 @@ CREATE POLICY "market stores admin" ON public.market_stores
   FOR ALL TO authenticated
   USING (public.is_admin()) WITH CHECK (public.is_admin());
 
+-- 轉帳資訊可以刪(FOR ALL):這張表沒有管理員設的欄位,刪掉再重建洗不掉任何東西
 DROP POLICY IF EXISTS "market store transfer supplier manage" ON public.market_store_transfer;
 CREATE POLICY "market store transfer supplier manage" ON public.market_store_transfer
   FOR ALL TO authenticated
@@ -237,14 +285,16 @@ CREATE POLICY "market store transfer admin" ON public.market_store_transfer
   FOR ALL TO authenticated
   USING (public.is_admin()) WITH CHECK (public.is_admin());
 
--- 這個專案的 public schema 預設把新表的全部權限給 anon / authenticated,RLS 之外再收一層
-REVOKE ALL ON TABLE public.market_store_transfer FROM anon;
-REVOKE INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLE public.market_stores FROM anon;
-REVOKE TRUNCATE, REFERENCES, TRIGGER ON TABLE public.market_stores, public.market_store_transfer FROM authenticated;
+-- 這個專案的 public schema 預設把新表的全部權限(PG17 還有 MAINTAIN)給 anon / authenticated:
+-- 先全部收回,再給真正需要的,RLS 之外再收一層。authenticated 的 DELETE 在店家表只有管理員的 policy 用得到。
+REVOKE ALL ON TABLE public.market_stores, public.market_store_transfer FROM anon, authenticated;
+GRANT SELECT ON TABLE public.market_stores TO anon;
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.market_stores, public.market_store_transfer TO authenticated;
 
 REVOKE ALL ON FUNCTION public.market_stores_guard() FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION public.market_store_transfer_touch() FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION public.market_image_path_matches(text, uuid, text) FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.market_trim(text) FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION public.market_store_is_open(uuid) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.market_store_is_open(uuid) TO anon, authenticated, service_role;
 
@@ -294,7 +344,8 @@ CREATE TABLE IF NOT EXISTS public.market_products (
   ),
   CONSTRAINT market_products_price CHECK (price BETWEEN 1 AND 1000000),
   CONSTRAINT market_products_stock CHECK (stock IS NULL OR stock BETWEEN 0 AND 100000),
-  CONSTRAINT market_products_photos CHECK (cardinality(photos) <= 5)
+  -- 一維陣列(空陣列的 array_ndims 是 NULL);只限張數的話,二維陣列也存得進去
+  CONSTRAINT market_products_photos CHECK (cardinality(photos) <= 5 AND COALESCE(array_ndims(photos), 1) = 1)
 );
 
 CREATE INDEX IF NOT EXISTS market_products_supplier_idx ON public.market_products (supplier_id, created_at DESC);
@@ -320,18 +371,20 @@ BEGIN
     RAISE EXCEPTION '不能更改商品所屬的店家' USING ERRCODE = '42501', HINT = 'supplier_immutable';
   END IF;
 
-  -- 文字欄位去頭尾空白,空字串當成沒填
-  NEW.name           := btrim(COALESCE(NEW.name, ''));
-  NEW.spec           := btrim(COALESCE(NEW.spec, ''));
-  NEW.origin         := NULLIF(btrim(COALESCE(NEW.origin, '')), '');
-  NEW.storage_method := NULLIF(btrim(COALESCE(NEW.storage_method, '')), '');
-  NEW.shelf_life     := NULLIF(btrim(COALESCE(NEW.shelf_life, '')), '');
-  NEW.description    := NULLIF(btrim(COALESCE(NEW.description, '')), '');
-  NEW.reject_reason  := NULLIF(btrim(COALESCE(NEW.reject_reason, '')), '');
+  -- 文字欄位去頭尾空白(連全形空白、零寬字元一起去,見 market_trim),空字串當成沒填;
+  -- 品名、規格去完是空的 → market_products_text_lengths 擋(23514)
+  NEW.name           := public.market_trim(COALESCE(NEW.name, ''));
+  NEW.spec           := public.market_trim(COALESCE(NEW.spec, ''));
+  NEW.origin         := NULLIF(public.market_trim(COALESCE(NEW.origin, '')), '');
+  NEW.storage_method := NULLIF(public.market_trim(COALESCE(NEW.storage_method, '')), '');
+  NEW.shelf_life     := NULLIF(public.market_trim(COALESCE(NEW.shelf_life, '')), '');
+  NEW.description    := NULLIF(public.market_trim(COALESCE(NEW.description, '')), '');
+  NEW.reject_reason  := NULLIF(public.market_trim(COALESCE(NEW.reject_reason, '')), '');
   NEW.photos         := COALESCE(NEW.photos, '{}'::text[]);
 
   -- 照片一定在自己的資料夾:<supplier_id>/<商品 id>/<uuid>.<副檔名>
-  SELECT p INTO v_bad
+  -- (陣列裡的 NULL 也算錯:market_image_path_matches 對 NULL 回 false,COALESCE 讓 v_bad 不是 NULL 才擋得到)
+  SELECT COALESCE(p, '(空值)') INTO v_bad
     FROM unnest(NEW.photos) AS p
    WHERE NOT public.market_image_path_matches(p, NEW.supplier_id, NEW.id::text)
    LIMIT 1;
@@ -393,8 +446,17 @@ BEGIN
     NEW.submitted_at := now();
   ELSIF TG_OP = 'UPDATE' THEN
     NEW.submitted_at := OLD.submitted_at;
+  ELSE
+    -- 新增但沒有送審(草稿;或管理員直接建成已核准 / 退回):自己帶的送審時間不算
+    NEW.submitted_at := NULL;
   END IF;
 
+  -- created_at 由伺服器決定:新增 = 現在,修改保留原值(自己帶的值一律蓋掉)
+  IF TG_OP = 'INSERT' THEN
+    NEW.created_at := now();
+  ELSE
+    NEW.created_at := OLD.created_at;
+  END IF;
   NEW.updated_at := now();
   RETURN NEW;
 END;
@@ -412,6 +474,7 @@ CREATE POLICY "market products public read" ON public.market_products
   FOR SELECT TO anon, authenticated
   USING (review_status = 'approved' AND is_listed AND public.market_store_is_open(supplier_id));
 
+-- 商品可以刪(FOR ALL):刪掉再重建只會得到草稿,還是要送審、管理員核准才上架,洗不掉任何管理員的決定
 DROP POLICY IF EXISTS "market products supplier manage" ON public.market_products;
 CREATE POLICY "market products supplier manage" ON public.market_products
   FOR ALL TO authenticated
@@ -423,8 +486,10 @@ CREATE POLICY "market products admin" ON public.market_products
   FOR ALL TO authenticated
   USING (public.is_admin()) WITH CHECK (public.is_admin());
 
-REVOKE INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLE public.market_products FROM anon;
-REVOKE TRUNCATE, REFERENCES, TRIGGER ON TABLE public.market_products FROM authenticated;
+-- 跟店家表一樣:先全部收回(含 MAINTAIN),再給真正需要的
+REVOKE ALL ON TABLE public.market_products FROM anon, authenticated;
+GRANT SELECT ON TABLE public.market_products TO anon;
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.market_products TO authenticated;
 REVOKE ALL ON FUNCTION public.market_products_guard() FROM PUBLIC, anon, authenticated;
 
 NOTIFY pgrst, 'reload schema';

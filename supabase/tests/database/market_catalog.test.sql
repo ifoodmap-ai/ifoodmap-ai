@@ -365,3 +365,101 @@ SELECT pg_temp.expect('B 刪不掉 A 的商品',
     WITH d AS (DELETE FROM public.market_products WHERE id = 'a9300000-0000-4000-8000-000000000001' RETURNING 1)
     SELECT count(*)::text FROM d$q$),
   '0');
+
+-- ---------------------------------------------------------------------
+-- 3. 審查後補強(2026-10-10,見計畫「勘誤」):刪店洗掉停用、created_at、guard 先檢查擁有權、
+--    資料表權限(PG17 的 MAINTAIN)、全形空白 / 零寬字元的品名、二維 / NULL 的 photos、草稿的 submitted_at
+-- ---------------------------------------------------------------------
+-- D 存轉帳資訊(資料庫擁有者身分;B 沒有存):替別家建店時,別家有沒有轉帳資訊都要回一樣的錯
+INSERT INTO public.market_store_transfer (supplier_id, transfer_info)
+VALUES ('a9200000-0000-4000-8000-00000000000d', '郵局(700) 帳號 0001234-5678901 戶名 市集測試 D');
+SELECT pg_temp.expect('替別家建店家並勾轉帳:別家有沒有轉帳資訊都回 42501(guard 先檢查擁有權)',
+  pg_temp.as_exec('authenticated', pg_temp.ua(), $q$
+    INSERT INTO public.market_stores (supplier_id, delivery_cities, payment_methods)
+    VALUES ('a9200000-0000-4000-8000-00000000000b', ARRAY['臺北市'], ARRAY['cod', 'transfer'])$q$)
+  || '|' ||
+  pg_temp.as_exec('authenticated', pg_temp.ua(), $q$
+    INSERT INTO public.market_stores (supplier_id, delivery_cities, payment_methods)
+    VALUES ('a9200000-0000-4000-8000-00000000000d', ARRAY['臺北市'], ARRAY['cod', 'transfer'])$q$),
+  'ERR 42501|ERR 42501');
+SELECT pg_temp.expect('D 建自己的店家(自己帶 created_at = 2099)',
+  pg_temp.as_exec('authenticated', pg_temp.ud(), $q$
+    INSERT INTO public.market_stores (supplier_id, delivery_cities, created_at)
+    VALUES ('a9200000-0000-4000-8000-00000000000d', ARRAY['臺北市'], '2099-01-01 00:00+08')$q$),
+  'OK');
+SELECT pg_temp.expect('建店時自己帶的 created_at 被改成現在',
+  (SELECT (created_at = now())::text FROM public.market_stores WHERE supplier_id = 'a9200000-0000-4000-8000-00000000000d'), 'true');
+SELECT pg_temp.expect('A 改店家的 created_at 沒有作用',
+  pg_temp.as_val('authenticated', pg_temp.ua(), $q$
+    WITH u AS (UPDATE public.market_stores SET created_at = '2099-01-01 00:00+08'
+                WHERE supplier_id = 'a9200000-0000-4000-8000-00000000000a' RETURNING (created_at = now())::text AS v)
+    SELECT v FROM u$q$),
+  'true');
+SELECT pg_temp.expect('管理員停用 D 的零售(填原因)',
+  pg_temp.as_exec('authenticated', pg_temp.uadmin(), $q$
+    UPDATE public.market_stores SET is_enabled = false, disabled_reason = '測試停用'
+     WHERE supplier_id = 'a9200000-0000-4000-8000-00000000000d'$q$),
+  'OK');
+SELECT pg_temp.expect('停用後 D 刪不掉店家(0 列;刪掉再重建就能洗掉停用)',
+  pg_temp.as_val('authenticated', pg_temp.ud(), $q$
+    WITH d AS (DELETE FROM public.market_stores WHERE supplier_id = 'a9200000-0000-4000-8000-00000000000d' RETURNING 1)
+    SELECT count(*)::text FROM d$q$),
+  '0');
+SELECT pg_temp.expect('D 的店家還在、仍停用、原因保留',
+  pg_temp.as_val('authenticated', pg_temp.ud(), $q$
+    SELECT is_enabled::text || '|' || disabled_reason FROM public.market_stores
+     WHERE supplier_id = 'a9200000-0000-4000-8000-00000000000d'$q$),
+  'false|測試停用');
+SELECT pg_temp.expect('三張表:anon / authenticated 都沒有 MAINTAIN、TRUNCATE、REFERENCES、TRIGGER',
+  (SELECT COALESCE(string_agg(r || ' ' || t, ',' ORDER BY r, t), '無')
+     FROM unnest(ARRAY['anon', 'authenticated']) AS r,
+          unnest(ARRAY['market_stores', 'market_store_transfer', 'market_products']) AS t
+    WHERE has_table_privilege(r, 'public.' || t, 'MAINTAIN,TRUNCATE,REFERENCES,TRIGGER')),
+  '無');
+SELECT pg_temp.expect('該有的權限都在:anon 讀店家與商品;authenticated 讀寫三張表(細分靠 RLS)',
+  (has_table_privilege('anon', 'public.market_stores', 'SELECT')
+   AND has_table_privilege('anon', 'public.market_products', 'SELECT')
+   AND (SELECT bool_and(has_table_privilege('authenticated', 'public.' || t, p))
+          FROM unnest(ARRAY['market_stores', 'market_store_transfer', 'market_products']) AS t,
+               unnest(ARRAY['SELECT', 'INSERT', 'UPDATE', 'DELETE']) AS p))::text,
+  'true');
+SELECT pg_temp.expect('A 新增草稿商品(品名前後有全形空白、零寬字元,自己帶 created_at 與 submitted_at)',
+  pg_temp.as_exec('authenticated', pg_temp.ua(), $q$
+    INSERT INTO public.market_products (id, supplier_id, name, category, spec, price, created_at, submitted_at)
+    VALUES ('a9300000-0000-4000-8000-000000000004', 'a9200000-0000-4000-8000-00000000000a',
+            chr(12288) || '有機菠菜' || chr(8203) || ' ', 'vegetable', '1 把', 60, '2099-01-01 00:00+08', '2020-01-01 00:00+08')$q$),
+  'OK');
+SELECT pg_temp.expect('品名前後的全形空白(U+3000)、零寬字元(U+200B)會去掉',
+  (SELECT name FROM public.market_products WHERE id = 'a9300000-0000-4000-8000-000000000004'), '有機菠菜');
+SELECT pg_temp.expect('新增商品自己帶的 created_at 被改成現在',
+  (SELECT (created_at = now())::text FROM public.market_products WHERE id = 'a9300000-0000-4000-8000-000000000004'), 'true');
+SELECT pg_temp.expect('新增草稿自己帶的 submitted_at 被清掉',
+  (SELECT (submitted_at IS NULL)::text FROM public.market_products WHERE id = 'a9300000-0000-4000-8000-000000000004'), 'true');
+SELECT pg_temp.expect('A 改商品的 created_at 沒有作用',
+  pg_temp.as_val('authenticated', pg_temp.ua(), $q$
+    WITH u AS (UPDATE public.market_products SET created_at = '2099-01-01 00:00+08'
+                WHERE id = 'a9300000-0000-4000-8000-000000000004' RETURNING (created_at = now())::text AS v)
+    SELECT v FROM u$q$),
+  'true');
+SELECT pg_temp.expect('品名只有全形空白、或只有零寬字元被擋',
+  pg_temp.as_exec('authenticated', pg_temp.ua(), $q$
+    INSERT INTO public.market_products (id, supplier_id, name, category, spec, price)
+    VALUES ('a9300000-0000-4000-8000-000000000005', 'a9200000-0000-4000-8000-00000000000a', chr(12288) || chr(12288), 'fruit', '1 盒', 100)$q$)
+  || '|' ||
+  pg_temp.as_exec('authenticated', pg_temp.ua(), $q$
+    INSERT INTO public.market_products (id, supplier_id, name, category, spec, price)
+    VALUES ('a9300000-0000-4000-8000-000000000006', 'a9200000-0000-4000-8000-00000000000a', chr(8203) || chr(65279), 'fruit', '1 盒', 100)$q$),
+  'ERR 23514|ERR 23514');
+SELECT pg_temp.expect('二維的 photos 被擋',
+  pg_temp.as_exec('authenticated', pg_temp.ua(), $q$
+    INSERT INTO public.market_products (id, supplier_id, name, category, spec, price, photos)
+    VALUES ('a9300000-0000-4000-8000-000000000007', 'a9200000-0000-4000-8000-00000000000a', '二維照片', 'fruit', '1 盒', 100,
+            ARRAY[ARRAY['a9200000-0000-4000-8000-00000000000a/a9300000-0000-4000-8000-000000000007/a9900000-0000-4000-8000-000000000021.jpg',
+                        'a9200000-0000-4000-8000-00000000000a/a9300000-0000-4000-8000-000000000007/a9900000-0000-4000-8000-000000000022.jpg']])$q$),
+  'ERR 23514');
+SELECT pg_temp.expect('photos 裡有 NULL 被擋',
+  pg_temp.as_exec('authenticated', pg_temp.ua(), $q$
+    INSERT INTO public.market_products (id, supplier_id, name, category, spec, price, photos)
+    VALUES ('a9300000-0000-4000-8000-000000000008', 'a9200000-0000-4000-8000-00000000000a', '空的照片', 'fruit', '1 盒', 100,
+            ARRAY[NULL]::text[])$q$),
+  'ERR 22023:invalid_photo_path');
