@@ -1,6 +1,7 @@
 // 零售商品的新增 / 編輯視窗(商品目錄頁的「零售商品」分頁與每列的「開放零售」共用)。
 // 父層每次打開都給新的 key:新商品的 id 在打開當下決定(照片要先上傳到 <supplier>/<商品 id>/)。
-import { useState } from "react";
+// 照片上傳中不能儲存(存進去的會少那張);驗證沒過時焦點移到第一個出錯的欄位(視窗很長,錯誤可能在畫面外)。
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -31,7 +32,11 @@ interface MarketProductDialogProps {
   upload?: (supplierId: string, folder: string, file: File) => Promise<string>;
 }
 
-const INPUT = "min-h-11 w-full rounded-md border border-slate-300 bg-white px-3 text-base focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-700";
+const INPUT =
+  "min-h-11 w-full rounded-md border border-slate-300 bg-white px-3 text-base focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-700 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500";
+
+/** 畫面由上而下的欄位順序(照片沒有單一欄位可以聚焦,不在裡面) */
+const FIELD_ORDER: Array<keyof ProductForm> = ["name", "category", "spec", "price", "stock", "origin", "storageMethod", "shelfLife", "description"];
 
 export default function MarketProductDialog({
   open,
@@ -47,6 +52,8 @@ export default function MarketProductDialog({
   const [form, setForm] = useState<ProductForm>(() => (product ? productFormFromRow(product) : emptyProductForm(fromSupply)));
   const [errors, setErrors] = useState<ProductFormErrors>({});
   const [saving, setSaving] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const focusAfterErrors = useRef<keyof ProductForm | null>(null);
   const actions = productActions(product?.review_status ?? null);
   const set = <K extends keyof ProductForm>(key: K, value: ProductForm[K]) => setForm((f) => ({ ...f, [key]: value }));
   const err = (key: keyof ProductForm) =>
@@ -57,10 +64,22 @@ export default function MarketProductDialog({
     ) : null;
   const aria = (key: keyof ProductForm) => ({ "aria-invalid": !!errors[key], "aria-describedby": errors[key] ? `mp-${key}-error` : undefined });
 
+  // 錯誤訊息畫出來(aria-describedby 接上)之後才移焦點,螢幕報讀才會連錯誤一起念
+  useEffect(() => {
+    const key = focusAfterErrors.current;
+    if (!key) return;
+    focusAfterErrors.current = null;
+    document.getElementById(`mp-${key}`)?.focus();
+  }, [errors]);
+
   const doSave = async (submit: boolean) => {
+    if (uploading) return;
     const e = validateProductForm(form);
     setErrors(e);
-    if (Object.keys(e).length > 0) return;
+    if (Object.keys(e).length > 0) {
+      focusAfterErrors.current = FIELD_ORDER.find((k) => e[k]) ?? null;
+      return;
+    }
     setSaving(true);
     try {
       const row = await save({ supplierId, productId, isNew: !product, form, submit });
@@ -195,7 +214,15 @@ export default function MarketProductDialog({
             />
             {err("description")}
           </div>
-          <MarketPhotoField supplierId={supplierId} productId={productId} category={form.category} value={form.photos} onChange={(p) => set("photos", p)} upload={upload} />
+          <MarketPhotoField
+            supplierId={supplierId}
+            productId={productId}
+            category={form.category}
+            value={form.photos}
+            onChange={(p) => set("photos", p)}
+            upload={upload}
+            onBusyChange={setUploading}
+          />
           {err("photos")}
           {product?.review_status === "approved" ? (
             <label className="flex min-h-11 items-center gap-3 text-sm">
@@ -207,15 +234,20 @@ export default function MarketProductDialog({
         </div>
 
         <DialogFooter className="gap-2">
-          <Button type="button" variant="outline" disabled={saving} onClick={() => onOpenChange(false)}>
+          <Button type="button" variant="outline" disabled={saving} onClick={() => onOpenChange(false)} className="min-h-11">
             取消
           </Button>
           {actions.secondary ? (
-            <Button type="button" variant="outline" disabled={saving} onClick={() => doSave(false)}>
+            <Button type="button" variant="outline" disabled={saving || uploading} onClick={() => doSave(false)} className="min-h-11">
               {actions.secondary.label}
             </Button>
           ) : null}
-          <Button type="button" disabled={saving} onClick={() => doSave(actions.primary.submit)} className="bg-emerald-700 text-white hover:bg-emerald-800">
+          <Button
+            type="button"
+            disabled={saving || uploading}
+            onClick={() => doSave(actions.primary.submit)}
+            className="min-h-11 bg-emerald-700 text-white hover:bg-emerald-800"
+          >
             {saving ? "儲存中…" : actions.primary.label}
           </Button>
         </DialogFooter>

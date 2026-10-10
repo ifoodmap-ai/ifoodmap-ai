@@ -21,9 +21,34 @@ afterEach(cleanup);
 const photo = (n: number) => `${SUPPLIER_A}/${CABBAGE.id}/a9900000-0000-4000-8000-00000000000${n}.jpg`;
 const file = (name = "a.jpg") => new File(["x"], name, { type: "image/jpeg" });
 
-const PhotoHarness = ({ initial, upload }: { initial: string[]; upload: (s: string, f: string, file: File) => Promise<string> }) => {
+const PhotoHarness = ({
+  initial,
+  upload,
+  onBusyChange,
+}: {
+  initial: string[];
+  upload: (s: string, f: string, file: File) => Promise<string>;
+  onBusyChange?: (busy: boolean) => void;
+}) => {
   const [value, setValue] = useState(initial);
-  return <MarketPhotoField supplierId={SUPPLIER_A} productId={CABBAGE.id} category="vegetable" value={value} onChange={setValue} upload={upload} />;
+  return (
+    <MarketPhotoField
+      supplierId={SUPPLIER_A}
+      productId={CABBAGE.id}
+      category="vegetable"
+      value={value}
+      onChange={setValue}
+      upload={upload}
+      onBusyChange={onBusyChange}
+    />
+  );
+};
+
+/** 上傳到一半停住的假 upload:呼叫 finish(path) 才完成 */
+const pendingUpload = () => {
+  const finishers: Array<(path: string) => void> = [];
+  const upload = vi.fn(() => new Promise<string>((resolve) => finishers.push(resolve)));
+  return { upload, finish: (path: string) => finishers.shift()?.(path) };
 };
 
 describe("MarketPhotoField", () => {
@@ -142,5 +167,75 @@ describe("SupplierMarketProductsPanel", () => {
     await userEvent.click(screen.getByRole("button", { name: "編輯 有機高麗菜" }));
     expect(onEdit).toHaveBeenCalledWith(rejected);
     expect(statusText({ review_status: "approved", is_listed: false })).toBe("已核准・暫停販售");
+  });
+});
+
+describe("MarketPhotoField — 上傳中與觸控大小", () => {
+  it("上傳中:設封面、移除都停用(上傳完才把新照片加進清單,不會蓋掉期間的變更),並通知父層", async () => {
+    const { upload, finish } = pendingUpload();
+    const onBusyChange = vi.fn();
+    render(<PhotoHarness initial={[photo(1), photo(2)]} upload={upload} onBusyChange={onBusyChange} />);
+    await userEvent.upload(screen.getByLabelText("新增照片"), [file()]);
+    await waitFor(() => expect(onBusyChange).toHaveBeenLastCalledWith(true));
+    expect(screen.getByRole("button", { name: "移除第 1 張照片" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "第 2 張設為封面" })).toBeDisabled();
+    finish(photo(3));
+    await waitFor(() => expect(screen.getAllByRole("img")).toHaveLength(3));
+    expect(onBusyChange).toHaveBeenLastCalledWith(false);
+    expect(screen.getByRole("button", { name: "移除第 1 張照片" })).toBeEnabled();
+  });
+
+  it("設封面、移除按鈕與選檔欄位的可點範圍至少 44px", () => {
+    render(<PhotoHarness initial={[photo(1), photo(2)]} upload={vi.fn()} />);
+    for (const name of ["第 2 張設為封面", "移除第 1 張照片", "移除第 2 張照片"]) {
+      expect(screen.getByRole("button", { name })).toHaveClass("h-11", "w-11");
+    }
+    expect(screen.getByLabelText("新增照片")).toHaveClass("min-h-11", "file:min-h-11");
+  });
+});
+
+describe("MarketProductDialog — 上傳中、出錯的焦點、版面", () => {
+  it("照片還在上傳時不能儲存;上傳完成才放行,存進去的有那張照片", async () => {
+    const { upload, finish } = pendingUpload();
+    const save = vi.fn().mockResolvedValue({ ...CABBAGE });
+    render(
+      <MarketProductDialog
+        open
+        onOpenChange={vi.fn()}
+        supplierId={SUPPLIER_A}
+        product={{ ...CABBAGE, review_status: "draft" }}
+        onSaved={vi.fn()}
+        save={save}
+        upload={upload}
+      />,
+    );
+    await userEvent.upload(screen.getByLabelText("新增照片"), [file()]);
+    await waitFor(() => expect(screen.getByRole("button", { name: "送出審核" })).toBeDisabled());
+    expect(screen.getByRole("button", { name: "儲存草稿" })).toBeDisabled();
+    finish(photo(1));
+    await waitFor(() => expect(screen.getByRole("button", { name: "送出審核" })).toBeEnabled());
+    await userEvent.click(screen.getByRole("button", { name: "送出審核" }));
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+    expect(save.mock.calls[0][0].form.photos).toEqual([photo(1)]);
+  });
+
+  it("驗證沒過:焦點移到第一個出錯的欄位(視窗很長,按鈕在最下面時錯誤訊息可能在畫面外)", async () => {
+    renderDialog(null);
+    await userEvent.click(screen.getByRole("button", { name: "送出審核" }));
+    await waitFor(() => expect(screen.getByLabelText("品名 *")).toHaveFocus());
+    await userEvent.type(screen.getByLabelText("品名 *"), "有機高麗菜");
+    await userEvent.selectOptions(screen.getByLabelText("分類 *"), "vegetable");
+    await userEvent.type(screen.getByLabelText("零售規格 *"), "1 顆");
+    await userEvent.click(screen.getByRole("button", { name: "送出審核" }));
+    await waitFor(() => expect(screen.getByLabelText("零售價(元)*")).toHaveFocus());
+  });
+
+  it("底部按鈕至少 44px 高;勾「不限」時庫存欄看得出是停用的", () => {
+    renderDialog(null);
+    for (const name of ["取消", "儲存草稿", "送出審核"]) {
+      expect(screen.getByRole("button", { name })).toHaveClass("min-h-11");
+    }
+    expect(screen.getByLabelText("庫存")).toBeDisabled();
+    expect(screen.getByLabelText("庫存")).toHaveClass("disabled:bg-slate-100");
   });
 });
