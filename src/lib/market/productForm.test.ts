@@ -210,13 +210,38 @@ describe("樂觀鎖與新商品重送", () => {
     expect(calls).toHaveLength(0);
   });
 
-  it("新商品撞主鍵 23505:讀回那一筆,是自家的就當作已經存好(alreadySaved)", async () => {
-    const existing = { id: "p1", supplier_id: "sup", review_status: "pending" };
+  // 情境:「儲存草稿」的回應遺失(資料庫其實存了 120、草稿)→ 價格改成 150 → 按「送出審核」撞 23505。
+  // 讀回自家那一筆後,要用它的 updated_at 把這一次的內容與按的按鈕再存一次:最後是 150、待審,不是停在 120、草稿。
+  it("新商品撞主鍵 23505、讀回的是自家那一筆:用它的 updated_at 再存一次這次的內容與按鈕(送審 → pending)", async () => {
+    const STAMP2 = "2026-10-10T07:00:05.000001+00:00";
     replies.push({ error: { message: 'duplicate key value violates unique constraint "market_products_pkey"', code: "23505" } });
-    replies.push({ rows: [existing] });
-    const result = await saveMarketProduct({ supplierId: "sup", productId: "p1", isNew: true, form: valid(), submit: true });
-    expect(result).toEqual({ row: existing, alreadySaved: true });
-    expect(calls[1]).toMatchObject({ op: "select", filters: [["id", "p1"]] });
+    replies.push({ rows: [{ id: "p1", supplier_id: "sup", review_status: "draft", price: 120, updated_at: STAMP }] });
+    replies.push({ rows: [{ id: "p1", supplier_id: "sup", review_status: "pending", price: 150, updated_at: STAMP2 }] });
+    const result = await saveMarketProduct({ supplierId: "sup", productId: "p1", isNew: true, form: valid({ price: "150" }), submit: true });
+    expect(calls.map((c) => c.op)).toEqual(["insert", "select", "update"]);
+    expect(calls[1].filters).toEqual([["id", "p1"]]);
+    expect(calls[2].payload).toMatchObject({ price: 150, review_status: "pending" });
+    expect(calls[2].filters).toEqual([
+      ["id", "p1"],
+      ["updated_at", STAMP],
+    ]);
+    expect(result).toEqual({ row: { id: "p1", supplier_id: "sup", review_status: "pending", price: 150, updated_at: STAMP2 }, alreadySaved: true });
+  });
+
+  it("新商品撞主鍵、按的是「儲存草稿」:再存一次時明講 review_status=draft(跟按的一致)", async () => {
+    replies.push({ error: { message: "duplicate key", code: "23505" } });
+    replies.push({ rows: [{ id: "p1", supplier_id: "sup", review_status: "pending", updated_at: STAMP }] });
+    await saveMarketProduct({ supplierId: "sup", productId: "p1", isNew: true, form: valid(), submit: false });
+    expect(calls[2]).toMatchObject({ op: "update", payload: { review_status: "draft" } });
+  });
+
+  it("新商品撞主鍵後那次再存也比不到(期間又被改過):MarketStaleProductError,不覆寫", async () => {
+    replies.push({ error: { message: "duplicate key", code: "23505" } });
+    replies.push({ rows: [{ id: "p1", supplier_id: "sup", review_status: "draft", updated_at: STAMP }] });
+    replies.push({ rows: [] });
+    await expect(saveMarketProduct({ supplierId: "sup", productId: "p1", isNew: true, form: valid(), submit: true })).rejects.toBeInstanceOf(
+      MarketStaleProductError,
+    );
   });
 
   it("新商品撞主鍵,但讀不到那一筆或不是自家的:中文錯誤,不覆寫", async () => {

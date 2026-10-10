@@ -317,17 +317,41 @@ describe("MarketProductDialog — 樂觀鎖與新商品重送", () => {
     expect(onOpenChange).toHaveBeenCalledWith(false);
   });
 
-  it("新商品重按時資料庫已經有自家的那一筆:當作已經存好,提示「已儲存」並交給父層換進清單", async () => {
-    const existing = { ...CABBAGE, review_status: "draft" as const };
-    const { onSaved } = renderDialog(null, vi.fn().mockResolvedValue({ row: existing, alreadySaved: true }));
+  // 撞主鍵的補存(saveMarketProduct 用讀回那一筆的 updated_at 再存一次這次的內容)完成後,狀態就是使用者按的那個:
+  // 按「送出審核」就提示「已送出審核」,不能說「已儲存」卻還停在草稿。
+  it("新商品重按時資料庫已經有自家的那一筆:補存完照按的按鈕提示,並交給父層換進清單", async () => {
+    const saved = { ...CABBAGE, review_status: "pending" as const, price: 150 };
+    const { onSaved } = renderDialog(null, vi.fn().mockResolvedValue({ row: saved, alreadySaved: true }));
+    await userEvent.type(screen.getByLabelText("品名 *"), "有機高麗菜");
+    await userEvent.selectOptions(screen.getByLabelText("分類 *"), "vegetable");
+    await userEvent.type(screen.getByLabelText("零售規格 *"), "1 顆");
+    await userEvent.type(screen.getByLabelText("零售價(元)*"), "150");
+    await userEvent.click(screen.getByRole("button", { name: "送出審核" }));
+    await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith("已送出審核"));
+    expect(toastSuccess).not.toHaveBeenCalledWith("已儲存");
+    expect(onSaved).toHaveBeenCalledWith(saved);
+  });
+
+  it("新商品的 id 可以由父層指定(同一個來源沿用還沒確認存好的 id)", async () => {
+    const save = vi.fn().mockResolvedValue({ row: { ...CABBAGE }, alreadySaved: false });
+    render(
+      <MarketProductDialog
+        open
+        onOpenChange={vi.fn()}
+        supplierId={SUPPLIER_A}
+        product={null}
+        newProductId="a9300000-0000-4000-8000-0000000000e1"
+        onSaved={vi.fn()}
+        save={save}
+        upload={vi.fn()}
+      />,
+    );
     await userEvent.type(screen.getByLabelText("品名 *"), "有機高麗菜");
     await userEvent.selectOptions(screen.getByLabelText("分類 *"), "vegetable");
     await userEvent.type(screen.getByLabelText("零售規格 *"), "1 顆");
     await userEvent.type(screen.getByLabelText("零售價(元)*"), "120");
-    await userEvent.click(screen.getByRole("button", { name: "送出審核" }));
-    await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith("已儲存"));
-    expect(toastSuccess).not.toHaveBeenCalledWith("已送出審核");
-    expect(onSaved).toHaveBeenCalledWith(existing);
+    await userEvent.click(screen.getByRole("button", { name: "儲存草稿" }));
+    await waitFor(() => expect(save).toHaveBeenCalledWith(expect.objectContaining({ isNew: true, productId: "a9300000-0000-4000-8000-0000000000e1" })));
   });
 });
 

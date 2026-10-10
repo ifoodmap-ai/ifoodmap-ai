@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Loader2, Plus, Pencil, Trash2, PackageX } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -25,11 +25,15 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useToast } from '@/hooks/use-toast';
 import { supabase } from '@/integrations/supabase/client';
+import { newUuid } from '@/lib/market/db';
 import type { SupplySeed } from '@/lib/market/productForm';
 import type { MarketProductRow } from '@/lib/market/types';
 import MarketProductDialog from './market/MarketProductDialog';
 import SupplierMarketProductsPanel, { statusText } from './market/SupplierMarketProductsPanel';
 import { useSupplierMarketProducts } from './market/useSupplierMarketProducts';
+
+/** 「新增零售商品」(不是從批發商品開放的)在 pendingNewIds 裡的 key */
+const NEW_PRODUCT_SOURCE = '__new__';
 
 interface Supply {
   id: string;
@@ -81,13 +85,29 @@ export default function SupplierCatalogPage() {
   // 讀取中、讀取失敗時「零售」欄不給任何按鈕:還不知道有沒有店家、有沒有對應的零售商品,
   // 用空的清單會重複開放零售,用舊的資料會在儲存時蓋掉剛存的修改(上方顯示原因與「重新載入」)。
   const market = useSupplierMarketProducts(supplierId);
-  const [retail, setRetail] = useState<{ key: number; product: MarketProductRow | null; seed: SupplySeed | null } | null>(null);
+  const [retail, setRetail] = useState<{
+    key: number;
+    product: MarketProductRow | null;
+    seed: SupplySeed | null;
+    newId: string | null;
+  } | null>(null);
+  // 新商品還沒確認存好的 id(依來源:批發商品 id,或「新增零售商品」):存檔回應遺失後按取消、再打開同一個來源,
+  // 沿用同一個 id —— 上一次其實存了的話會撞主鍵、補存到那一筆,不會建出第二筆(沒有刪除鈕)。確認存好(onSaved)才清掉。
+  const pendingNewIds = useRef(new Map<string, string>());
   const retailBySupply = useMemo(
     () => new Map(market.products.filter((p) => p.supply_id).map((p) => [p.supply_id as string, p])),
     [market.products],
   );
-  const openRetail = (product: MarketProductRow | null, seed: SupplySeed | null = null) =>
-    setRetail({ key: Date.now(), product, seed });
+  const openRetail = (product: MarketProductRow | null, seed: SupplySeed | null = null) => {
+    let newId: string | null = null;
+    if (!product) {
+      const source = seed?.id ?? NEW_PRODUCT_SOURCE;
+      newId = pendingNewIds.current.get(source) ?? newUuid();
+      pendingNewIds.current.set(source, newId);
+    }
+    setRetail({ key: Date.now(), product, seed, newId });
+  };
+  const isUnconfirmed = (id: string | null) => !!id && [...pendingNewIds.current.values()].includes(id);
 
   const fetchSupplies = async (sid: string) => {
     const { data } = (await (supabase as never)
@@ -333,13 +353,20 @@ export default function SupplierCatalogPage() {
           key={retail.key}
           open
           onOpenChange={(o) => {
-            if (!o) setRetail(null);
+            if (o) return;
+            // 新商品沒確認存好就關掉(例如存檔回應遺失):重新讀取 —— 上一次其實存了的話,清單會出現那一筆
+            if (!retail.product && isUnconfirmed(retail.newId)) void market.reload();
+            setRetail(null);
           }}
           supplierId={supplierId}
           product={retail.product}
+          newProductId={retail.newId}
           fromSupply={retail.seed}
           onStale={market.retry}
           onSaved={(row) => {
+            pendingNewIds.current.forEach((id, source) => {
+              if (id === row.id) pendingNewIds.current.delete(source);
+            });
             // 先換上資料庫回傳的那一筆(重抓還沒回來或失敗,也不會留著舊內容讓人再編輯),再背景重抓
             market.applySaved(row);
             void market.reload();

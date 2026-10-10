@@ -5,7 +5,8 @@
 //
 // 修改既有商品用樂觀鎖:多比對畫面讀到的 updated_at(原字串,不經過 Date —— JavaScript 的 Date 只到毫秒,
 // 資料庫是微秒,轉過就永遠比不到);沒有更新到任何一列 = 別人(管理員、另一個分頁)先改過 → MarketStaleProductError,不覆寫。
-// 新商品重送:第一次其實存好了、只是回應在路上遺失,再按一次會撞主鍵 23505 → 讀回那一筆,是自家的就當作已經存好。
+// 新商品重送:第一次其實存好了、只是回應在路上遺失,再按一次會撞主鍵 23505 → 讀回那一筆,是自家的就用它的
+// updated_at 把「這一次」的內容與按的按鈕(草稿 / 送審)再存一次 —— 期間改了價格、改按送審,最後的狀態才跟使用者按的一致。
 import {
   CATEGORY_LABEL,
   isCategoryKey,
@@ -159,7 +160,7 @@ export interface SaveProductInput {
 
 export interface SaveProductResult {
   row: MarketProductRow;
-  /** true = 新商品重按時資料庫已經有自家的這一筆(上一次其實存好了),畫面提示「已儲存」 */
+  /** true = 新商品重按時資料庫已經有自家的這一筆(上一次其實存好了),這一次的內容已經補存上去 */
   alreadySaved: boolean;
 }
 
@@ -180,6 +181,16 @@ export class MarketProductIdTakenError extends Error {
   }
 }
 
+/** 帶樂觀鎖更新:沒有讀到的 updated_at 不送(沒辦法確認是不是最新的);沒有更新到任何一列 → MarketStaleProductError */
+const updateWithLock = async (productId: string, expectedUpdatedAt: string | null | undefined, patch: Record<string, unknown>) => {
+  if (!expectedUpdatedAt) throw new MarketStaleProductError();
+  const row = unwrap(
+    await marketDb<MarketProductRow>("market_products").update(patch).eq("id", productId).eq("updated_at", expectedUpdatedAt).select("*").maybeSingle(),
+  );
+  if (!row) throw new MarketStaleProductError();
+  return row;
+};
+
 export const saveMarketProduct = async ({
   supplierId,
   productId,
@@ -190,10 +201,11 @@ export const saveMarketProduct = async ({
 }: SaveProductInput): Promise<SaveProductResult> => {
   const fields = productPayload(form);
   if (isNew) {
+    const newFields = { ...fields, review_status: submit ? "pending" : "draft" };
     try {
       const row = unwrap(
         await marketDb<MarketProductRow>("market_products")
-          .insert({ id: productId, supplier_id: supplierId, ...fields, review_status: submit ? "pending" : "draft" })
+          .insert({ id: productId, supplier_id: supplierId, ...newFields })
           .select("*")
           .single(),
       );
@@ -202,22 +214,12 @@ export const saveMarketProduct = async ({
       if (!(e instanceof MarketDbError) || e.code !== "23505") throw e;
       // 主鍵已經有了:讀回來看是不是自家的(別家的 RLS 讀不到 → null)。不是就報錯,絕不拿這次的內容去覆寫。
       const existing = unwrap(await marketDb<MarketProductRow>("market_products").select("*").eq("id", productId).maybeSingle());
-      if (existing && existing.supplier_id === supplierId) return { row: existing, alreadySaved: true };
-      throw new MarketProductIdTakenError();
+      if (!existing || existing.supplier_id !== supplierId) throw new MarketProductIdTakenError();
+      // 是自家的(上一次其實存好了):用它的 updated_at 再存一次這一次的內容,狀態明講(草稿 / 送審)
+      return { row: await updateWithLock(productId, existing.updated_at, newFields), alreadySaved: true };
     }
   }
-  // 沒有讀到的 updated_at 就沒辦法確認畫面上是不是最新的:不送
-  if (!expectedUpdatedAt) throw new MarketStaleProductError();
-  const row = unwrap(
-    await marketDb<MarketProductRow>("market_products")
-      .update(submit ? { ...fields, review_status: "pending" } : fields)
-      .eq("id", productId)
-      .eq("updated_at", expectedUpdatedAt)
-      .select("*")
-      .maybeSingle(),
-  );
-  if (!row) throw new MarketStaleProductError();
-  return { row, alreadySaved: false };
+  return { row: await updateWithLock(productId, expectedUpdatedAt, submit ? { ...fields, review_status: "pending" } : fields), alreadySaved: false };
 };
 
 export interface ProductActions {

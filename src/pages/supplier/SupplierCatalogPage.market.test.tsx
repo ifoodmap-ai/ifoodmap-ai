@@ -21,6 +21,10 @@ const { db } = vi.hoisted(() => ({
     // 零售資料(market_products、market_stores)一律比批發商品晚回來:測試不能假設兩邊同時到
     // (審查實測:晚 30ms 回來,「找到批發商品後同步查零售狀態」就穩定失敗)
     marketDelayMs: 25,
+    // 新商品 insert:送出的內容;回應遺失(連線中斷);回應遺失前資料庫其實已經寫入
+    inserts: [] as Array<Record<string, unknown>>,
+    insertLost: false,
+    insertCommits: false,
   },
 }));
 
@@ -46,6 +50,7 @@ vi.mock("@/integrations/supabase/client", () => ({
         table === "market_products" ? (db.marketHold ?? Promise.resolve()).then(() => late(result())) : Promise.resolve(result());
       // insert / update 之後的 single / maybeSingle 回 db.saved(null = 沒有更新到任何一列)
       let writing = false;
+      let inserted: Record<string, unknown> | null = null;
       const filters: Array<[string, unknown]> = [];
       const b = {
         select: () => b,
@@ -54,8 +59,10 @@ vi.mock("@/integrations/supabase/client", () => ({
           return b;
         },
         order: () => b,
-        insert: () => {
+        insert: (values: Record<string, unknown>) => {
           writing = true;
+          inserted = values;
+          db.inserts.push(values);
           return b;
         },
         update: () => {
@@ -63,7 +70,15 @@ vi.mock("@/integrations/supabase/client", () => ({
           db.updateFilters = filters;
           return b;
         },
-        single: () => Promise.resolve({ data: db.saved, error: null }),
+        single: () => {
+          if (inserted && db.insertLost) {
+            if (db.insertCommits) {
+              db.marketProducts = [...db.marketProducts, { ...inserted, created_at: "2026-10-10T07:00:00Z", updated_at: "2026-10-10T07:00:00.000001+00:00" }];
+            }
+            return Promise.resolve({ data: null, error: { message: "TypeError: Failed to fetch", code: "", hint: "" } });
+          }
+          return Promise.resolve({ data: db.saved, error: null });
+        },
         maybeSingle: () =>
           writing ? Promise.resolve({ data: db.saved, error: null }) : table === "market_stores" ? late(result()) : Promise.resolve(result()),
         then: (ok: (v: unknown) => unknown, bad?: (e: unknown) => unknown) => respond().then(ok, bad),
@@ -106,6 +121,9 @@ beforeEach(() => {
   db.storeEnabled = true;
   db.updateFilters = [];
   db.marketDelayMs = 25;
+  db.inserts = [];
+  db.insertLost = false;
+  db.insertCommits = false;
 });
 afterEach(cleanup);
 
@@ -257,5 +275,83 @@ describe("SupplierCatalogPage — 樂觀鎖與狀態文字", () => {
     const cabbageRow = (await screen.findByText("高麗菜")).closest("tr") as HTMLElement;
     expect(await within(cabbageRow).findByRole("button", { name: "已核准・店家停用中(消費者看不到)" })).toBeInTheDocument();
     expect(within(cabbageRow).queryByRole("button", { name: "已上架" })).toBeNull();
+  });
+});
+
+// 新商品存檔的回應遺失(資料庫可能其實存了)後按「取消」、再打開:不能換一個新 id 建出第二筆(沒有刪除鈕)。
+describe("SupplierCatalogPage — 新商品存檔回應遺失後再打開", () => {
+  const submitWithPrice = async (dialog: HTMLElement, price: string) => {
+    const input = within(dialog).getByLabelText("零售價(元)*");
+    await userEvent.clear(input);
+    await userEvent.type(input, price);
+    await userEvent.click(within(dialog).getByRole("button", { name: "送出審核" }));
+  };
+  const openOnion = async () => {
+    const onionRow = (await screen.findByText("洋蔥")).closest("tr") as HTMLElement;
+    await userEvent.click(await within(onionRow).findByRole("button", { name: "洋蔥 開放消費者購買" }));
+    return { onionRow, dialog: await screen.findByRole("dialog") };
+  };
+  const cancel = async (dialog: HTMLElement) => {
+    await userEvent.click(within(dialog).getByRole("button", { name: "取消" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  };
+
+  it("資料庫其實存好了:按「取消」關窗就重新讀取,那一列換成它的狀態,不會再「開放零售」一次", async () => {
+    db.insertLost = true;
+    db.insertCommits = true;
+    renderPage();
+    const { onionRow, dialog } = await openOnion();
+    await submitWithPrice(dialog, "120");
+    await waitFor(() => expect(db.inserts).toHaveLength(1));
+    await cancel(dialog);
+    expect(await within(onionRow).findByRole("button", { name: "待審" })).toBeInTheDocument();
+    expect(within(onionRow).queryByRole("button", { name: "洋蔥 開放消費者購買" })).toBeNull();
+  });
+
+  it("資料庫沒有存到:同一個批發商品再「開放零售」沿用同一個商品 id(萬一上一次其實存了,會撞主鍵、補存那一筆)", async () => {
+    db.insertLost = true;
+    renderPage();
+    const first = await openOnion();
+    await submitWithPrice(first.dialog, "120");
+    await waitFor(() => expect(db.inserts).toHaveLength(1));
+    await cancel(first.dialog);
+
+    db.insertLost = false;
+    db.saved = { ...CABBAGE, id: db.inserts[0].id, supply_id: "s-onion", name: "洋蔥", review_status: "pending", updated_at: STAMP };
+    const second = await openOnion();
+    await submitWithPrice(second.dialog, "150");
+    await waitFor(() => expect(db.inserts).toHaveLength(2));
+    expect(db.inserts[1].id).toBe(db.inserts[0].id);
+    expect(db.inserts[1]).toMatchObject({ price: 150, supply_id: "s-onion" });
+  });
+
+  it("「新增零售商品」也一樣:沒確認存好就關掉,下一次新增沿用同一個 id;確認存好之後下一個才換新的 id", async () => {
+    const openNew = async () => {
+      await userEvent.click(await screen.findByRole("button", { name: "新增零售商品" }));
+      const dialog = await screen.findByRole("dialog");
+      await userEvent.type(within(dialog).getByLabelText("品名 *"), "手工辣椒醬");
+      await userEvent.selectOptions(within(dialog).getByLabelText("分類 *"), "condiment");
+      await userEvent.type(within(dialog).getByLabelText("零售規格 *"), "240g/罐");
+      return dialog;
+    };
+    db.insertLost = true;
+    renderPage();
+    await userEvent.click(screen.getByRole("tab", { name: "零售商品(給消費者)" }));
+    const first = await openNew();
+    await submitWithPrice(first, "220");
+    await waitFor(() => expect(db.inserts).toHaveLength(1));
+    await cancel(first);
+
+    db.insertLost = false;
+    db.saved = { ...CABBAGE, id: db.inserts[0].id, name: "手工辣椒醬", category: "condiment", review_status: "pending", updated_at: STAMP };
+    const second = await openNew();
+    await submitWithPrice(second, "220");
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(db.inserts[1].id).toBe(db.inserts[0].id);
+
+    const third = await openNew();
+    await submitWithPrice(third, "220");
+    await waitFor(() => expect(db.inserts).toHaveLength(3));
+    expect(db.inserts[2].id).not.toBe(db.inserts[0].id);
   });
 });

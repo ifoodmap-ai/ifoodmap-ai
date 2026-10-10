@@ -2,7 +2,8 @@
 // 父層每次打開都給新的 key:新商品的 id 在打開當下決定(照片要先上傳到 <supplier>/<商品 id>/)。
 // 照片上傳中不能儲存(存進去的會少那張);驗證沒過時焦點移到第一個出錯的欄位(視窗很長,錯誤可能在畫面外)。
 // 修改既有商品帶讀到的 updated_at(樂觀鎖):別人先改過就不覆寫,視窗留著(可以先抄下改過的內容)、不能再存,
-// 按「重新載入」才關視窗、請父層重新讀取。新商品重按時資料庫已經有自家的那一筆 → 當作已經存好,提示「已儲存」。
+// 按「重新載入」才關視窗、請父層重新讀取。新商品的 id 可以由父層給(同一個來源沿用還沒確認存好的 id,
+// 存檔回應遺失後重開不會建出第二筆;撞主鍵時 saveMarketProduct 會補存到那一筆)。
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -29,6 +30,8 @@ interface MarketProductDialogProps {
   onOpenChange: (open: boolean) => void;
   supplierId: string;
   product: MarketProductRow | null;
+  /** 新商品的 id(父層沿用還沒確認存好的 id);沒給就在打開時產生 */
+  newProductId?: string | null;
   fromSupply?: SupplySeed | null;
   onSaved: (row: MarketProductRow) => void;
   /** 別人先改過、使用者按「重新載入」:父層重新讀取清單 */
@@ -48,13 +51,14 @@ export default function MarketProductDialog({
   onOpenChange,
   supplierId,
   product,
+  newProductId,
   fromSupply,
   onSaved,
   onStale,
   save = saveMarketProduct,
   upload,
 }: MarketProductDialogProps) {
-  const [productId] = useState(() => product?.id ?? newUuid());
+  const [productId] = useState(() => product?.id ?? newProductId ?? newUuid());
   const [form, setForm] = useState<ProductForm>(() => (product ? productFormFromRow(product) : emptyProductForm(fromSupply)));
   const [errors, setErrors] = useState<ProductFormErrors>({});
   const [saving, setSaving] = useState(false);
@@ -90,7 +94,7 @@ export default function MarketProductDialog({
     }
     setSaving(true);
     try {
-      const { row, alreadySaved } = await save({
+      const { row } = await save({
         supplierId,
         productId,
         isNew: !product,
@@ -98,7 +102,7 @@ export default function MarketProductDialog({
         submit,
         expectedUpdatedAt: product?.updated_at ?? null,
       });
-      toast.success(submit && !alreadySaved ? "已送出審核" : "已儲存");
+      toast.success(submit ? "已送出審核" : "已儲存");
       onSaved(row);
       onOpenChange(false);
     } catch (error) {
