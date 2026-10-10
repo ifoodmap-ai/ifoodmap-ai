@@ -42,6 +42,34 @@ describe("friendlyDbError", () => {
     expect(friendlyDbError(new MarketDbError({ message: "原文" }))).toBe("原文");
     expect(friendlyDbError(new Error("一般錯誤"))).toBe("一般錯誤");
   });
+
+  it("hint 只認表裡自己的 key:constructor / toString / __proto__ 不會拿到函式或物件", () => {
+    for (const hint of ["constructor", "toString", "__proto__", "hasOwnProperty"]) {
+      expect(friendlyDbError(new MarketDbError({ message: "原文", hint }))).toBe("原文");
+    }
+  });
+
+  it("照片沒傳完就核准(photos_not_uploaded)", () => {
+    expect(friendlyDbError(new MarketDbError({ message: "x", code: "22023", hint: "photos_not_uploaded" }))).toBe(
+      "這個商品還有照片沒有上傳完成,無法核准",
+    );
+  });
+
+  it("斷網:fetch 失敗、沒有 code 也沒有 hint → 連線失敗", () => {
+    const offline = "連線失敗,請檢查網路後再試一次";
+    // supabase-js(postgrest-js 2.78)斷網時回 { message: "TypeError: Failed to fetch", hint: "", code: "" }
+    expect(friendlyDbError(new MarketDbError({ message: "TypeError: Failed to fetch", hint: "", code: "" }))).toBe(offline);
+    // Safari、Firefox 的寫法
+    expect(friendlyDbError(new MarketDbError({ message: "TypeError: Load failed", hint: "", code: "" }))).toBe(offline);
+    expect(
+      friendlyDbError(new MarketDbError({ message: "TypeError: NetworkError when attempting to fetch resource.", hint: "", code: "" })),
+    ).toBe(offline);
+    // 直接丟出來的 TypeError(沒經過 PostgREST 的 fetch)
+    expect(friendlyDbError(new TypeError("Failed to fetch"))).toBe(offline);
+    // 資料庫真的回了錯誤碼就不是斷網,照原本的規則
+    expect(friendlyDbError(new MarketDbError({ message: "Failed to fetch policy", code: "42501" }))).toBe("沒有權限做這個動作");
+    expect(friendlyDbError(new TypeError("x is not a function"))).toBe("x is not a function");
+  });
 });
 
 describe("uuid", () => {

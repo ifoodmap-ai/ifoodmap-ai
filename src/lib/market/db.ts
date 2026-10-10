@@ -79,16 +79,26 @@ const HINT_MESSAGES: Record<string, string> = {
   tracking_too_long: "物流單號太長了",
   not_order_party: "這張訂單不是你家的",
   one_event_per_order: "請一步一步操作",
+  photos_not_uploaded: "這個商品還有照片沒有上傳完成,無法核准",
 };
+
+/** fetch 本身失敗(斷網、連不到伺服器)時各瀏覽器的訊息:Chrome / Safari / Firefox / React Native、Node */
+const NETWORK_ERROR_RE = /Failed to fetch|Load failed|NetworkError|Network request failed|fetch failed/i;
+const NETWORK_ERROR_MESSAGE = "連線失敗,請檢查網路後再試一次";
 
 export const friendlyDbError = (e: unknown): string => {
   if (e instanceof MarketDbError) {
-    if (e.hint && HINT_MESSAGES[e.hint]) return HINT_MESSAGES[e.hint];
+    // 只認表裡自己的 key:用 HINT_MESSAGES[hint] 判斷的話,"constructor" 這類 hint 會拿到 Object 原型上的函式。
+    // (tsconfig 的 lib 是 ES2020,沒有 Object.hasOwn 的型別,所以用 hasOwnProperty.call,效果相同)
+    if (e.hint && Object.prototype.hasOwnProperty.call(HINT_MESSAGES, e.hint)) return HINT_MESSAGES[e.hint];
     if (e.code === "23503") return "請先完成「零售市集 › 店家設定」再新增零售商品";
     if (e.code === "23514") return "有欄位超過長度上限或格式不對,請檢查後再送出";
     if (e.code === "42501") return "沒有權限做這個動作";
+    // supabase-js 斷網時回 { message: "TypeError: Failed to fetch", hint: "", code: "" }(資料庫沒有回應,所以沒有 code)
+    if (!e.hint && !e.code && NETWORK_ERROR_RE.test(e.message)) return NETWORK_ERROR_MESSAGE;
     return e.message;
   }
+  if (e instanceof TypeError && NETWORK_ERROR_RE.test(e.message)) return NETWORK_ERROR_MESSAGE;
   return e instanceof Error ? e.message : String(e);
 };
 
