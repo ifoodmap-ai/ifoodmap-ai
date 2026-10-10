@@ -31,9 +31,13 @@ vi.mock("@/integrations/supabase/client", () => ({
   },
 }));
 
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { CABBAGE } from "./testFixtures";
 import {
   emptyProductForm,
+  hasVisibleText,
+  INVISIBLE_CHARS,
   productActions,
   productFormFromRow,
   productPayload,
@@ -123,5 +127,33 @@ describe("productActions", () => {
   it("審核中、已核准:只有儲存;已核准提醒哪些欄位會重審", () => {
     expect(productActions("pending")).toMatchObject({ secondary: null, primary: { label: "儲存", submit: false } });
     expect(productActions("approved").notice).toMatch(/只改價格、庫存、上架開關不用重審/);
+  });
+});
+
+
+// 資料庫的 market_products_guard 把「只有看不見的字元」的品名、規格當成空字串(被 CHECK 擋成 23514,畫面只能顯示通用錯誤)。
+// 前端先用同一組字元判斷,直接顯示「請填品名」。(測試字串一律用 \u{…} 寫,檔案裡不放看不見的字元本身)
+describe("看不見的字元(跟資料庫的 market_visible 同一套)", () => {
+  it("品名、規格只有空白 / 零寬 / 格式 / 看起來空白的字元就當成沒填;夾著一般字、emoji 照常", () => {
+    expect(validateProductForm(valid({ name: "\u{200b}\u{3000}\u{2060}" })).name).toBe("請填品名");
+    expect(validateProductForm(valid({ name: "\u{e0020}\u{3164}\u{ad}" })).name).toBe("請填品名");
+    expect(validateProductForm(valid({ spec: "\u{2800}\u{fe0f}\u{200e}" })).spec).toBe("請填零售規格,例如:600g/盒");
+    expect(validateProductForm(valid({ name: "\u{200b}高麗菜" })).name).toBeUndefined();
+    expect(validateProductForm(valid({ name: "\u{2764}\u{fe0f} 高麗菜" })).name).toBeUndefined();
+    expect(hasVisibleText("\u{1f96c}")).toBe(true);
+    expect(hasVisibleText("")).toBe(false);
+  });
+
+  it("看不見的字元清單跟 migration 120000 的 market_visible 一字不差", () => {
+    const sql = readFileSync(resolve(__dirname, "../../../supabase/migrations/20261009120000_market_catalog.sql"), "utf8");
+    const found = [...sql.matchAll(/p_text ~ '\[\^(.+?)\]'/g)];
+    expect(found).toHaveLength(1);
+    // 兩邊都換成 \u{十六進位}:Postgres 的 \UXXXXXXXX(8 位)與 \uXXXX(4 位)、前端常數(u 旗標的 \u{X})
+    const canon = (cls: string) =>
+      cls
+        .replace(/\\U([0-9a-fA-F]{8})/g, (_, hex: string) => `\\u{${parseInt(hex, 16).toString(16)}}`)
+        .replace(/\\u([0-9a-fA-F]{4})/g, (_, hex: string) => `\\u{${parseInt(hex, 16).toString(16)}}`);
+    expect(INVISIBLE_CHARS).toBe(canon(found[0][1]));
+    expect(INVISIBLE_CHARS).toBe(canon(INVISIBLE_CHARS));
   });
 });

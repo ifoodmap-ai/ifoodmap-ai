@@ -14,6 +14,18 @@ import {
 import { marketDb, unwrap } from "./db";
 import type { MarketProductRow } from "./types";
 
+/**
+ * 「看不見」的字元:跟 migration 120000 的 market_visible 同一組(productForm.test.ts 逐字比對)——
+ * 空白、控制字元(Cc)、格式字元(Cf)、Default_Ignorable 與看起來空白的字元(韓文填充字、點字空白、異體字選擇符…)。
+ * 寫成 RegExp u 旗標的字元類(一律 \u{十六進位});只用來判斷「是不是空的」,不改內容(emoji 的 U+FE0F 照樣保留)。
+ */
+export const INVISIBLE_CHARS =
+  "\\s\\u{1}-\\u{1f}\\u{7f}-\\u{a0}\\u{ad}\\u{34f}\\u{600}-\\u{605}\\u{61c}\\u{6dd}\\u{70f}\\u{890}\\u{891}\\u{8e2}\\u{115f}\\u{1160}\\u{1680}\\u{17b4}\\u{17b5}\\u{180b}-\\u{180f}\\u{2000}-\\u{200f}\\u{2028}-\\u{202f}\\u{205f}-\\u{206f}\\u{2800}\\u{3000}\\u{3164}\\u{fe00}-\\u{fe0f}\\u{feff}\\u{ffa0}\\u{fff0}-\\u{fffb}\\u{110bd}\\u{110cd}\\u{13430}-\\u{1343f}\\u{1bca0}-\\u{1bca3}\\u{1d173}-\\u{1d17a}\\u{e0000}-\\u{e0fff}";
+const VISIBLE_CHAR = new RegExp(`[^${INVISIBLE_CHARS}]`, "u");
+
+/** 至少有一個看得見的字。資料庫把只有看不見字元的品名、規格當成空字串(被 CHECK 擋成 23514),前端先擋、顯示「請填…」 */
+export const hasVisibleText = (s: string): boolean => VISIBLE_CHAR.test(s);
+
 export interface ProductForm {
   name: string;
   category: MarketCategoryKey | "";
@@ -91,11 +103,11 @@ const toInt = (s: string): number => (/^\d+$/.test(s.trim()) ? Number(s.trim()) 
 export const validateProductForm = (f: ProductForm): ProductFormErrors => {
   const e: ProductFormErrors = {};
   const name = f.name.trim();
-  if (!name) e.name = "請填品名";
+  if (!hasVisibleText(name)) e.name = "請填品名";
   else if (name.length > LIMITS.productName) e.name = `品名最多 ${LIMITS.productName} 字`;
   if (!f.category) e.category = "請選分類";
   const spec = f.spec.trim();
-  if (!spec) e.spec = "請填零售規格,例如:600g/盒";
+  if (!hasVisibleText(spec)) e.spec = "請填零售規格,例如:600g/盒";
   else if (spec.length > LIMITS.spec) e.spec = `規格最多 ${LIMITS.spec} 字`;
   const price = toInt(f.price);
   if (!Number.isInteger(price) || price < 1 || price > LIMITS.price) e.price = "價格要是 1 到 1,000,000 的整數(新台幣)";
