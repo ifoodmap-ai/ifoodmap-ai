@@ -247,3 +247,184 @@ REVOKE ALL ON FUNCTION public.market_store_transfer_touch() FROM PUBLIC, anon, a
 REVOKE ALL ON FUNCTION public.market_image_path_matches(text, uuid, text) FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION public.market_store_is_open(uuid) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.market_store_is_open(uuid) TO anon, authenticated, service_role;
+
+-- ---------------------------------------------------------------------
+-- 2. 零售商品
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS public.market_products (
+  id             uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  supplier_id    uuid NOT NULL REFERENCES public.market_stores(supplier_id) ON DELETE CASCADE,
+  supply_id      uuid REFERENCES public.supplies(id) ON DELETE SET NULL,
+  name           text NOT NULL,
+  category       text NOT NULL CHECK (category IN (
+    -- @market-categories-begin
+    'vegetable', 'fruit', 'seafood', 'meat', 'egg', 'grain',
+    'grocery', 'processed', 'hotpot', 'condiment', 'drink', 'packaging'
+    -- @market-categories-end
+  )),
+  spec           text NOT NULL,
+  price          integer NOT NULL,
+  stock          integer,
+  temperature    text NOT NULL DEFAULT 'ambient' CHECK (temperature IN (
+    -- @market-temperatures-begin
+    'ambient', 'chilled', 'frozen'
+    -- @market-temperatures-end
+  )),
+  origin         text,
+  storage_method text,
+  shelf_life     text,
+  description    text,
+  photos         text[] NOT NULL DEFAULT '{}'::text[],
+  review_status  text NOT NULL DEFAULT 'draft' CHECK (review_status IN ('draft', 'pending', 'approved', 'rejected')),
+  reject_reason  text,
+  is_listed      boolean NOT NULL DEFAULT true,
+  submitted_at   timestamptz,
+  reviewed_by    uuid,
+  reviewed_at    timestamptz,
+  created_at     timestamptz NOT NULL DEFAULT now(),
+  updated_at     timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT market_products_text_lengths CHECK (
+    char_length(name) BETWEEN 1 AND 60
+    AND char_length(spec) BETWEEN 1 AND 40
+    AND (origin IS NULL OR char_length(origin) <= 40)
+    AND (storage_method IS NULL OR char_length(storage_method) <= 100)
+    AND (shelf_life IS NULL OR char_length(shelf_life) <= 40)
+    AND (description IS NULL OR char_length(description) <= 2000)
+    AND (reject_reason IS NULL OR char_length(reject_reason) <= 300)
+  ),
+  CONSTRAINT market_products_price CHECK (price BETWEEN 1 AND 1000000),
+  CONSTRAINT market_products_stock CHECK (stock IS NULL OR stock BETWEEN 0 AND 100000),
+  CONSTRAINT market_products_photos CHECK (cardinality(photos) <= 5)
+);
+
+CREATE INDEX IF NOT EXISTS market_products_supplier_idx ON public.market_products (supplier_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS market_products_public_idx ON public.market_products (review_status, is_listed, created_at DESC);
+
+COMMENT ON TABLE public.market_products IS
+  '零售商品。價格為整數新台幣;stock NULL = 不限。review_status 由 market_products_guard 把關(供應商只能 draft / pending)。';
+COMMENT ON COLUMN public.market_products.supply_id IS '對應的 B2B 商品(supplies.id),只供參考,不影響價格與庫存';
+COMMENT ON COLUMN public.market_products.is_listed IS '供應商自己的上架開關(已核准的商品暫停販售用,不用重審)';
+
+CREATE OR REPLACE FUNCTION public.market_products_guard()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+DECLARE
+  v_admin   boolean := public.is_admin();
+  v_content boolean;
+  v_bad     text;
+BEGIN
+  IF TG_OP = 'UPDATE' AND (NEW.supplier_id IS DISTINCT FROM OLD.supplier_id OR NEW.id IS DISTINCT FROM OLD.id) THEN
+    RAISE EXCEPTION '不能更改商品所屬的店家' USING ERRCODE = '42501', HINT = 'supplier_immutable';
+  END IF;
+
+  -- 文字欄位去頭尾空白,空字串當成沒填
+  NEW.name           := btrim(COALESCE(NEW.name, ''));
+  NEW.spec           := btrim(COALESCE(NEW.spec, ''));
+  NEW.origin         := NULLIF(btrim(COALESCE(NEW.origin, '')), '');
+  NEW.storage_method := NULLIF(btrim(COALESCE(NEW.storage_method, '')), '');
+  NEW.shelf_life     := NULLIF(btrim(COALESCE(NEW.shelf_life, '')), '');
+  NEW.description    := NULLIF(btrim(COALESCE(NEW.description, '')), '');
+  NEW.reject_reason  := NULLIF(btrim(COALESCE(NEW.reject_reason, '')), '');
+  NEW.photos         := COALESCE(NEW.photos, '{}'::text[]);
+
+  -- 照片一定在自己的資料夾:<supplier_id>/<商品 id>/<uuid>.<副檔名>
+  SELECT p INTO v_bad
+    FROM unnest(NEW.photos) AS p
+   WHERE NOT public.market_image_path_matches(p, NEW.supplier_id, NEW.id::text)
+   LIMIT 1;
+  IF v_bad IS NOT NULL THEN
+    RAISE EXCEPTION '商品照片的路徑不正確:%', v_bad USING ERRCODE = '22023', HINT = 'invalid_photo_path';
+  END IF;
+
+  -- 對應的 B2B 商品必須是自家的
+  IF NEW.supply_id IS NOT NULL AND NOT EXISTS (
+       SELECT 1 FROM public.supplies s WHERE s.id = NEW.supply_id AND s.supplier_id = NEW.supplier_id) THEN
+    RAISE EXCEPTION '對應的批發商品不是你家的' USING ERRCODE = '22023', HINT = 'supply_not_owned';
+  END IF;
+
+  IF v_admin THEN
+    IF NEW.review_status = 'rejected' AND NEW.reject_reason IS NULL THEN
+      RAISE EXCEPTION '退回或下架要填寫原因(會顯示給供應商)' USING ERRCODE = '22023', HINT = 'reject_reason_required';
+    END IF;
+    IF NEW.review_status IN ('approved', 'rejected')
+       AND (TG_OP = 'INSERT' OR NEW.review_status IS DISTINCT FROM OLD.review_status) THEN
+      NEW.reviewed_by := auth.uid();
+      NEW.reviewed_at := now();
+    END IF;
+    IF NEW.review_status = 'approved' THEN
+      NEW.reject_reason := NULL;
+    END IF;
+  ELSIF TG_OP = 'INSERT' THEN
+    IF NEW.review_status NOT IN ('draft', 'pending') THEN
+      RAISE EXCEPTION '商品要經過管理員審核才能上架' USING ERRCODE = '42501', HINT = 'review_status_forbidden';
+    END IF;
+    NEW.reviewed_by   := NULL;
+    NEW.reviewed_at   := NULL;
+    NEW.reject_reason := NULL;
+  ELSE
+    -- 審核欄位只有管理員能動
+    NEW.reviewed_by := OLD.reviewed_by;
+    NEW.reviewed_at := OLD.reviewed_at;
+    IF NEW.review_status IS DISTINCT FROM OLD.review_status
+       AND NOT (NEW.review_status IN ('draft', 'pending') AND OLD.review_status IN ('draft', 'pending', 'rejected')) THEN
+      RAISE EXCEPTION '商品要經過管理員審核才能上架' USING ERRCODE = '42501', HINT = 'review_status_forbidden';
+    END IF;
+    -- 已核准的商品改了內容 → 回到待審(改價格、庫存、上架開關不用重審)
+    v_content := NEW.name IS DISTINCT FROM OLD.name
+      OR NEW.category IS DISTINCT FROM OLD.category
+      OR NEW.spec IS DISTINCT FROM OLD.spec
+      OR NEW.temperature IS DISTINCT FROM OLD.temperature
+      OR NEW.origin IS DISTINCT FROM OLD.origin
+      OR NEW.storage_method IS DISTINCT FROM OLD.storage_method
+      OR NEW.shelf_life IS DISTINCT FROM OLD.shelf_life
+      OR NEW.description IS DISTINCT FROM OLD.description
+      OR NEW.photos IS DISTINCT FROM OLD.photos;
+    IF OLD.review_status = 'approved' AND v_content THEN
+      NEW.review_status := 'pending';
+    END IF;
+    -- 退回原因留給供應商看;重新送審就清掉
+    NEW.reject_reason := CASE WHEN NEW.review_status = 'rejected' THEN OLD.reject_reason ELSE NULL END;
+  END IF;
+
+  IF NEW.review_status = 'pending' AND (TG_OP = 'INSERT' OR OLD.review_status IS DISTINCT FROM 'pending') THEN
+    NEW.submitted_at := now();
+  ELSIF TG_OP = 'UPDATE' THEN
+    NEW.submitted_at := OLD.submitted_at;
+  END IF;
+
+  NEW.updated_at := now();
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_market_products_guard ON public.market_products;
+CREATE TRIGGER trg_market_products_guard
+BEFORE INSERT OR UPDATE ON public.market_products
+FOR EACH ROW EXECUTE FUNCTION public.market_products_guard();
+
+ALTER TABLE public.market_products ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "market products public read" ON public.market_products;
+CREATE POLICY "market products public read" ON public.market_products
+  FOR SELECT TO anon, authenticated
+  USING (review_status = 'approved' AND is_listed AND public.market_store_is_open(supplier_id));
+
+DROP POLICY IF EXISTS "market products supplier manage" ON public.market_products;
+CREATE POLICY "market products supplier manage" ON public.market_products
+  FOR ALL TO authenticated
+  USING (supplier_id IN (SELECT public.current_supplier_ids()))
+  WITH CHECK (supplier_id IN (SELECT public.current_supplier_ids()));
+
+DROP POLICY IF EXISTS "market products admin" ON public.market_products;
+CREATE POLICY "market products admin" ON public.market_products
+  FOR ALL TO authenticated
+  USING (public.is_admin()) WITH CHECK (public.is_admin());
+
+REVOKE INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLE public.market_products FROM anon;
+REVOKE TRUNCATE, REFERENCES, TRIGGER ON TABLE public.market_products FROM authenticated;
+REVOKE ALL ON FUNCTION public.market_products_guard() FROM PUBLIC, anon, authenticated;
+
+NOTIFY pgrst, 'reload schema';
