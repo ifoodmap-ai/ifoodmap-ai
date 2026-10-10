@@ -5,8 +5,10 @@
 // 照片:每張照片是兩個檔 —— 主圖 <uuid>.jpg(商品頁)與另外上傳的縮圖 <uuid>_t.jpg(市集首頁、店家頁的商品卡先顯示它)。
 // Storage 的檔只能寫一次,核准之後換不掉,所以兩個檔都要在這裡看過。這頁刻意不用 MarketImage:它讀不到縮圖會改顯示主圖,
 // 縮圖缺了(或根本是另一張圖)審核者看不出來。改用 ReviewImage:主圖、縮圖並排,讀不到就在那一格用紅框寫「讀不到…」,
-// 不退回任何東西。縮圖缺檔時資料庫也會擋核准(22023 photos_not_uploaded,中文訊息在 src/lib/market/db.ts),
-// 訊息除了 toast,也顯示在查看視窗裡(就在讀不到的那一格旁邊)。
+// 不退回任何東西。查看視窗裡只要有一格讀不到,「核准上架」就按不下去:紅框還在時能按的話,供應商這時才補傳
+// (可能是另一張圖),再按一次就核准了審核者沒看過的檔;補傳後要關掉重開(每張圖重新載入)、全部看得到才能核准。
+// 縮圖缺檔時資料庫也會擋核准(22023 photos_not_uploaded,中文訊息在 src/lib/market/db.ts),訊息除了 toast,
+// 也顯示在查看視窗裡。
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
@@ -41,10 +43,12 @@ interface ReviewImageProps {
   width: number;
   height: number;
   className: string;
+  /** 讀不到時通知呼叫端(查看視窗用來擋核准) */
+  onFail?: () => void;
 }
 
 /** 審核用的圖片:讀不到就在原位明白標出來(紅框),不像 MarketImage 會退回主圖或分類圖示。換照片時呼叫端用 key 重掛。 */
-const ReviewImage = ({ path, label, missingText, width, height, className }: ReviewImageProps) => {
+const ReviewImage = ({ path, label, missingText, width, height, className, onFail }: ReviewImageProps) => {
   const [failed, setFailed] = useState(false);
   if (failed) {
     return (
@@ -65,7 +69,10 @@ const ReviewImage = ({ path, label, missingText, width, height, className }: Rev
       height={height}
       loading="lazy"
       decoding="async"
-      onError={() => setFailed(true)}
+      onError={() => {
+        setFailed(true);
+        onFail?.();
+      }}
       className={`${className} bg-slate-100`}
     />
   );
@@ -79,17 +86,22 @@ const AdminMarketProductsPage = () => {
   const [detail, setDetail] = useState<MarketProductRow | null>(null);
   /** 在查看視窗裡審核失敗的原因(例如照片沒上傳完成),顯示在視窗裡 */
   const [detailError, setDetailError] = useState<string | null>(null);
+  /** 查看視窗裡讀不到的檔(主圖或縮圖路徑);有任何一個就不能核准 */
+  const [failedFiles, setFailedFiles] = useState<string[]>([]);
   const [reasonTarget, setReasonTarget] = useState<{ row: MarketProductRow; mode: ReasonMode } | null>(null);
   const [reason, setReason] = useState('');
   const [busyId, setBusyId] = useState<string | null>(null);
   const loadSeq = useRef(0);
+  // load 一律讀「現在」的篩選:審核完的重抓用的是按下按鈕那次 render 的 load,
+  // 那之後才切了篩選的話,照閉包裡的舊篩選重抓會把清單換回舊分頁的內容
+  const filterRef = useRef(filter);
 
   const load = useCallback(async () => {
     // 篩選切得快時,比較慢回來的舊查詢不能蓋掉新的:只認最後一次
     const seq = ++loadSeq.current;
     setLoading(true);
     try {
-      const next = await fetchAdminProducts(filter);
+      const next = await fetchAdminProducts(filterRef.current);
       if (seq !== loadSeq.current) return;
       setRows(next);
       setLoadError(null);
@@ -99,20 +111,24 @@ const AdminMarketProductsPage = () => {
     } finally {
       if (seq === loadSeq.current) setLoading(false);
     }
-  }, [filter]);
+  }, []);
 
   useEffect(() => {
+    filterRef.current = filter;
     void load();
-  }, [load]);
+  }, [filter, load]);
 
   const openDetail = (row: MarketProductRow) => {
     setDetailError(null);
+    setFailedFiles([]);
     setDetail(row);
   };
   const closeDetail = () => {
     setDetail(null);
     setDetailError(null);
+    setFailedFiles([]);
   };
+  const markFailed = (file: string) => setFailedFiles((files) => (files.includes(file) ? files : [...files, file]));
   // 每次都從空白開始:上一個商品沒送出的原因不能帶到下一個商品
   const openReason = (row: MarketProductRow, mode: ReasonMode) => {
     setReason('');
@@ -258,7 +274,7 @@ const AdminMarketProductsPage = () => {
                 ) : (
                   <>
                     <p className="text-xs text-slate-500">
-                      每張照片有主圖和縮圖兩個檔,市集的商品卡先顯示縮圖:兩張都要看,而且要是同一張照片。紅框是讀不到的檔(多半是還沒上傳完成,核准會被擋下)。
+                      每張照片有主圖和縮圖兩個檔,市集的商品卡先顯示縮圖:兩張都要看,而且要是同一張照片。紅框是讀不到的檔(多半是還沒上傳完成),有紅框就不能核准。
                     </p>
                     <ul className="space-y-3">
                       {detail.photos.map((p, i) => (
@@ -273,6 +289,7 @@ const AdminMarketProductsPage = () => {
                                 width={300}
                                 height={300}
                                 className="aspect-square w-full rounded-md object-contain text-sm"
+                                onFail={() => markFailed(p)}
                               />
                               <figcaption className="mt-1 text-xs text-slate-500">主圖(商品頁)</figcaption>
                             </figure>
@@ -284,6 +301,7 @@ const AdminMarketProductsPage = () => {
                                 width={300}
                                 height={300}
                                 className="aspect-square w-full rounded-md object-contain text-sm"
+                                onFail={() => markFailed(thumbPathOf(p))}
                               />
                               <figcaption className="mt-1 text-xs text-slate-500">縮圖(商品卡先顯示)</figcaption>
                             </figure>
@@ -319,12 +337,21 @@ const AdminMarketProductsPage = () => {
                   {detailError}
                 </p>
               ) : null}
+              {detail.review_status === 'pending' && failedFiles.length > 0 ? (
+                <p className="text-sm text-red-700">
+                  有 {failedFiles.length} 個檔讀不到,不能核准:可以先退回請供應商補傳;補傳後關掉這個視窗重新查看,每張都看得到才能核准。
+                </p>
+              ) : null}
               {detail.review_status === 'pending' ? (
                 <DialogFooter className="gap-2">
                   <Button variant="outline" className="text-red-600" onClick={() => openReason(detail, 'reject')}>
                     退回
                   </Button>
-                  <Button className="bg-emerald-600 text-white hover:bg-emerald-700" disabled={busyId === detail.id} onClick={() => approve(detail)}>
+                  <Button
+                    className="bg-emerald-600 text-white hover:bg-emerald-700"
+                    disabled={busyId === detail.id || failedFiles.length > 0}
+                    onClick={() => approve(detail)}
+                  >
                     核准上架
                   </Button>
                 </DialogFooter>

@@ -146,6 +146,29 @@ describe("AdminMarketProductsPage", () => {
     expect(screen.queryByText("有機高麗菜")).toBeNull();
     expect(screen.getByText("已核准的商品")).toBeInTheDocument();
   });
+
+  it("核准還沒回來就切到別的篩選 → 核准完重抓的是「現在」的篩選,不會把清單換回待審", async () => {
+    const APPROVED_ROW = { ...PENDING, id: "a9300000-0000-4000-8000-0000000000c3", name: "已核准的商品", review_status: "approved" as const };
+    vi.mocked(fetchAdminProducts).mockImplementation(async (filter) => (filter === "approved" ? [APPROVED_ROW] : [PENDING]));
+    let finishApprove: () => void = () => {};
+    vi.mocked(reviewProduct).mockImplementation(
+      () =>
+        new Promise<MarketProductRow>((resolve) => {
+          finishApprove = () => resolve(PENDING);
+        }),
+    );
+    render(<AdminMarketProductsPage />);
+    await userEvent.click(await screen.findByRole("button", { name: "核准 有機高麗菜" }));
+    await userEvent.click(screen.getByRole("button", { name: "已核准" }));
+    expect(await screen.findByText("已核准的商品")).toBeInTheDocument();
+    await act(async () => finishApprove());
+    await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith("已核准「有機高麗菜」"));
+    const calls = vi.mocked(fetchAdminProducts).mock.calls;
+    await waitFor(() => expect(calls[calls.length - 1]).toEqual(["approved"]));
+    expect(await screen.findByText("已核准的商品")).toBeInTheDocument();
+    expect(screen.queryByText("有機高麗菜")).toBeNull();
+    expect(screen.getByRole("button", { name: "已核准" })).toHaveAttribute("aria-pressed", "true");
+  });
 });
 
 describe("AdminMarketProductsPage — 每張照片的主圖和縮圖都要審(縮圖缺了要看得出來)", () => {
@@ -182,6 +205,24 @@ describe("AdminMarketProductsPage — 每張照片的主圖和縮圖都要審(�
     expect(within(dialog).getByRole("img", { name: "第 1 張・主圖" })).toHaveAttribute("src", publicImageUrl(PHOTO_1));
     // 其他照片不受影響
     expect(within(dialog).getByRole("img", { name: "第 2 張・縮圖" })).toHaveAttribute("src", publicImageUrl(thumbPathOf(PHOTO_2)));
+  });
+
+  it("查看視窗裡有檔讀不到 → 不能按「核准上架」;補傳後重新開啟、每張都讀得到才能核准", async () => {
+    const dialog = await openDetail();
+    expect(within(dialog).getByRole("button", { name: "核准上架" })).toBeEnabled();
+    fireEvent.error(within(dialog).getByRole("img", { name: "第 1 張・縮圖" }));
+    // 紅框還在時按得下去的話:供應商這時才補傳(可能是另一張圖),第二次按就核准了一張審核者沒看過的縮圖
+    expect(within(dialog).getByRole("button", { name: "核准上架" })).toBeDisabled();
+    expect(within(dialog).getByText(/有 1 個檔讀不到,不能核准/)).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "退回" })).toBeEnabled();
+    // 關掉重開 = 每張圖重新載入;這次讀得到就能核准
+    await userEvent.click(within(dialog).getByRole("button", { name: "Close" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await userEvent.click(screen.getByRole("button", { name: "查看 有機高麗菜" }));
+    const again = await screen.findByRole("dialog");
+    expect(within(again).getByRole("img", { name: "第 1 張・縮圖" })).toBeInTheDocument();
+    expect(within(again).getByRole("button", { name: "核准上架" })).toBeEnabled();
+    expect(within(again).queryByText(/個檔讀不到/)).toBeNull();
   });
 
   it("主圖讀不到也一樣標出「讀不到主圖」", async () => {
@@ -225,6 +266,7 @@ describe("AdminMarketStoresPage", () => {
     expect(screen.getByText(/上架 3・待審 1/)).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "停用 市集測試 A 店 的零售" }));
     expect(screen.getByRole("button", { name: "確定停用" })).toBeDisabled();
+    expect(screen.getByLabelText("原因(必填)")).toHaveAttribute("maxlength", String(LIMITS.disabledReason));
     await userEvent.type(screen.getByLabelText("原因(必填)"), "客訴處理中");
     await userEvent.click(screen.getByRole("button", { name: "確定停用" }));
     await waitFor(() => expect(setStoreEnabled).toHaveBeenCalledWith(STORE_A.supplier_id, false, "客訴處理中"));

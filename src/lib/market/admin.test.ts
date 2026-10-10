@@ -55,6 +55,8 @@ describe("reviewProduct", () => {
   it("核准:只送 review_status,帶 id 與 updated_at(樂觀鎖)", async () => {
     await reviewProduct(product, { kind: "approve" });
     expect(calls[0]).toMatchObject({ op: "update", payload: { review_status: "approved" } });
+    // 只送 review_status(toMatchObject 是子集比對,多送欄位也會過)
+    expect(calls[0].payload).toEqual({ review_status: "approved" });
     expect(calls[0].filters).toEqual([
       ["id", "p1"],
       ["updated_at", product.updated_at],
@@ -93,8 +95,10 @@ describe("清單與店家", () => {
   it("停用要帶原因;恢復只送 is_enabled", async () => {
     await setStoreEnabled("sup-1", false, " 客訴處理中 ");
     expect(calls[0].payload).toEqual({ is_enabled: false, disabled_reason: "客訴處理中" });
+    expect(calls[0].filters).toEqual([["supplier_id", "sup-1"]]);
     await setStoreEnabled("sup-1", true, null);
     expect(calls[1].payload).toEqual({ is_enabled: true });
+    expect(calls[1].filters).toEqual([["supplier_id", "sup-1"]]);
   });
 
   it("商品數:上架中 = 已核准且開著;待審另外算", async () => {
