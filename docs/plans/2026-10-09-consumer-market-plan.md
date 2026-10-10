@@ -17236,3 +17236,27 @@ B. 頁面
 2. 會在 `MarketLayout` 裡用點連結換頁(PUSH)的測試,jsdom 會印 `Not implemented: window.scrollTo`(不影響結果);要安靜就在那個測試裡 `vi.spyOn(window, "scrollTo").mockImplementation(() => {})`。Task 46 之後 `MarketLayout` 會呼叫 `useCart()`;`useCart` 讀寫 localStorage 都有 try/catch,`market-components.test.tsx` 新增的兩個換頁測試不用另外換 localStorage。
 3. 新頁面要設分頁標題一律用 `useMarketTitle`(離開市集會自動還原);頁面裡畫 `MarketNotFound` 時傳跟頁面自己一樣的 `title`。整頁載入失敗用 `MarketLoadError`(要有 h1 與重試)。
 4. 🔴 **Task 43 在 `LIMITS` 最後加 7 個訂單上限(第 11900 行)之後,`constants.test.ts` 的「LIMITS 每一個上限都等於 migration 120000 的 CHECK」會紅**(多出來的 key 沒有對照)—— 這是故意的:每個上限都要跟資料庫比。Task 43 要同時在 `constants.test.ts` 加 130000 的對照(寫法以當時 repo 裡的 migration 為準):讀 `supabase/migrations/20261009130000_market_orders.sql`,`buyerName` ← `char_length(buyer_name) BETWEEN 1 AND 50`、`addressMin` / `address` ← `char_length(ship_address) BETWEEN 5 AND 200`、`buyerNote` ← `char_length(buyer_note) <= 300`、`orderNote` ← `char_length(note) <= 300`(`market_order_events.note`)、`carrier` ← `char_length(v_carrier) > 50`、`trackingNo` ← `char_length(v_tracking) > 100`;第一項把兩份對照合併後再跟 `{ ...LIMITS }` 比,「數字真的是從 migration 讀出來的」那一項也跑新的對照。項數不變。
+
+### 2026-10-10:migration 修正(第 3 輪複審)(commit `5eaf80c`,分支 `market`)
+
+第 3 輪複審通過(沒有 Critical / Important),套用前把 4 個 Minor 與 1 個 nit 一起修。**以 repo(`market` 分支)為準。**
+
+1. **`market_visible` 補缺口、改寫法**:改成 `p_text ~ '[^…]'`(只要有一個字不在「看不見」的集合裡就算,找到就停),不再整串取代再量長度;1e6 個 U+200B 從約 750ms 降到幾十毫秒。Default_Ignorable_Code_Point 的區段合併成 U+205F–U+206F、U+FFF0–U+FFFB、U+E0000–U+E0FFF,補上原本當品名存得進去的 U+2065、U+FFF0–U+FFF8、U+E0000、U+E0002–U+E001F、U+E0080–U+E00FF、U+E01F0–U+E0FFF;一般字串的結果跟舊寫法相同。
+2. **`market_products_guard` 先擋擁有權與長度,才做正規化**(market_visible、market_trim、照片路徑):
+   - 新增別家的商品 → 42501(例外跟 `market_stores_guard` 一樣只看 `auth.role()`)。原本靠 RLS,但 guard 比 RLS 先跑:不是供應商的登入者替別家塞 6 個各 1e6 字的欄位,要 5 秒才拿到 42501。
+   - 粗擋長度:任一文字欄位原始長度超過 10000 字、或照片超過 50 張 → 23514。比 CHECK 寬很多、只擋亂塞的,精確上限仍由 CHECK 在正規化之後檢查。行為差異:原始長度超過 10000 字、去掉頭尾空白後其實很短的輸入,以前會被接受,現在一律擋。
+3. **官方測試補 2 項**(複審拿掉這兩個條件時,原本 99 項仍全過):管理員改已核准商品的 photos 也要照片都已上傳;只認 `market-images` bucket(同名檔放在別的 bucket 不算,缺主圖、缺縮圖各一)。突變驗證:拿掉「已核准時改了照片」的條件、或主圖 / 縮圖不限 bucket,各自正好被對應的一項抓到。
+4. **Storage 版本功能**:正式庫的 `storage.buckets.versioning_status` 是 `text NOT NULL DEFAULT 'DISABLED'`(可填 DISABLED / ENABLED / SUSPENDED;目前另有 Supabase 的 dark-launch CHECK `buckets_versioning_dark_check` 強制 DISABLED)。「照片只能寫一次」的前提是這個 bucket 不開版本,所以 120100 另寫一句 `UPDATE storage.buckets SET versioning_status = 'DISABLED' WHERE id = 'market-images'`(沒有塞進原本的 INSERT:前端 `src/lib/market/constants.test.ts` 逐字比對那句 INSERT 的欄位),`market_images_storage.test.sql` 多驗一項。預設值與 dark-launch CHECK 本來就是 DISABLED,這項目前不可能先看到失敗,是之後的回歸保護。
+   - 🔴 **Task 31 Step 4(第 8308 行起)的線上 schema 查詢要加驗這點**:在 `json_build_object(...)` 裡加 `'image_bucket_versioning', (SELECT b.versioning_status FROM storage.buckets b WHERE b.id = 'market-images')`,Expected 加 `image_bucket_versioning` = `"DISABLED"`。
+5. **縮短持鎖時間**:會暫停 guard trigger(`ALTER TABLE … DISABLE TRIGGER`,SHARE ROW EXCLUSIVE 鎖、擋寫不擋讀)的兩段 created_at 測試搬到 `market_catalog.test.sql` 最後(第 7 節),鎖只持有到交易結束前一下下。
+6. (nit)**缺檔時錯誤訊息帶真正缺的那張**:每張照片展開成主圖、縮圖兩個檔名,回第一個真的缺的,不再固定帶主圖。
+
+| 乾跑 | 第 2 輪後(含 .jpg 限定) | 現在 | 差異 |
+|---|---|---|---|
+| `market_catalog` | 99 | **105** | 第 6 節新增 6 項(Default_Ignorable 缺口、兩種超長輸入 1 秒內被擋、管理員改已核准商品的照片、只認 `market-images` bucket、缺檔訊息);created_at 兩項搬到第 7 節,項數不變 |
+| `market_catalog_rollback` | 3 | 3 | 不變 |
+| `market_images_storage` | 18 | **19** | 多驗 bucket 不開版本 |
+| `market_images_storage_rollback` | 3 | 3 | 不變 |
+
+- 前面各節要改成 99 的 Expected 一律改成 **105**,`market_images_storage` 的 18 一律改成 **19**(F 節第 116 行、Task 6 第 1790 行、Task 31 第 8291 / 8341 / 8387 行)。
+- 「1 秒內」那兩項是寬鬆的時間上限(修正前約 5 秒、修正後幾十毫秒);正式庫很忙時萬一超過,先重跑一次再判斷。
