@@ -1,0 +1,79 @@
+// 單張圖片欄位(店家 logo、封面):選檔 → 瀏覽器壓縮 → 上傳到 <supplier_id>/store/ → 回傳路徑給表單。
+// 換圖或移除時不刪舊檔(舊檔可能還被已儲存的設定引用;孤兒檔無害)。
+import { useId, useState } from "react";
+import { Loader2 } from "lucide-react";
+import { publicImageUrl, uploadMarketImage } from "@/lib/market/images";
+
+interface MarketImageFieldProps {
+  label: string;
+  hint?: string;
+  supplierId: string;
+  value: string | null;
+  onChange: (path: string | null) => void;
+  upload?: (supplierId: string, folder: string, file: File) => Promise<string>;
+}
+
+export default function MarketImageField({ label, hint, supplierId, value, onChange, upload = uploadMarketImage }: MarketImageFieldProps) {
+  const id = useId();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const onFile = async (file: File | undefined) => {
+    if (!file) return;
+    setBusy(true);
+    setError(null);
+    try {
+      onChange(await upload(supplierId, "store", file));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="space-y-2">
+      <label htmlFor={id} className="block text-sm font-medium text-slate-700">
+        {label}
+      </label>
+      {hint ? <p className="text-xs text-slate-500">{hint}</p> : null}
+      <div className="flex flex-wrap items-center gap-3">
+        {value ? (
+          <img src={publicImageUrl(value)} alt={`目前的${label}`} width={96} height={96} className="h-24 w-24 rounded-md border border-slate-200 object-cover" />
+        ) : (
+          <span className="flex h-24 w-24 items-center justify-center rounded-md border border-dashed border-slate-300 text-xs text-slate-500">
+            尚未上傳
+          </span>
+        )}
+        <input
+          id={id}
+          type="file"
+          accept="image/jpeg,image/png,image/webp"
+          disabled={busy}
+          aria-describedby={error ? `${id}-error` : undefined}
+          onChange={(e) => {
+            void onFile(e.target.files?.[0]);
+            e.target.value = "";
+          }}
+          className="text-sm"
+        />
+        {busy ? (
+          <span className="inline-flex items-center gap-1 text-sm text-slate-600" role="status">
+            <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+            上傳中…
+          </span>
+        ) : null}
+        {value && !busy ? (
+          <button type="button" onClick={() => onChange(null)} className="min-h-11 rounded-md px-3 text-sm text-red-700 hover:bg-red-50">
+            移除{label}
+          </button>
+        ) : null}
+      </div>
+      {error ? (
+        <p id={`${id}-error`} role="alert" className="text-sm text-red-700">
+          {error}
+        </p>
+      ) : null}
+    </div>
+  );
+}

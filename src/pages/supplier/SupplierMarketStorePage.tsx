@@ -1,0 +1,256 @@
+// 供應商後台「零售市集 › 店家設定」(/supplier/market/store):logo、封面、介紹、配送縣市、固定運費、免運門檻、
+// 最低訂購金額、出貨天數、接受的付款方式、轉帳資訊、退換貨說明。
+// 驗證規則在 src/lib/market/store.ts(跟資料庫 CHECK 同一套上限);資料庫的 guard 再擋一次(例如沒填轉帳資訊卻勾轉帳)。
+// 「零售啟用」只有管理員能改:被停用時這頁最上面顯示原因。
+import { useEffect, useState, type FormEvent } from "react";
+import { Link } from "react-router-dom";
+import { Loader2 } from "lucide-react";
+import { toast } from "sonner";
+import { Button } from "@/components/ui/button";
+import { useCurrentSupplier } from "@/hooks/use-current-supplier";
+import { LIMITS, TW_CITIES, type TwCity } from "@/lib/market/constants";
+import { friendlyDbError } from "@/lib/market/db";
+import {
+  emptyStoreForm,
+  fetchOwnStore,
+  saveStore,
+  storeFormFromRow,
+  validateStoreForm,
+  type StoreForm,
+  type StoreFormErrors,
+} from "@/lib/market/store";
+import type { MarketStoreRow } from "@/lib/market/types";
+import MarketImageField from "./market/MarketImageField";
+
+const INPUT = "min-h-11 w-full rounded-md border border-slate-300 bg-white px-3 text-base focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-700";
+
+const FieldError = ({ id, message }: { id: string; message?: string }) =>
+  message ? (
+    <p id={id} className="mt-1 text-sm text-red-700">
+      {message}
+    </p>
+  ) : null;
+
+export default function SupplierMarketStorePage() {
+  const { supplierId, loading: idLoading, error: idError } = useCurrentSupplier();
+  const [row, setRow] = useState<MarketStoreRow | null>(null);
+  const [form, setForm] = useState<StoreForm>(emptyStoreForm());
+  const [errors, setErrors] = useState<StoreFormErrors>({});
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (!supplierId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const { store, transferInfo } = await fetchOwnStore(supplierId);
+        if (cancelled) return;
+        setRow(store);
+        setForm(store ? storeFormFromRow(store, transferInfo) : emptyStoreForm());
+      } catch (e) {
+        toast.error("讀取店家設定失敗", { description: friendlyDbError(e) });
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [supplierId]);
+
+  const set = <K extends keyof StoreForm>(key: K, value: StoreForm[K]) => setForm((f) => ({ ...f, [key]: value }));
+  const toggleCity = (city: TwCity) =>
+    set("deliveryCities", form.deliveryCities.includes(city) ? form.deliveryCities.filter((c) => c !== city) : [...form.deliveryCities, city]);
+
+  const onSubmit = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!supplierId) return;
+    const errs = validateStoreForm(form);
+    setErrors(errs);
+    if (Object.keys(errs).length > 0) {
+      toast.error("有欄位需要修正", { description: Object.values(errs)[0] });
+      return;
+    }
+    setSaving(true);
+    try {
+      setRow(await saveStore(supplierId, form));
+      toast.success("已儲存店家設定");
+    } catch (err) {
+      toast.error("儲存失敗", { description: friendlyDbError(err) });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (idLoading || (supplierId && loading)) {
+    return (
+      <div className="flex justify-center py-20">
+        <Loader2 className="animate-spin text-emerald-600" size={28} aria-label="載入中" />
+      </div>
+    );
+  }
+  if (!supplierId) return <p className="p-6 text-slate-600">{idError ?? "此帳號尚未綁定供應商"}</p>;
+
+  const describe = (key: keyof StoreForm) => (errors[key] ? `store-${key}-error` : undefined);
+
+  return (
+    <form onSubmit={onSubmit} noValidate className="mx-auto max-w-3xl space-y-8 p-6">
+      <div>
+        <h1 className="text-xl font-bold text-gray-900">店家設定</h1>
+        <p className="text-sm text-gray-500">
+          消費者在 iFoodmap 食材市集看到的店家資訊與配送、付款條件。零售商品請到「商品與價格 › 商品目錄」的「零售商品」分頁上架。
+        </p>
+        {row ? (
+          <p className="mt-2 text-sm">
+            <Link to={`/market/s/${supplierId}`} className="text-emerald-800 underline underline-offset-2">
+              看消費者看到的店家頁
+            </Link>
+          </p>
+        ) : null}
+      </div>
+
+      {row && !row.is_enabled ? (
+        <div role="alert" className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-800">
+          平台已暫停你的零售(消費者看不到你的店家與商品)。原因:{row.disabled_reason ?? "未說明"}。有問題請聯絡 iFoodmap。
+        </div>
+      ) : null}
+
+      <section className="space-y-4" aria-labelledby="store-look">
+        <h2 id="store-look" className="font-semibold text-gray-900">
+          外觀與介紹
+        </h2>
+        <MarketImageField label="店家 logo" hint="正方形最好看;JPG、PNG、WebP" supplierId={supplierId} value={form.logoPath} onChange={(p) => set("logoPath", p)} />
+        <MarketImageField label="店家封面" hint="橫式,建議 3:1" supplierId={supplierId} value={form.coverPath} onChange={(p) => set("coverPath", p)} />
+        <div>
+          <label htmlFor="store-intro" className="mb-1 block text-sm font-medium text-slate-700">
+            店家介紹
+          </label>
+          <textarea
+            id="store-intro"
+            rows={4}
+            maxLength={LIMITS.storeIntro}
+            value={form.intro}
+            onChange={(e) => set("intro", e.target.value)}
+            aria-invalid={!!errors.intro}
+            aria-describedby={describe("intro")}
+            className={`${INPUT} py-2`}
+          />
+          <FieldError id="store-intro-error" message={errors.intro} />
+        </div>
+      </section>
+
+      <section className="space-y-4" aria-labelledby="store-delivery">
+        <h2 id="store-delivery" className="font-semibold text-gray-900">
+          配送
+        </h2>
+        <fieldset aria-describedby={describe("deliveryCities")}>
+          <legend className="mb-2 text-sm font-medium text-slate-700">配送縣市(收件地址不在這裡的訂單不能結帳)</legend>
+          <div className="mb-2 flex gap-2">
+            <button type="button" onClick={() => set("deliveryCities", [...TW_CITIES])} className="min-h-11 rounded-md border border-slate-300 px-3 text-sm">
+              全選
+            </button>
+            <button type="button" onClick={() => set("deliveryCities", [])} className="min-h-11 rounded-md border border-slate-300 px-3 text-sm">
+              清除
+            </button>
+          </div>
+          <div className="grid grid-cols-2 gap-1 min-[640px]:grid-cols-4">
+            {TW_CITIES.map((c) => (
+              <label key={c} className="flex min-h-11 items-center gap-2 text-sm">
+                <input type="checkbox" checked={form.deliveryCities.includes(c)} onChange={() => toggleCity(c)} className="h-5 w-5" />
+                {c}
+              </label>
+            ))}
+          </div>
+          <FieldError id="store-deliveryCities-error" message={errors.deliveryCities} />
+        </fieldset>
+        <div className="grid gap-4 min-[640px]:grid-cols-2">
+          {(
+            [
+              ["shippingFee", "固定運費(元)", "0 = 免運費"],
+              ["freeShippingThreshold", "滿多少免運(元)", "不提供免運就留白"],
+              ["minOrderAmount", "最低訂購金額(元)", "沒有就填 0;看商品小計,不含運費"],
+              ["shipDays", "幾個工作天內出貨", "0 = 當天出貨"],
+            ] as Array<[keyof StoreForm, string, string]>
+          ).map(([key, label, hint]) => (
+            <div key={key}>
+              <label htmlFor={`store-${key}`} className="mb-1 block text-sm font-medium text-slate-700">
+                {label}
+              </label>
+              <input
+                id={`store-${key}`}
+                inputMode="numeric"
+                value={String(form[key])}
+                onChange={(e) => set(key, e.target.value as never)}
+                aria-invalid={!!errors[key]}
+                aria-describedby={describe(key) ?? `store-${key}-hint`}
+                className={INPUT}
+              />
+              <p id={`store-${key}-hint`} className="mt-1 text-xs text-slate-500">
+                {hint}
+              </p>
+              <FieldError id={`store-${key}-error`} message={errors[key]} />
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <section className="space-y-4" aria-labelledby="store-payment">
+        <h2 id="store-payment" className="font-semibold text-gray-900">
+          付款(店家自己收款,平台不經手)
+        </h2>
+        <fieldset aria-describedby={describe("acceptCod")}>
+          <legend className="sr-only">接受的付款方式</legend>
+          <label className="flex min-h-11 items-center gap-2 text-sm">
+            <input type="checkbox" checked={form.acceptCod} onChange={(e) => set("acceptCod", e.target.checked)} className="h-5 w-5" />
+            貨到付款
+          </label>
+          <label className="flex min-h-11 items-center gap-2 text-sm">
+            <input type="checkbox" checked={form.acceptTransfer} onChange={(e) => set("acceptTransfer", e.target.checked)} className="h-5 w-5" />
+            銀行轉帳(接單後,消費者會在訂單查詢頁看到下面的轉帳資訊)
+          </label>
+          <FieldError id="store-acceptCod-error" message={errors.acceptCod} />
+        </fieldset>
+        {form.acceptTransfer ? (
+          <div>
+            <label htmlFor="store-transferInfo" className="mb-1 block text-sm font-medium text-slate-700">
+              轉帳資訊(銀行、分行、帳號、戶名)
+            </label>
+            <textarea
+              id="store-transferInfo"
+              rows={3}
+              maxLength={LIMITS.transferInfo}
+              value={form.transferInfo}
+              onChange={(e) => set("transferInfo", e.target.value)}
+              aria-invalid={!!errors.transferInfo}
+              aria-describedby={describe("transferInfo")}
+              className={`${INPUT} py-2`}
+            />
+            <FieldError id="store-transferInfo-error" message={errors.transferInfo} />
+          </div>
+        ) : null}
+        <div>
+          <label htmlFor="store-returnPolicy" className="mb-1 block text-sm font-medium text-slate-700">
+            退換貨說明
+          </label>
+          <textarea
+            id="store-returnPolicy"
+            rows={3}
+            maxLength={LIMITS.returnPolicy}
+            value={form.returnPolicy}
+            onChange={(e) => set("returnPolicy", e.target.value)}
+            placeholder="例:生鮮食品收到後 24 小時內有問題請拍照聯絡我們"
+            aria-invalid={!!errors.returnPolicy}
+            aria-describedby={describe("returnPolicy")}
+            className={`${INPUT} py-2`}
+          />
+          <FieldError id="store-returnPolicy-error" message={errors.returnPolicy} />
+        </div>
+      </section>
+
+      <Button type="submit" disabled={saving} className="min-h-11 bg-emerald-700 text-white hover:bg-emerald-800">
+        {saving ? "儲存中…" : "儲存店家設定"}
+      </Button>
+    </form>
+  );
+}
