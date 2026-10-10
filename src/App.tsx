@@ -65,6 +65,8 @@ import AdminDisputesPage from "./pages/admin/AdminDisputesPage";
 import AdminRevenuePage from "./pages/admin/AdminRevenuePage";
 import AdminGrowthPage from "./pages/admin/AdminGrowthPage";
 import AdminCampaignsPage from "./pages/admin/AdminCampaignsPage";
+import AdminMarketProductsPage from "./pages/admin/AdminMarketProductsPage";
+import AdminMarketStoresPage from "./pages/admin/AdminMarketStoresPage";
 
 // 供應商後台(僅前台站)
 import SupplierRoute from "./components/SupplierRoute";
@@ -129,6 +131,9 @@ const AdminRoutes = () => (
       <Route path="campaigns" element={<AdminCampaignsPage />} />
       <Route path="notifications" element={<AdminNotificationsPage />} />
       <Route path="roadmap" element={<AdminRoadmapPage />} />
+      {/* 消費者食材市集(B2C) */}
+      <Route path="market/products" element={<AdminMarketProductsPage />} />
+      <Route path="market/stores" element={<AdminMarketStoresPage />} />
     </Route>
     <Route path="*" element={<Navigate to="/" replace />} />
   </Routes>

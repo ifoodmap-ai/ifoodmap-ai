@@ -1,6 +1,7 @@
 // 管理員後台共用版面:
 //   ① AI 助手泡泡每一頁都看得到,而且是純對話(admin 模式)。
 //   ② 後台精簡第一期:選單 23 項 → 7 個分區,分區裡用分頁(SectionTabs);金流/發票從選單收起來;
+//      2026-10 加第 8 個分區「零售市集」(消費者食材市集的商品審核、零售店家);
 //      「會員 › 入駐審核」分頁帶待審數。
 //
 // 🔴 管理員後台是另一個網站(VITE_PORTAL=admin),沒有 /restaurant/* 路由 —— 對話裡講到「供應商」「媒合」
@@ -45,7 +46,7 @@ const ANALYSIS: AnalysisResult = {
   ingredients: [{ name: "牛肉", quantity: "5", unit: "kg" }],
 };
 
-const SECTION_LABELS = ["總覽", "訂單", "需求與媒合", "會員", "食材資料", "財務", "系統"];
+const SECTION_LABELS = ["總覽", "訂單", "需求與媒合", "會員", "食材資料", "財務", "零售市集", "系統"];
 
 let pathnames: string[] = [];
 const PathProbe = () => {
@@ -172,15 +173,15 @@ describe("AdminLayout 的 AI 助手泡泡", () => {
   });
 });
 
-describe("AdminLayout — 選單剛好 7 個分區(23 項收成 7 區)", () => {
+describe("AdminLayout — 選單剛好 8 個分區(23 項收成 7 區,2026-10 加零售市集)", () => {
   it.each([
     ["桌機側欄", "admin-sidebar-desktop"],
     ["手機抽屜", "admin-sidebar-mobile"],
-  ])("%s:剛好 7 個分區連結,依序是 總覽、訂單、需求與媒合、會員、食材資料、財務、系統", async (_name, testId) => {
+  ])("%s:剛好 8 個分區連結,依序是 總覽、訂單、需求與媒合、會員、食材資料、財務、零售市集、系統", async (_name, testId) => {
     renderLayout("/admin");
     const nav = within(screen.getByTestId(testId)).getByRole("navigation", { name: "管理員後台導覽" });
     const links = within(nav).getAllByRole("link");
-    expect(links).toHaveLength(7);
+    expect(links).toHaveLength(8);
     expect(links.map((l) => l.textContent)).toEqual(SECTION_LABELS);
     expect(links.map((l) => l.getAttribute("href"))).toEqual([
       "/admin",
@@ -189,6 +190,7 @@ describe("AdminLayout — 選單剛好 7 個分區(23 項收成 7 區)", () => {
       "/admin/restaurants",
       "/admin/ingredients",
       "/admin/revenue",
+      "/admin/market/products",
       "/admin/ai-ops",
     ]);
     await waitFor(() => expect(nav).toBeInTheDocument());

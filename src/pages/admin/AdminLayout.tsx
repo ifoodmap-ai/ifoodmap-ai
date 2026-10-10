@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import {
-  LayoutDashboard, Package, Sparkles, Users, Carrot, Wallet, Settings,
+  LayoutDashboard, Package, Sparkles, Users, Carrot, Wallet, Settings, Store,
   LogOut, Menu, X, type LucideIcon,
 } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
@@ -142,6 +142,18 @@ const SECTIONS: AdminSection[] = [
       // Q6-A:金流/發票仍是沙盒(demo 手冊「現場絕對不要碰」),從選單收起來 ——
       // 路由保留、直接打 /admin/billing 仍然可以用,側欄照樣標出「財務」
       { label: '金流／發票（沙盒）', path: '/admin/billing', hidden: true },
+    ],
+  },
+  {
+    // 消費者食材市集(B2C,2026-10):商品審核、零售店家(第 2 階段加零售訂單)
+    key: 'market',
+    to: '/admin/market/products',
+    label: '零售市集',
+    icon: Store,
+    match: startsWithAny(['/admin/market']),
+    tabs: [
+      { label: '商品審核', path: '/admin/market/products' },
+      { label: '零售店家', path: '/admin/market/stores' },
     ],
   },
   {
