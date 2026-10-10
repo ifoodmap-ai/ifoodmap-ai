@@ -17109,3 +17109,52 @@ Task 1–2 照本計畫做完後,獨立審查找出工具本身的漏洞,已修�
 - 「F. 共用指令與基準數字」的表格與之後各 Task 的 vitest 總數都要**多 38 項**(檔數不變):第 1 階段完成 97 檔 / 1349 項,第 2、3 階段完成 111 檔 / 1466 項。
 - 乾跑輸出的句數 K 比原本多 4(保險那 4 句;本來就不用管 K),各測試的項數不變。
 - Task 1 Step 2 的錯誤訊息:vitest 2.1.9 實際印的是 `Failed to resolve import "./supabase-sql.mjs" … Does the file exist?`(意思相同)。
+
+### 2026-10-10:migration 120000 / 120100 品質審查後的修正(commit `6ab2cb7`、`513f486`,分支 `market`)
+
+Task 3–7 照本計畫做完、規格審查逐位元相同之後,品質審查找出兩支 migration 的漏洞,已修正(兩支都還沒套正式庫,第 31 個 Task 才套)。**以 repo(`market` 分支)裡的 `supabase/migrations/20261009120000_market_catalog.sql`、`20261009120100_market_images_storage.sql`、兩支還原檔與四支乾跑測試為準,不要再照抄 Task 3–7 的 SQL 程式碼區塊。**
+
+**120000 改了什麼、為什麼**
+
+1. **管理員停用店家可以被繞過**:供應商的 `market stores supplier manage` 是 FOR ALL(含 DELETE),guard 在 INSERT 時又一律設成啟用 → 被停用的店家刪掉再重建就變回啟用、停用原因也不見。
+   - 拆成 `market stores supplier read / insert / update`(SELECT / INSERT / UPDATE),**供應商不能刪店家**;管理員的 FOR ALL 不變。店家設定頁的儲存是 upsert(INSERT … ON CONFLICT DO UPDATE),用到的是 SELECT + INSERT + UPDATE,不受影響。
+   - 商品、轉帳資訊查過沒有同樣的問題,維持 FOR ALL:商品刪掉再重建只會得到草稿,還是要送審、管理員核准才上架;轉帳資訊沒有管理員設的欄位。
+2. **`created_at` 供應商可以任意寫**(帶 2099 就永遠排在首頁最前面):兩支 guard 改成新增一律 `now()`、修改保留原值(管理員也一樣)。
+3. **資料表權限漏了 PG17 的 `MAINTAIN`**(乾跑實測:anon 對店家與商品、authenticated 對三張表原本都有):三張表改成先 `REVOKE ALL … FROM anon, authenticated` 再 GRANT 需要的 —— anon:店家、商品 `SELECT`;authenticated:三張表 `SELECT, INSERT, UPDATE, DELETE`(細分靠 RLS;店家表的 DELETE 只有管理員的 policy 用得到)。
+4. **guard 比 RLS 先跑,會洩漏別家有沒有轉帳資訊**(替別家建店並勾轉帳:回 22023 = 沒存、42501 = 有存):`market_stores_guard` 在 INSERT 時先檢查擁有權,不是自家的一律 42501(沒有 HINT,跟 RLS 一樣)。`auth.uid()` 是 NULL(資料庫擁有者 / service_role 直接寫,本來就不受 RLS 管)時不擋 —— 第 2 階段的測試(Task 32、35、36)用資料庫擁有者身分直接 INSERT 店家當 fixture,要能照常跑。商品 guard 查過不用改:它繞過 RLS 查的只有 `supplies`,而 `supplies` 本來就開放所有登入者讀。
+5. **全形空白、零寬字元也能當品名**:新增 `market_trim(text)`(去掉頭尾的 ASCII 空白、Unicode White_Space、U+180E、U+200B–U+200D、U+2060、U+FEFF;中間的字元不動;不開給 API 角色),商品 guard 的七個文字欄位改用它,品名、規格去完是空的被 `market_products_text_lengths` 擋(23514)。店家的介紹 / 退換貨說明 / 停用原因與轉帳資訊仍用 `btrim`(審查只點名商品;停用原因只有管理員填、轉帳資訊是店家自己的資料)。
+6. **二維 `photos` 存得進去**:`market_products_photos` 改成 `cardinality(photos) <= 5 AND COALESCE(array_ndims(photos), 1) = 1`。
+7. **新增草稿時自己帶的 `submitted_at` 會留下**:INSERT 但沒送審(草稿,或管理員直接建成已核准 / 退回)一律清成 NULL。
+8. (審查清單外,修 photos 時一起發現)**`photos` 裡的 NULL 會通過路徑檢查**:`market_image_path_matches(NULL, …)` 回 false,但 `SELECT p INTO v_bad` 拿到的是 NULL,`IF v_bad IS NOT NULL` 擋不到。改成 `COALESCE(p, '(空值)')`,回 22023 `invalid_photo_path`。
+9. 還原檔多 `DROP FUNCTION IF EXISTS public.market_trim(text);`,還原測試的函式清單多 `market_trim`。
+10. 以下**不修**(審查決定):anon 讀得到 `reviewed_by`(低風險,改了會讓 `select *` 類的查詢壞掉);刪掉轉帳資訊後付款方式仍標示轉帳(第 2 階段下單時已經擋,見 Task 37「轉帳資訊被刪掉的店不能選轉帳」,第 9929 行)。
+
+**120100 改了什麼、為什麼**
+
+- **已核准的照片可以被換掉而不回待審**:UPDATE、DELETE 兩條 policy 讓供應商能用 x-upsert 覆寫,或刪掉再用同名重傳。兩條都拿掉,**物件只能寫一次**(只剩 `market images supplier select / insert`)。前端本來就 `upsert: false`、換照片不刪舊檔(Task 13 `images.ts`),不受影響。還原檔只拆剩下的兩條 policy。
+- 測試:policy 只剩兩條;upsert 覆寫被拒(`ERR 42501`);供應商 UPDATE 自己的檔 0 列;刪檔 0 列。直接用 SQL DELETE 一律被 `storage.protect_objects_delete`(FOR EACH STATEMENT 的 trigger)擋成 42501,測不到 policy,所以照 Storage API 的做法,在交易裡先 `set_config('storage.allow_delete_query', 'true', true)` 再以供應商身分刪(這個 trigger 的定義用唯讀端點查過)。
+
+**測試項數與其他數字跟本計畫不一樣的地方**
+
+| 乾跑 | 本計畫 | 現在 | 差異 |
+|---|---|---|---|
+| `market_catalog` | 70(Task 3 之後 23) | **87**(Task 3 之後 23、Task 4 之後 70) | 檔尾新增「3. 審查後補強」17 項 |
+| `market_catalog_rollback` | 3 | 3 | 函式清單 6 → 7 個;Task 5 Step 2(第 1564 行)的失敗項「還原後函式都不在」got 6 → **got 7** |
+| `market_images_storage` | 17 | **18** | 改 3 項(policy 清單、upsert → `ERR 42501`、UPDATE → `0`),新增 1 項(刪檔 0 列) |
+| `market_images_storage_rollback` | 3 | 3 | Task 7 Step 2(第 1828 行)的失敗原因變成「policy 還有 **2** 條、路徑函式還在」 |
+
+- 要跟著改的 Expected:「F. 共用指令與基準數字」(第 116 行);Task 4 Step 4(第 1522 行,`共 70 項` 是 Task 4 當時的數字,之後重跑是 87);Task 6 Step 4(第 1790 行,17 → 18);Task 31 Step 2(第 8291 行,70 → 87、17 → 18)、Step 4(第 8330 行,`image_policies` 4 → **2**)、Step 5(第 8341 行,70 → 87、17 → 18)、Step 7 驗收清單(第 8387 行,同上);Task 58 開放前檢查(第 16747 行,`image_policies` 4 → **2**)。
+- 「C. 關鍵技術決定」第 3 點(第 47 行)與 Task 6 開頭(第 1614 行)的「4 條 policy、upsert 需要 SELECT + INSERT + UPDATE」改成「2 條 policy(SELECT + INSERT),物件只能寫一次,不能 upsert」。
+- vitest 沒有變(沒有 vitest 讀這兩支 migration):`market` 分支目前 78 檔 / 1230 項全過。乾跑輸出的句數 K 也變了(本來就不用管)。
+
+**給後續 Task 的注意事項**
+
+1. **Task 27 管理員「商品審核」頁**:`_t` 縮圖是另外上傳的檔,不在 `photos` 裡。照計畫寫法,詳細視窗每張照片都用 `MarketImage variant="full"`(只看得到主圖)、清單只顯示第一張照片的縮圖;但市集的商品卡用預設的 `variant="thumb"`,先顯示縮圖 —— 縮圖沒人審。詳細視窗要把每張照片的主圖與縮圖(`thumbPathOf(p)`)都顯示出來。
+2. **Task 30 `docs/DEPLOY.md`**:
+   - 120100 那段(計畫第 8220–8221 行)的「4 條 policy(`market images supplier select / insert / update / delete`)只准該供應商的成員動自己資料夾」改成「2 條 policy(`select / insert`):只准該供應商的成員上傳到自己資料夾;物件只能寫一次,不能覆寫、不能刪」。
+   - 加一段 runbook「違規圖片怎麼刪」:管理員沒有任何 storage policy,後台刪不了檔。先在管理後台「商品審核」把商品退回 / 下架(填原因);再從 Supabase Dashboard → Storage → `market-images` 刪掉那張主圖**和**它的 `_t` 縮圖,或用 service role key 呼叫 Storage API(supabase-js `storage.from('market-images').remove([主圖路徑, 縮圖路徑])`)。🔴 不能用 SQL 刪(`storage.protect_objects_delete`)。bucket 是公開的:只下架商品、不刪檔,知道網址的人還是看得到。
+3. **前端有沒有依賴「供應商刪店家」或「刪照片」**:grep 全計畫確認**沒有**,不用改任何 Task。
+   - Task 20 `store.ts` 的 `saveStore` 對 `market_store_transfer`、`market_stores` 用 upsert(SELECT + INSERT + UPDATE,仍然允許)。
+   - Task 13 `images.ts` 上傳一律 `upsert: false`,不刪檔;Task 21(logo / 封面「移除」)與 Task 24(商品照片「移除」)只是從表單 / 清單拿掉路徑,不刪 Storage 的檔。
+   - 全計畫沒有任何對 `market_*` 資料表的 `.delete()`,也沒有 Storage 的 `.remove()`(出現的 `remove` 都是購物車的,`listeners.delete` 是 JS 的 Set)。供應商刪商品在資料庫層仍然允許,但沒有任何 Task 的前端用到。
+4. 編輯含 Unicode 跳脫序列(反斜線 + u + 四位十六進位,例如正規式裡的全形空白)的檔案時,agent 的工具可能把跳脫直接換成看不見的字元本身(`009e8e0` 與這次都發生過)。改完用程式掃一次 Unicode 類別 Zs / Zl / Zp / Cf / Cc 的字元。
