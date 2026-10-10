@@ -17188,3 +17188,4 @@ Task 3–7 照本計畫做完、規格審查逐位元相同之後,品質審查�
 
 - 上一節「要跟著改的 Expected」裡 `market_catalog` 的 87 一律改成 **97**(F 節第 116 行、Task 31 第 8291 / 8341 / 8387 行);`market_images_storage` 維持 18,`image_policies` 維持 2。
 - 業主實測(Task 60)或用 Dashboard 手動放照片時:主圖和 `<uuid>_t.<副檔名>` 縮圖都要放,否則核准會被擋(前端上傳本來就兩張都傳)。
+- **追加(commit `bf1681a`)**:上面「還沒解決的落差」採第二種修法 —— 商品照片(`market_products.photos`)的路徑只收小寫 `.jpg`(`.png`、`.webp`、`.jpeg` 改成 22023 `invalid_photo_path`;`.JPG` 跟 120100 的路徑規則一樣本來就不收)。理由:前端把所有照片壓成 JPEG 上傳(主圖 `.jpg`、縮圖 `_t.jpg`),限定之後資料庫推出的縮圖 `<uuid>_t.<同副檔名>` 一定是 `_t.jpg`,跟前端 `thumbPathOf` 顯示的是同一張,前端不用改;店家 logo / 封面(`store` 資料夾,不在 photos 裡)不受影響,仍收 jpg / jpeg / png / webp。`market_catalog` 乾跑 97 → **99** 項(新增「副檔名」與「store 資料夾不受影響」2 項;上面要改成 97 的 Expected 一律改成 99)。
