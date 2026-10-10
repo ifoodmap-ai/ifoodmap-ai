@@ -1,0 +1,146 @@
+// 供應商端零售元件:照片欄位(上傳、最多 5 張、設封面、移除)、商品視窗(驗證、送審、按鈕依狀態)。
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { useState } from "react";
+import { MemoryRouter } from "react-router-dom";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+const { toastSuccess, toastError } = vi.hoisted(() => ({ toastSuccess: vi.fn(), toastError: vi.fn() }));
+vi.mock("@/integrations/supabase/client", () => ({ supabase: {} }));
+vi.mock("sonner", () => ({ toast: { success: toastSuccess, error: toastError } }));
+
+import { MarketDbError } from "@/lib/market/db";
+import { CABBAGE, SUPPLIER_A } from "@/lib/market/testFixtures";
+import type { MarketProductRow } from "@/lib/market/types";
+import MarketPhotoField from "./MarketPhotoField";
+import MarketProductDialog from "./MarketProductDialog";
+import SupplierMarketProductsPanel, { statusText } from "./SupplierMarketProductsPanel";
+
+afterEach(cleanup);
+
+const photo = (n: number) => `${SUPPLIER_A}/${CABBAGE.id}/a9900000-0000-4000-8000-00000000000${n}.jpg`;
+const file = (name = "a.jpg") => new File(["x"], name, { type: "image/jpeg" });
+
+const PhotoHarness = ({ initial, upload }: { initial: string[]; upload: (s: string, f: string, file: File) => Promise<string> }) => {
+  const [value, setValue] = useState(initial);
+  return <MarketPhotoField supplierId={SUPPLIER_A} productId={CABBAGE.id} category="vegetable" value={value} onChange={setValue} upload={upload} />;
+};
+
+describe("MarketPhotoField", () => {
+  it("選檔就上傳到 <supplier>/<商品 id>,路徑加進清單", async () => {
+    const upload = vi.fn().mockResolvedValueOnce(photo(1)).mockResolvedValueOnce(photo(2));
+    render(<PhotoHarness initial={[]} upload={upload} />);
+    await userEvent.upload(screen.getByLabelText("新增照片"), [file("a.jpg"), file("b.jpg")]);
+    await waitFor(() => expect(screen.getAllByRole("img")).toHaveLength(2));
+    expect(upload).toHaveBeenCalledWith(SUPPLIER_A, CABBAGE.id, expect.any(File));
+    expect(screen.getByText("封面")).toBeInTheDocument();
+  });
+
+  it("已經 4 張再選 3 張:只傳 1 張,提示多的略過;5 張就不能再選", async () => {
+    const upload = vi.fn().mockResolvedValue(photo(5));
+    render(<PhotoHarness initial={[photo(1), photo(2), photo(3), photo(4)]} upload={upload} />);
+    await userEvent.upload(screen.getByLabelText("新增照片"), [file("a.jpg"), file("b.jpg"), file("c.jpg")]);
+    await waitFor(() => expect(upload).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText("最多 5 張,多的已略過")).toBeInTheDocument();
+    expect(screen.getByLabelText("新增照片")).toBeDisabled();
+  });
+
+  it("設為封面、移除", async () => {
+    render(<PhotoHarness initial={[photo(1), photo(2)]} upload={vi.fn()} />);
+    await userEvent.click(screen.getByRole("button", { name: "第 2 張設為封面" }));
+    expect(screen.getAllByRole("img")[0].getAttribute("src")).toContain("000000000002");
+    await userEvent.click(screen.getByRole("button", { name: "移除第 1 張照片" }));
+    expect(screen.getAllByRole("img")).toHaveLength(1);
+  });
+
+  it("上傳失敗顯示原因", async () => {
+    const upload = vi.fn().mockRejectedValue(new Error("只收 JPG、PNG、WebP 照片"));
+    render(<PhotoHarness initial={[]} upload={upload} />);
+    await userEvent.upload(screen.getByLabelText("新增照片"), [file()]);
+    expect(await screen.findByText("只收 JPG、PNG、WebP 照片")).toBeInTheDocument();
+  });
+});
+
+const renderDialog = (product: MarketProductRow | null, save = vi.fn().mockResolvedValue({ ...CABBAGE })) => {
+  const onSaved = vi.fn();
+  render(
+    <MarketProductDialog open onOpenChange={vi.fn()} supplierId={SUPPLIER_A} product={product} onSaved={onSaved} save={save} upload={vi.fn()} />,
+  );
+  return { save, onSaved };
+};
+
+describe("MarketProductDialog", () => {
+  it("新商品:必填沒填會擋;填好按「送出審核」送 submit=true 與畫面先決定的 id", async () => {
+    const { save, onSaved } = renderDialog(null);
+    const dialog = screen.getByRole("dialog");
+    await userEvent.click(within(dialog).getByRole("button", { name: "送出審核" }));
+    expect(screen.getByLabelText("品名 *")).toHaveAttribute("aria-invalid", "true");
+    expect(screen.getByText("請填品名")).toBeInTheDocument();
+    expect(save).not.toHaveBeenCalled();
+
+    await userEvent.type(screen.getByLabelText("品名 *"), "有機高麗菜");
+    await userEvent.selectOptions(screen.getByLabelText("分類 *"), "vegetable");
+    await userEvent.type(screen.getByLabelText("零售規格 *"), "1 顆");
+    await userEvent.type(screen.getByLabelText("零售價(元)*"), "120");
+    await userEvent.click(screen.getByLabelText("冷藏"));
+    await userEvent.click(within(dialog).getByRole("button", { name: "送出審核" }));
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+    const input = save.mock.calls[0][0];
+    expect(input).toMatchObject({ supplierId: SUPPLIER_A, isNew: true, submit: true, form: { name: "有機高麗菜", temperature: "chilled" } });
+    expect(input.productId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(onSaved).toHaveBeenCalled();
+    expect(toastSuccess).toHaveBeenCalledWith("已送出審核");
+  });
+
+  it("退回的商品:顯示原因,按鈕是「儲存(先不送審)」與「重新送審」", () => {
+    renderDialog({ ...CABBAGE, review_status: "rejected", reject_reason: "照片太暗" });
+    expect(screen.getByText(/退回原因:照片太暗/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "儲存(先不送審)" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "重新送審" })).toBeInTheDocument();
+  });
+
+  it("已核准的商品:只有「儲存」、有上架開關、提醒哪些欄位會重審", async () => {
+    const { save } = renderDialog({ ...CABBAGE, review_status: "approved" });
+    expect(screen.queryByRole("button", { name: "送出審核" })).toBeNull();
+    expect(screen.getByRole("switch", { name: /上架中/ })).toBeChecked();
+    expect(screen.getByText(/只改價格、庫存、上架開關不用重審/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "儲存" }));
+    await waitFor(() => expect(save).toHaveBeenCalledWith(expect.objectContaining({ isNew: false, submit: false, productId: CABBAGE.id })));
+  });
+
+  it("資料庫擋下時顯示中文原因,視窗不關", async () => {
+    const save = vi.fn().mockRejectedValue(new MarketDbError({ message: "fk", code: "23503" }));
+    renderDialog({ ...CABBAGE, review_status: "draft" }, save);
+    await userEvent.click(screen.getByRole("button", { name: "儲存草稿" }));
+    await waitFor(() =>
+      expect(toastError).toHaveBeenCalledWith("儲存失敗", { description: "請先完成「零售市集 › 店家設定」再新增零售商品" }),
+    );
+  });
+});
+
+describe("SupplierMarketProductsPanel", () => {
+  it("沒建店家:新增鈕停用,提示去店家設定", () => {
+    render(
+      <MemoryRouter>
+        <SupplierMarketProductsPanel products={[]} hasStore={false} loading={false} error={null} onCreate={vi.fn()} onEdit={vi.fn()} />
+      </MemoryRouter>,
+    );
+    expect(screen.getByRole("button", { name: "新增零售商品" })).toBeDisabled();
+    expect(screen.getByRole("link", { name: "零售市集 › 店家設定" })).toHaveAttribute("href", "/supplier/market/store");
+  });
+
+  it("列出狀態與退回原因,編輯回傳那一筆", async () => {
+    const onEdit = vi.fn();
+    const rejected = { ...CABBAGE, review_status: "rejected" as const, reject_reason: "照片太暗" };
+    render(
+      <MemoryRouter>
+        <SupplierMarketProductsPanel products={[rejected]} hasStore loading={false} error={null} onCreate={vi.fn()} onEdit={onEdit} />
+      </MemoryRouter>,
+    );
+    expect(screen.getByText("退回")).toBeInTheDocument();
+    expect(screen.getByText("退回原因:照片太暗")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "編輯 有機高麗菜" }));
+    expect(onEdit).toHaveBeenCalledWith(rejected);
+    expect(statusText({ review_status: "approved", is_listed: false })).toBe("已核准・暫停販售");
+  });
+});

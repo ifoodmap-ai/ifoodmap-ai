@@ -1,0 +1,225 @@
+// 零售商品的新增 / 編輯視窗(商品目錄頁的「零售商品」分頁與每列的「開放零售」共用)。
+// 父層每次打開都給新的 key:新商品的 id 在打開當下決定(照片要先上傳到 <supplier>/<商品 id>/)。
+import { useState } from "react";
+import { toast } from "sonner";
+import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Switch } from "@/components/ui/switch";
+import { LIMITS, MARKET_CATEGORIES, REVIEW_STATUS_LABEL, TEMPERATURE_KEYS, TEMPERATURES } from "@/lib/market/constants";
+import { friendlyDbError, newUuid } from "@/lib/market/db";
+import {
+  emptyProductForm,
+  productActions,
+  productFormFromRow,
+  saveMarketProduct,
+  validateProductForm,
+  type ProductForm,
+  type ProductFormErrors,
+  type SupplySeed,
+} from "@/lib/market/productForm";
+import type { MarketProductRow } from "@/lib/market/types";
+import MarketPhotoField from "./MarketPhotoField";
+
+interface MarketProductDialogProps {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  supplierId: string;
+  product: MarketProductRow | null;
+  fromSupply?: SupplySeed | null;
+  onSaved: (row: MarketProductRow) => void;
+  save?: typeof saveMarketProduct;
+  upload?: (supplierId: string, folder: string, file: File) => Promise<string>;
+}
+
+const INPUT = "min-h-11 w-full rounded-md border border-slate-300 bg-white px-3 text-base focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-700";
+
+export default function MarketProductDialog({
+  open,
+  onOpenChange,
+  supplierId,
+  product,
+  fromSupply,
+  onSaved,
+  save = saveMarketProduct,
+  upload,
+}: MarketProductDialogProps) {
+  const [productId] = useState(() => product?.id ?? newUuid());
+  const [form, setForm] = useState<ProductForm>(() => (product ? productFormFromRow(product) : emptyProductForm(fromSupply)));
+  const [errors, setErrors] = useState<ProductFormErrors>({});
+  const [saving, setSaving] = useState(false);
+  const actions = productActions(product?.review_status ?? null);
+  const set = <K extends keyof ProductForm>(key: K, value: ProductForm[K]) => setForm((f) => ({ ...f, [key]: value }));
+  const err = (key: keyof ProductForm) =>
+    errors[key] ? (
+      <p id={`mp-${key}-error`} className="mt-1 text-sm text-red-700">
+        {errors[key]}
+      </p>
+    ) : null;
+  const aria = (key: keyof ProductForm) => ({ "aria-invalid": !!errors[key], "aria-describedby": errors[key] ? `mp-${key}-error` : undefined });
+
+  const doSave = async (submit: boolean) => {
+    const e = validateProductForm(form);
+    setErrors(e);
+    if (Object.keys(e).length > 0) return;
+    setSaving(true);
+    try {
+      const row = await save({ supplierId, productId, isNew: !product, form, submit });
+      toast.success(submit ? "已送出審核" : "已儲存");
+      onSaved(row);
+      onOpenChange(false);
+    } catch (error) {
+      toast.error("儲存失敗", { description: friendlyDbError(error) });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={(o) => !saving && onOpenChange(o)}>
+      <DialogContent className="max-h-[90vh] max-w-2xl overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>{product ? "編輯零售商品" : "新增零售商品"}</DialogTitle>
+          <DialogDescription>
+            {product ? `目前狀態:${REVIEW_STATUS_LABEL[product.review_status]}` : "第一次上架要經過管理員審核。"}
+            {product?.review_status === "rejected" && product.reject_reason ? `。退回原因:${product.reject_reason}` : ""}
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-4">
+          <div>
+            <label htmlFor="mp-name" className="mb-1 block text-sm font-medium text-slate-700">
+              品名 *
+            </label>
+            <input id="mp-name" value={form.name} maxLength={LIMITS.productName} onChange={(e) => set("name", e.target.value)} className={INPUT} {...aria("name")} />
+            {err("name")}
+          </div>
+          <div className="grid gap-4 min-[640px]:grid-cols-2">
+            <div>
+              <label htmlFor="mp-category" className="mb-1 block text-sm font-medium text-slate-700">
+                分類 *
+              </label>
+              <select id="mp-category" value={form.category} onChange={(e) => set("category", e.target.value as ProductForm["category"])} className={INPUT} {...aria("category")}>
+                <option value="">請選擇</option>
+                {MARKET_CATEGORIES.map((c) => (
+                  <option key={c.key} value={c.key}>
+                    {c.label}
+                  </option>
+                ))}
+              </select>
+              {err("category")}
+            </div>
+            <div>
+              <label htmlFor="mp-spec" className="mb-1 block text-sm font-medium text-slate-700">
+                零售規格 *
+              </label>
+              <input id="mp-spec" value={form.spec} maxLength={LIMITS.spec} placeholder="例:600g/盒" onChange={(e) => set("spec", e.target.value)} className={INPUT} {...aria("spec")} />
+              {err("spec")}
+            </div>
+            <div>
+              <label htmlFor="mp-price" className="mb-1 block text-sm font-medium text-slate-700">
+                零售價(元)*
+              </label>
+              <input id="mp-price" inputMode="numeric" value={form.price} onChange={(e) => set("price", e.target.value)} className={INPUT} {...aria("price")} />
+              {err("price")}
+            </div>
+            <div>
+              <label htmlFor="mp-stock" className="mb-1 block text-sm font-medium text-slate-700">
+                庫存
+              </label>
+              <div className="flex items-center gap-3">
+                <input
+                  id="mp-stock"
+                  inputMode="numeric"
+                  value={form.stock}
+                  disabled={form.unlimitedStock}
+                  onChange={(e) => set("stock", e.target.value)}
+                  className={INPUT}
+                  {...aria("stock")}
+                />
+                <label className="flex min-h-11 shrink-0 items-center gap-2 text-sm">
+                  <input type="checkbox" checked={form.unlimitedStock} onChange={(e) => set("unlimitedStock", e.target.checked)} className="h-5 w-5" />
+                  不限
+                </label>
+              </div>
+              {err("stock")}
+            </div>
+          </div>
+          <fieldset>
+            <legend className="mb-1 text-sm font-medium text-slate-700">溫層 *</legend>
+            <div className="flex flex-wrap gap-4">
+              {TEMPERATURE_KEYS.map((t) => (
+                <label key={t} className="flex min-h-11 items-center gap-2 text-sm">
+                  <input type="radio" name="mp-temperature" checked={form.temperature === t} onChange={() => set("temperature", t)} className="h-5 w-5" />
+                  {TEMPERATURES[t]}
+                </label>
+              ))}
+            </div>
+          </fieldset>
+          <div className="grid gap-4 min-[640px]:grid-cols-3">
+            {(
+              [
+                ["origin", "產地", LIMITS.origin, "例:宜蘭三星"],
+                ["storageMethod", "保存方式", LIMITS.storageMethod, "例:0–4°C 冷藏"],
+                ["shelfLife", "保存期限", LIMITS.shelfLife, "例:冷藏 5 天"],
+              ] as Array<[keyof ProductForm, string, number, string]>
+            ).map(([key, label, max, ph]) => (
+              <div key={key}>
+                <label htmlFor={`mp-${key}`} className="mb-1 block text-sm font-medium text-slate-700">
+                  {label}
+                </label>
+                <input
+                  id={`mp-${key}`}
+                  value={String(form[key])}
+                  maxLength={max}
+                  placeholder={ph}
+                  onChange={(e) => set(key, e.target.value as never)}
+                  className={INPUT}
+                  {...aria(key)}
+                />
+                {err(key)}
+              </div>
+            ))}
+          </div>
+          <div>
+            <label htmlFor="mp-description" className="mb-1 block text-sm font-medium text-slate-700">
+              說明
+            </label>
+            <textarea
+              id="mp-description"
+              rows={4}
+              value={form.description}
+              maxLength={LIMITS.description}
+              onChange={(e) => set("description", e.target.value)}
+              className={`${INPUT} py-2`}
+              {...aria("description")}
+            />
+            {err("description")}
+          </div>
+          <MarketPhotoField supplierId={supplierId} productId={productId} category={form.category} value={form.photos} onChange={(p) => set("photos", p)} upload={upload} />
+          {err("photos")}
+          {product?.review_status === "approved" ? (
+            <label className="flex min-h-11 items-center gap-3 text-sm">
+              <Switch checked={form.isListed} onCheckedChange={(v) => set("isListed", v)} aria-label="上架中(關掉就暫停販售,不用重審)" />
+              上架中(關掉就暫停販售,不用重審)
+            </label>
+          ) : null}
+          {actions.notice ? <p className="rounded-md bg-amber-50 p-3 text-sm text-amber-900">{actions.notice}</p> : null}
+        </div>
+
+        <DialogFooter className="gap-2">
+          <Button type="button" variant="outline" disabled={saving} onClick={() => onOpenChange(false)}>
+            取消
+          </Button>
+          {actions.secondary ? (
+            <Button type="button" variant="outline" disabled={saving} onClick={() => doSave(false)}>
+              {actions.secondary.label}
+            </Button>
+          ) : null}
+          <Button type="button" disabled={saving} onClick={() => doSave(actions.primary.submit)} className="bg-emerald-700 text-white hover:bg-emerald-800">
+            {saving ? "儲存中…" : actions.primary.label}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
