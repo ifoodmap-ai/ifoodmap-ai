@@ -1,17 +1,19 @@
 // 管理後台「零售市集 › 商品審核」(/admin/market/products):待審清單(先送審的在前),可以核准、退回(填原因);
-// 已上架的可以下架(= 退回並填原因,供應商改好重新送審)。審核前一定要能看到完整內容與全部照片(「查看」)。
-// 樂觀鎖:供應商在你看的同時改了內容,這次審核會被擋下並要求重新整理(src/lib/market/admin.ts)。
+// 已上架的可以下架(= 退回並填原因,供應商改好重新送審)。核准只能在「查看」視窗裡做:清單上沒有核准鈕,
+// 從清單核准的話,第 2–5 張照片和所有主圖都沒看到。
+// 樂觀鎖:供應商在你看的同時改了內容,核准 / 退回會被擋下並要求重新整理(src/lib/market/admin.ts;下架不鎖)。
 //
 // 照片:每張照片是兩個檔 —— 主圖 <uuid>.jpg(商品頁)與另外上傳的縮圖 <uuid>_t.jpg(市集首頁、店家頁的商品卡先顯示它)。
 // Storage 的檔只能寫一次,核准之後換不掉,所以兩個檔都要在這裡看過。這頁刻意不用 MarketImage:它讀不到縮圖會改顯示主圖,
 // 縮圖缺了(或根本是另一張圖)審核者看不出來。改用 ReviewImage:主圖、縮圖並排,讀不到就在那一格用紅框寫「讀不到…」,
-// 不退回任何東西。查看視窗裡只要有一格讀不到,「核准上架」就按不下去:紅框還在時能按的話,供應商這時才補傳
-// (可能是另一張圖),再按一次就核准了審核者沒看過的檔;補傳後要關掉重開(每張圖重新載入)、全部看得到才能核准。
+// 不退回任何東西。查看視窗的圖立即載入(不延遲),**每張主圖和縮圖都載入成功**「核准上架」才按得下去 ——
+// 載入中、讀不到都不行:紅框還在(或還沒載入完)時能按的話,供應商這時才補傳(可能是另一張圖),
+// 就核准了審核者沒看過的檔。補傳後要關掉重開(ReviewDetail 每次打開都重新掛上、圖重新載入)、全部看得到才能核准。
 // 縮圖缺檔時資料庫也會擋核准(22023 photos_not_uploaded,中文訊息在 src/lib/market/db.ts),訊息除了 toast,
 // 也顯示在查看視窗裡。
 //
 // 清單分頁(一頁 ADMIN_PAGE_SIZE 筆)加品名搜尋:已核准的商品再多,較舊的也找得到、下得了架。
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type Dispatch, type ReactNode, type SetStateAction } from 'react';
 import { Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Badge } from '@/components/ui/badge';
@@ -56,12 +58,15 @@ interface ReviewImageProps {
   width: number;
   height: number;
   className: string;
-  /** 讀不到時通知呼叫端(查看視窗用來擋核准) */
+  /** 立即載入(查看視窗);清單的小縮圖用延遲載入 */
+  eager?: boolean;
+  /** 載入成功 / 讀不到時通知呼叫端(查看視窗用來決定能不能核准) */
+  onLoad?: () => void;
   onFail?: () => void;
 }
 
 /** 審核用的圖片:讀不到就在原位明白標出來(紅框),不像 MarketImage 會退回主圖或分類圖示。換照片時呼叫端用 key 重掛。 */
-const ReviewImage = ({ path, label, missingText, width, height, className, onFail }: ReviewImageProps) => {
+const ReviewImage = ({ path, label, missingText, width, height, className, eager = false, onLoad, onFail }: ReviewImageProps) => {
   const [failed, setFailed] = useState(false);
   if (failed) {
     return (
@@ -80,14 +85,144 @@ const ReviewImage = ({ path, label, missingText, width, height, className, onFai
       alt={label}
       width={width}
       height={height}
-      loading="lazy"
+      loading={eager ? 'eager' : 'lazy'}
       decoding="async"
+      onLoad={onLoad}
       onError={() => {
         setFailed(true);
         onFail?.();
       }}
       className={`${className} bg-slate-100`}
     />
+  );
+};
+
+interface ReviewDetailProps {
+  row: MarketProductRow;
+  /** 這次審核失敗的原因(例如照片沒上傳完成) */
+  error: string | null;
+  busy: boolean;
+  onApprove: () => void;
+  onReject: () => void;
+}
+
+/**
+ * 查看視窗的內容:完整欄位與每張照片的主圖、縮圖。呼叫端每次打開視窗都給新的 key(重新掛上 = 每張圖重新載入、
+ * 載入結果歸零;Radix 的關閉動畫還沒跑完就重開同一個商品時,沒有 key 的話圖不會再觸發 load,核准會永遠按不下去)。
+ */
+const ReviewDetail = ({ row, error, busy, onApprove, onReject }: ReviewDetailProps) => {
+  const [loaded, setLoaded] = useState<string[]>([]);
+  const [failed, setFailed] = useState<string[]>([]);
+  const mark = (set: Dispatch<SetStateAction<string[]>>) => (file: string) =>
+    set((files) => (files.includes(file) ? files : [...files, file]));
+  const markLoaded = mark(setLoaded);
+  const markFailed = mark(setFailed);
+  const files = row.photos.flatMap((p) => [p, thumbPathOf(p)]);
+  const allLoaded = files.every((f) => loaded.includes(f));
+  const pending = row.review_status === 'pending';
+
+  return (
+    <>
+      <DialogHeader>
+        <DialogTitle>{row.name}</DialogTitle>
+        <DialogDescription>
+          {row.market_stores?.suppliers?.name ?? '—'}・{REVIEW_STATUS_LABEL[row.review_status]}
+        </DialogDescription>
+      </DialogHeader>
+      <section aria-labelledby="market-review-photos" className="space-y-2">
+        <h3 id="market-review-photos" className="text-sm font-medium text-slate-700">
+          照片({row.photos.length} 張)
+        </h3>
+        {row.photos.length === 0 ? (
+          <p className="text-sm text-red-700">沒有照片</p>
+        ) : (
+          <>
+            <p className="text-xs text-slate-500">
+              每張照片有主圖和縮圖兩個檔,市集的商品卡先顯示縮圖:兩張都要看,而且要是同一張照片。每個檔都載入成功才能核准;紅框是讀不到的檔(多半是還沒上傳完成)。
+            </p>
+            <ul className="space-y-3">
+              {row.photos.map((p, i) => (
+                <li key={p}>
+                  <p className="mb-1 text-xs font-medium text-slate-600">第 {i + 1} 張</p>
+                  <div className="grid grid-cols-2 gap-2">
+                    <figure>
+                      <ReviewImage
+                        path={p}
+                        label={`第 ${i + 1} 張・主圖`}
+                        missingText="讀不到主圖"
+                        width={300}
+                        height={300}
+                        className="aspect-square w-full rounded-md object-contain text-sm"
+                        eager
+                        onLoad={() => markLoaded(p)}
+                        onFail={() => markFailed(p)}
+                      />
+                      <figcaption className="mt-1 text-xs text-slate-500">主圖(商品頁)</figcaption>
+                    </figure>
+                    <figure>
+                      <ReviewImage
+                        path={thumbPathOf(p)}
+                        label={`第 ${i + 1} 張・縮圖`}
+                        missingText="讀不到縮圖"
+                        width={300}
+                        height={300}
+                        className="aspect-square w-full rounded-md object-contain text-sm"
+                        eager
+                        onLoad={() => markLoaded(thumbPathOf(p))}
+                        onFail={() => markFailed(thumbPathOf(p))}
+                      />
+                      <figcaption className="mt-1 text-xs text-slate-500">縮圖(商品卡先顯示)</figcaption>
+                    </figure>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </>
+        )}
+      </section>
+      <dl className="grid grid-cols-[auto,1fr] gap-x-3 gap-y-1 text-sm">
+        {(
+          [
+            ['分類', CATEGORY_LABEL[row.category]],
+            ['規格', row.spec],
+            ['價格', formatTwd(row.price)],
+            ['庫存', stockLabel(row.stock)],
+            ['溫層', TEMPERATURES[row.temperature]],
+            ['產地', row.origin ?? '—'],
+            ['保存方式', row.storage_method ?? '—'],
+            ['保存期限', row.shelf_life ?? '—'],
+          ] as Array<[string, string]>
+        ).map(([k, v]) => (
+          <div key={k} className="contents">
+            <dt className="text-slate-500">{k}</dt>
+            <dd>{v}</dd>
+          </div>
+        ))}
+      </dl>
+      <p className="whitespace-pre-line text-sm text-slate-700">{row.description ?? '(沒有說明)'}</p>
+      {error ? (
+        <p role="alert" className="rounded-md border border-red-200 bg-red-50 p-2 text-sm text-red-700">
+          {error}
+        </p>
+      ) : null}
+      {pending && failed.length > 0 ? (
+        <p className="text-sm text-red-700">
+          有 {failed.length} 個檔讀不到,不能核准:可以先退回請供應商補傳;補傳後關掉這個視窗重新查看,每張都看得到才能核准。
+        </p>
+      ) : pending && !allLoaded ? (
+        <p className="text-sm text-slate-600">照片載入中,每張主圖和縮圖都載入完成才能核准</p>
+      ) : null}
+      {pending ? (
+        <DialogFooter className="gap-2">
+          <Button variant="outline" className="text-red-600" onClick={onReject}>
+            退回
+          </Button>
+          <Button className="bg-emerald-600 text-white hover:bg-emerald-700" disabled={busy || !allLoaded} onClick={onApprove}>
+            核准上架
+          </Button>
+        </DialogFooter>
+      ) : null}
+    </>
   );
 };
 
@@ -101,11 +236,11 @@ const AdminMarketProductsPage = () => {
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [detail, setDetail] = useState<MarketProductRow | null>(null);
+  /** 開著的查看視窗;session 每次打開都換新(ReviewDetail 的 key) */
+  const [detail, setDetail] = useState<{ row: MarketProductRow; session: number } | null>(null);
   /** 在查看視窗裡審核失敗的原因(例如照片沒上傳完成),顯示在視窗裡 */
   const [detailError, setDetailError] = useState<string | null>(null);
-  /** 查看視窗裡讀不到的檔(主圖或縮圖路徑);有任何一個就不能核准 */
-  const [failedFiles, setFailedFiles] = useState<string[]>([]);
+  const detailSession = useRef(0);
   const [reasonTarget, setReasonTarget] = useState<{ row: MarketProductRow; mode: ReasonMode } | null>(null);
   const [reason, setReason] = useState('');
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -160,15 +295,13 @@ const AdminMarketProductsPage = () => {
 
   const openDetail = (row: MarketProductRow) => {
     setDetailError(null);
-    setFailedFiles([]);
-    setDetail(row);
+    detailSession.current += 1;
+    setDetail({ row, session: detailSession.current });
   };
   const closeDetail = () => {
     setDetail(null);
     setDetailError(null);
-    setFailedFiles([]);
   };
-  const markFailed = (file: string) => setFailedFiles((files) => (files.includes(file) ? files : [...files, file]));
   // 每次都從空白開始:上一個商品沒送出的原因不能帶到下一個商品
   const openReason = (row: MarketProductRow, mode: ReasonMode) => {
     setReason('');
@@ -305,15 +438,11 @@ const AdminMarketProductsPage = () => {
                   <Button size="sm" variant="outline" onClick={() => openDetail(r)} aria-label={`查看 ${r.name}`}>
                     查看
                   </Button>
+                  {/* 核准只在查看視窗裡(要看過每張主圖和縮圖) */}
                   {r.review_status === 'pending' ? (
-                    <>
-                      <Button size="sm" className="bg-emerald-600 text-white hover:bg-emerald-700" disabled={busyId === r.id} onClick={() => approve(r)} aria-label={`核准 ${r.name}`}>
-                        核准
-                      </Button>
-                      <Button size="sm" variant="outline" className="text-red-600" onClick={() => openReason(r, 'reject')} aria-label={`退回 ${r.name}`}>
-                        退回
-                      </Button>
-                    </>
+                    <Button size="sm" variant="outline" className="text-red-600" onClick={() => openReason(r, 'reject')} aria-label={`退回 ${r.name}`}>
+                      退回
+                    </Button>
                   ) : null}
                   {r.review_status === 'approved' ? (
                     <Button size="sm" variant="outline" className="text-red-600" onClick={() => openReason(r, 'delist')} aria-label={`下架 ${r.name}`}>
@@ -343,105 +472,14 @@ const AdminMarketProductsPage = () => {
       <Dialog open={!!detail} onOpenChange={(o) => !o && closeDetail()}>
         <DialogContent className="max-h-[90vh] max-w-2xl overflow-y-auto">
           {detail ? (
-            <>
-              <DialogHeader>
-                <DialogTitle>{detail.name}</DialogTitle>
-                <DialogDescription>
-                  {detail.market_stores?.suppliers?.name ?? '—'}・{REVIEW_STATUS_LABEL[detail.review_status]}
-                </DialogDescription>
-              </DialogHeader>
-              <section aria-labelledby="market-review-photos" className="space-y-2">
-                <h3 id="market-review-photos" className="text-sm font-medium text-slate-700">
-                  照片({detail.photos.length} 張)
-                </h3>
-                {detail.photos.length === 0 ? (
-                  <p className="text-sm text-red-700">沒有照片</p>
-                ) : (
-                  <>
-                    <p className="text-xs text-slate-500">
-                      每張照片有主圖和縮圖兩個檔,市集的商品卡先顯示縮圖:兩張都要看,而且要是同一張照片。紅框是讀不到的檔(多半是還沒上傳完成),有紅框就不能核准。
-                    </p>
-                    <ul className="space-y-3">
-                      {detail.photos.map((p, i) => (
-                        <li key={p}>
-                          <p className="mb-1 text-xs font-medium text-slate-600">第 {i + 1} 張</p>
-                          <div className="grid grid-cols-2 gap-2">
-                            <figure>
-                              <ReviewImage
-                                path={p}
-                                label={`第 ${i + 1} 張・主圖`}
-                                missingText="讀不到主圖"
-                                width={300}
-                                height={300}
-                                className="aspect-square w-full rounded-md object-contain text-sm"
-                                onFail={() => markFailed(p)}
-                              />
-                              <figcaption className="mt-1 text-xs text-slate-500">主圖(商品頁)</figcaption>
-                            </figure>
-                            <figure>
-                              <ReviewImage
-                                path={thumbPathOf(p)}
-                                label={`第 ${i + 1} 張・縮圖`}
-                                missingText="讀不到縮圖"
-                                width={300}
-                                height={300}
-                                className="aspect-square w-full rounded-md object-contain text-sm"
-                                onFail={() => markFailed(thumbPathOf(p))}
-                              />
-                              <figcaption className="mt-1 text-xs text-slate-500">縮圖(商品卡先顯示)</figcaption>
-                            </figure>
-                          </div>
-                        </li>
-                      ))}
-                    </ul>
-                  </>
-                )}
-              </section>
-              <dl className="grid grid-cols-[auto,1fr] gap-x-3 gap-y-1 text-sm">
-                {(
-                  [
-                    ['分類', CATEGORY_LABEL[detail.category]],
-                    ['規格', detail.spec],
-                    ['價格', formatTwd(detail.price)],
-                    ['庫存', stockLabel(detail.stock)],
-                    ['溫層', TEMPERATURES[detail.temperature]],
-                    ['產地', detail.origin ?? '—'],
-                    ['保存方式', detail.storage_method ?? '—'],
-                    ['保存期限', detail.shelf_life ?? '—'],
-                  ] as Array<[string, string]>
-                ).map(([k, v]) => (
-                  <div key={k} className="contents">
-                    <dt className="text-slate-500">{k}</dt>
-                    <dd>{v}</dd>
-                  </div>
-                ))}
-              </dl>
-              <p className="whitespace-pre-line text-sm text-slate-700">{detail.description ?? '(沒有說明)'}</p>
-              {detailError ? (
-                <p role="alert" className="rounded-md border border-red-200 bg-red-50 p-2 text-sm text-red-700">
-                  {detailError}
-                </p>
-              ) : null}
-              {detail.review_status === 'pending' && failedFiles.length > 0 ? (
-                <p className="text-sm text-red-700">
-                  有 {failedFiles.length} 個檔讀不到,不能核准:可以先退回請供應商補傳;補傳後關掉這個視窗重新查看,每張都看得到才能核准。
-                </p>
-              ) : null}
-              {detail.review_status === 'pending' ? (
-                <DialogFooter className="gap-2">
-                  <Button variant="outline" className="text-red-600" onClick={() => openReason(detail, 'reject')}>
-                    退回
-                  </Button>
-                  <Button
-                    className="bg-emerald-600 text-white hover:bg-emerald-700"
-                    disabled={busyId === detail.id || failedFiles.length > 0}
-                    onClick={() => approve(detail)}
-                  >
-                    核准上架
-                  </Button>
-                </DialogFooter>
-              ) : null}
-            </>
+            <ReviewDetail
+              key={detail.session}
+              row={detail.row}
+              error={detailError}
+              busy={busyId === detail.row.id}
+              onApprove={() => approve(detail.row)}
+              onReject={() => openReason(detail.row, 'reject')}
+            />
           ) : null}
         </DialogContent>
       </Dialog>

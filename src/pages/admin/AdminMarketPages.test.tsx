@@ -82,10 +82,19 @@ describe("AdminMarketProductsPage", () => {
     await waitFor(() => expect(reviewProduct).toHaveBeenCalledWith(expect.objectContaining({ id: CABBAGE.id }), { kind: "delist", reason: "標示不實" }));
   });
 
+  it("清單上沒有「核准」:核准只能在查看視窗裡做(看得到每張主圖和縮圖)", async () => {
+    render(<AdminMarketProductsPage />);
+    expect(await screen.findByRole("button", { name: "查看 有機高麗菜" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "退回 有機高麗菜" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "核准 有機高麗菜" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^核准/ })).toBeNull();
+  });
+
   it("供應商剛改過(樂觀鎖擋下)→ 顯示要重新整理,並重抓清單", async () => {
     vi.mocked(reviewProduct).mockRejectedValue(new MarketStaleReviewError());
     render(<AdminMarketProductsPage />);
-    await userEvent.click(await screen.findByRole("button", { name: "核准 有機高麗菜" }));
+    await userEvent.click(await screen.findByRole("button", { name: "查看 有機高麗菜" }));
+    await userEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "核准上架" }));
     await waitFor(() =>
       expect(toastError).toHaveBeenCalledWith("處理失敗", { description: "這個商品剛被供應商修改過,請重新整理後再審核" }),
     );
@@ -193,7 +202,11 @@ describe("AdminMarketProductsPage", () => {
         }),
     );
     render(<AdminMarketProductsPage />);
-    await userEvent.click(await screen.findByRole("button", { name: "核准 有機高麗菜" }));
+    await userEvent.click(await screen.findByRole("button", { name: "查看 有機高麗菜" }));
+    await userEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "核准上架" }));
+    // 請求還在路上就關掉視窗、切篩選
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     await userEvent.click(screen.getByRole("button", { name: "已核准" }));
     expect(await screen.findByText("已核准的商品")).toBeInTheDocument();
     await act(async () => finishApprove());
@@ -312,6 +325,12 @@ describe("AdminMarketProductsPage — 每張照片的主圖和縮圖都要審(�
     await userEvent.click(await screen.findByRole("button", { name: "查看 有機高麗菜" }));
     return screen.findByRole("dialog");
   };
+  /** 視窗裡的圖都觸發 load(jsdom 不會自己載入圖片);except 是要留著的(之後觸發 error) */
+  const loadEvery = (dialog: HTMLElement, except: string[] = []) =>
+    within(dialog)
+      .getAllByRole("img")
+      .filter((img) => !except.includes(img.getAttribute("alt") ?? ""))
+      .forEach((img) => fireEvent.load(img));
 
   beforeEach(() => {
     vi.mocked(fetchAdminProducts).mockResolvedValue(pageOf([WITH_PHOTOS]));
@@ -338,20 +357,60 @@ describe("AdminMarketProductsPage — 每張照片的主圖和縮圖都要審(�
     expect(within(dialog).getByRole("img", { name: "第 2 張・縮圖" })).toHaveAttribute("src", publicImageUrl(thumbPathOf(PHOTO_2)));
   });
 
-  it("查看視窗裡有檔讀不到 → 不能按「核准上架」;補傳後重新開啟、每張都讀得到才能核准", async () => {
+  it("照片還在載入 → 不能核准;視窗裡的照片立即載入(不延遲)", async () => {
     const dialog = await openDetail();
-    expect(within(dialog).getByRole("button", { name: "核准上架" })).toBeEnabled();
+    expect(within(dialog).getByRole("button", { name: "核准上架" })).toBeDisabled();
+    expect(within(dialog).getByText("照片載入中,每張主圖和縮圖都載入完成才能核准")).toBeInTheDocument();
+    const images = within(dialog).getAllByRole("img");
+    expect(images).toHaveLength(4);
+    images.forEach((img) => expect(img).toHaveAttribute("loading", "eager"));
+    // 只載入一部分還是不行
+    fireEvent.load(within(dialog).getByRole("img", { name: "第 1 張・主圖" }));
+    fireEvent.load(within(dialog).getByRole("img", { name: "第 1 張・縮圖" }));
+    expect(within(dialog).getByRole("button", { name: "核准上架" })).toBeDisabled();
+    expect(within(dialog).getByRole("button", { name: "退回" })).toBeEnabled();
+  });
+
+  it("主圖讀不到 → 不能核准(其他檔都載入成功也一樣)", async () => {
+    const dialog = await openDetail();
+    loadEvery(dialog, ["第 2 張・主圖"]);
+    fireEvent.error(within(dialog).getByRole("img", { name: "第 2 張・主圖" }));
+    expect(within(dialog).getByRole("button", { name: "核准上架" })).toBeDisabled();
+    expect(within(dialog).getByText(/有 1 個檔讀不到,不能核准/)).toBeInTheDocument();
+  });
+
+  it("縮圖讀不到 → 不能核准(其他檔都載入成功也一樣)", async () => {
+    const dialog = await openDetail();
+    loadEvery(dialog, ["第 1 張・縮圖"]);
+    // 紅框還在時按得下去的話:供應商這時才補傳(可能是另一張圖),再按一次就核准了一張審核者沒看過的縮圖
     fireEvent.error(within(dialog).getByRole("img", { name: "第 1 張・縮圖" }));
-    // 紅框還在時按得下去的話:供應商這時才補傳(可能是另一張圖),第二次按就核准了一張審核者沒看過的縮圖
     expect(within(dialog).getByRole("button", { name: "核准上架" })).toBeDisabled();
     expect(within(dialog).getByText(/有 1 個檔讀不到,不能核准/)).toBeInTheDocument();
     expect(within(dialog).getByRole("button", { name: "退回" })).toBeEnabled();
-    // 關掉重開 = 每張圖重新載入;這次讀得到就能核准
+  });
+
+  it("每張照片的主圖和縮圖都載入成功 → 才能核准", async () => {
+    const dialog = await openDetail();
+    loadEvery(dialog);
+    const approve = within(dialog).getByRole("button", { name: "核准上架" });
+    expect(approve).toBeEnabled();
+    expect(within(dialog).queryByText(/照片載入中|個檔讀不到/)).toBeNull();
+    await userEvent.click(approve);
+    await waitFor(() => expect(reviewProduct).toHaveBeenCalledWith(WITH_PHOTOS, { kind: "approve" }));
+  });
+
+  it("讀不到之後關掉重開 = 每張圖重新載入;這次全部載入成功才能核准", async () => {
+    const dialog = await openDetail();
+    loadEvery(dialog, ["第 1 張・縮圖"]);
+    fireEvent.error(within(dialog).getByRole("img", { name: "第 1 張・縮圖" }));
+    expect(within(dialog).getByRole("button", { name: "核准上架" })).toBeDisabled();
     await userEvent.click(within(dialog).getByRole("button", { name: "Close" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     await userEvent.click(screen.getByRole("button", { name: "查看 有機高麗菜" }));
     const again = await screen.findByRole("dialog");
     expect(within(again).getByRole("img", { name: "第 1 張・縮圖" })).toBeInTheDocument();
+    expect(within(again).getByRole("button", { name: "核准上架" })).toBeDisabled();
+    loadEvery(again);
     expect(within(again).getByRole("button", { name: "核准上架" })).toBeEnabled();
     expect(within(again).queryByText(/個檔讀不到/)).toBeNull();
   });
@@ -380,6 +439,7 @@ describe("AdminMarketProductsPage — 每張照片的主圖和縮圖都要審(�
       new MarketDbError({ message: "照片還沒上傳完成(主圖或縮圖缺檔),不能核准:x_t.jpg", code: "22023", hint: "photos_not_uploaded" }),
     );
     const dialog = await openDetail();
+    loadEvery(dialog);
     await userEvent.click(within(dialog).getByRole("button", { name: "核准上架" }));
     await waitFor(() =>
       expect(toastError).toHaveBeenCalledWith("處理失敗", { description: "這個商品還有照片沒有上傳完成,無法核准" }),
