@@ -12,6 +12,7 @@ import { fetchMarketStore, fetchStoreProducts, isStoreOpen } from "@/lib/market/
 import type { MarketCategoryKey } from "@/lib/market/constants";
 import { isUuid } from "@/lib/market/db";
 import { publicImageUrl } from "@/lib/market/images";
+import MarketLoadError from "./MarketLoadError";
 import MarketNotFound from "./MarketNotFound";
 
 export default function MarketStorePage() {
@@ -42,9 +43,13 @@ export default function MarketStorePage() {
   }
   if (storeQuery.isError) {
     return (
-      <div role="alert" className="mx-auto max-w-xl px-4 py-16 text-center text-red-800">
-        店家資料載入失敗,請重新整理再試一次。
-      </div>
+      <MarketLoadError
+        title="店家資料載入失敗"
+        onRetry={() => {
+          storeQuery.refetch();
+          if (productsQuery.isError) productsQuery.refetch();
+        }}
+      />
     );
   }
   if (!store || !isStoreOpen(store)) return <MarketNotFound message="這家店目前沒有開放零售。" />;

@@ -50,6 +50,16 @@ describe("MarketStorePage", () => {
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
+  it("店家資料載入失敗:有 h1、重新載入(重抓)與回市集首頁", async () => {
+    vi.mocked(fetchMarketStore).mockRejectedValueOnce(new Error("network")).mockResolvedValue(STORE_A);
+    vi.mocked(fetchStoreProducts).mockResolvedValue([CABBAGE]);
+    renderAt(STORE_A.supplier_id);
+    expect(await screen.findByRole("heading", { level: 1, name: "店家資料載入失敗" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "回市集首頁" })).toHaveAttribute("href", "/market");
+    await userEvent.click(screen.getByRole("button", { name: "重新載入" }));
+    expect(await screen.findByRole("heading", { level: 1, name: "市集測試 A 店" })).toBeInTheDocument();
+  });
+
   it("店家零售停用(登入的店家自己看得到那一列)時顯示沒有開放", async () => {
     vi.mocked(fetchMarketStore).mockResolvedValue({ ...STORE_A, is_enabled: false });
     vi.mocked(fetchStoreProducts).mockResolvedValue([]);

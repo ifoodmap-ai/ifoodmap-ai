@@ -51,6 +51,16 @@ describe("MarketProductPage", () => {
     expect(await screen.findByRole("status")).toHaveTextContent("預覽:消費者目前看不到這個商品(審核狀態:待審)");
   });
 
+  it("載入失敗:有 h1、重新載入(重抓)與回市集首頁", async () => {
+    vi.mocked(fetchMarketProduct).mockRejectedValueOnce(new Error("network")).mockResolvedValue(CABBAGE);
+    renderAt(CABBAGE.id);
+    expect(await screen.findByRole("heading", { level: 1, name: "商品載入失敗" })).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("請檢查網路後再試一次");
+    expect(screen.getByRole("link", { name: "回市集首頁" })).toHaveAttribute("href", "/market");
+    await userEvent.click(screen.getByRole("button", { name: "重新載入" }));
+    expect(await screen.findByRole("heading", { level: 1, name: "有機高麗菜" })).toBeInTheDocument();
+  });
+
   it("找不到商品、網址不是 uuid 都顯示找不到", async () => {
     vi.mocked(fetchMarketProduct).mockResolvedValue(null);
     renderAt(CABBAGE.id);

@@ -137,7 +137,7 @@ export default function MarketHomePage() {
             商品
           </h2>
           <p aria-live="polite" className="text-sm text-slate-600">
-            {isLoading ? "載入中…" : `共 ${visible.length} 項`}
+            {isLoading ? "載入中…" : isError ? "" : `共 ${visible.length} 項`}
           </p>
         </div>
 

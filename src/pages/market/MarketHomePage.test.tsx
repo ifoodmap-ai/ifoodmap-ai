@@ -87,4 +87,11 @@ describe("MarketHomePage", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("商品載入失敗");
     expect(screen.getByRole("button", { name: "重新載入" })).toBeInTheDocument();
   });
+
+  it("載入失敗時不顯示「共 0 項」(沒有載到不等於沒有商品)", async () => {
+    vi.mocked(fetchListedProducts).mockRejectedValue(new Error("network"));
+    renderHome();
+    await screen.findByRole("alert");
+    expect(screen.queryByText(/共 \d+ 項/)).toBeNull();
+  });
 });

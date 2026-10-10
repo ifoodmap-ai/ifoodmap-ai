@@ -12,12 +12,13 @@ import { fetchMarketProduct, isPubliclyVisible } from "@/lib/market/catalog";
 import { CATEGORY_LABEL, REVIEW_STATUS_LABEL, TEMPERATURES } from "@/lib/market/constants";
 import { isUuid } from "@/lib/market/db";
 import { formatTwd, stockLabel } from "@/lib/market/format";
+import MarketLoadError from "./MarketLoadError";
 import MarketNotFound from "./MarketNotFound";
 
 export default function MarketProductPage() {
   const { productId = "" } = useParams();
   const valid = isUuid(productId);
-  const { data: product, isLoading, isError } = useQuery({
+  const { data: product, isLoading, isError, refetch } = useQuery({
     queryKey: ["market", "product", productId],
     queryFn: () => fetchMarketProduct(productId),
     enabled: valid,
@@ -34,13 +35,7 @@ export default function MarketProductPage() {
       </div>
     );
   }
-  if (isError || !product) {
-    return (
-      <div role="alert" className="mx-auto max-w-xl px-4 py-16 text-center text-red-800">
-        商品載入失敗,請重新整理再試一次。
-      </div>
-    );
-  }
+  if (isError || !product) return <MarketLoadError title="商品載入失敗" onRetry={() => refetch()} />;
 
   const store = product.market_stores;
   const preview = !isPubliclyVisible(product);
