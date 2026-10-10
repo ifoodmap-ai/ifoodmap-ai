@@ -127,7 +127,9 @@ export default function MarketProductDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-4">
+        {/* 儲存中鎖住所有欄位與照片欄:期間的修改不會跟存進資料庫的內容不一致(同店家設定頁;min-w-0:fieldset 預設
+            min-width 會撐寬手機版面) */}
+        <fieldset disabled={saving} className="min-w-0 space-y-4">
           <div>
             <label htmlFor="mp-name" className="mb-1 block text-sm font-medium text-slate-700">
               品名 *
@@ -254,23 +256,23 @@ export default function MarketProductDialog({
             </label>
           ) : null}
           {actions.notice ? <p className="rounded-md bg-amber-50 p-3 text-sm text-amber-900">{actions.notice}</p> : null}
-          {stale ? (
-            <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800">
-              <p>{new MarketStaleProductError().message}</p>
-              <Button
-                type="button"
-                variant="outline"
-                className="min-h-11 bg-white"
-                onClick={() => {
-                  onStale?.();
-                  onOpenChange(false);
-                }}
-              >
-                重新載入
-              </Button>
-            </div>
-          ) : null}
-        </div>
+        </fieldset>
+        {stale ? (
+          <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800">
+            <p>{new MarketStaleProductError().message}</p>
+            <Button
+              type="button"
+              variant="outline"
+              className="min-h-11 bg-white"
+              onClick={() => {
+                onStale?.();
+                onOpenChange(false);
+              }}
+            >
+              重新載入
+            </Button>
+          </div>
+        ) : null}
 
         <DialogFooter className="gap-2">
           <Button type="button" variant="outline" disabled={saving} onClick={() => onOpenChange(false)} className="min-h-11">

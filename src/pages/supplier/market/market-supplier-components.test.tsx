@@ -427,3 +427,26 @@ describe("MarketProductDialog — 改回待審的提示", () => {
     await waitFor(() => expect(toastSuccess).toHaveBeenLastCalledWith("已儲存"));
   });
 });
+
+// 儲存中只鎖按鈕的話,期間繼續改的欄位、新加的照片在存完後跟資料庫不一致(比照店家設定頁用 <fieldset disabled>)。
+describe("MarketProductDialog — 儲存中鎖住欄位", () => {
+  it("儲存中:所有欄位與照片欄都停用;存完才解開", async () => {
+    let finish: (value: unknown) => void = () => {};
+    const save = vi.fn().mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    renderDialog({ ...CABBAGE, review_status: "draft", photos: [photo(1)] }, save);
+    await userEvent.click(screen.getByRole("button", { name: "儲存草稿" }));
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+    for (const label of ["品名 *", "分類 *", "零售規格 *", "零售價(元)*", "說明", "冷藏", "新增照片"]) {
+      expect(screen.getByLabelText(label)).toBeDisabled();
+    }
+    expect(screen.getByRole("button", { name: "移除第 1 張照片" })).toBeDisabled();
+    finish({ row: { ...CABBAGE }, alreadySaved: false });
+    await waitFor(() => expect(screen.getByLabelText("品名 *")).toBeEnabled());
+    expect(screen.getByRole("button", { name: "移除第 1 張照片" })).toBeEnabled();
+  });
+});
