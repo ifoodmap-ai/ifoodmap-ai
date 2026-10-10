@@ -191,6 +191,32 @@ describe("AdminMarketProductsPage", () => {
     expect(screen.getByText("已核准的商品")).toBeInTheDocument();
   });
 
+  it("切換篩選時,比較慢回來的舊查詢「失敗」也不會蓋掉新的清單(不顯示錯誤)", async () => {
+    let failPending: (e: unknown) => void = () => {};
+    vi.mocked(fetchAdminProducts).mockImplementation((filter) =>
+      filter === "pending"
+        ? new Promise<AdminProductPage>((_resolve, reject) => {
+            failPending = reject;
+          })
+        : Promise.resolve(pageOf([{ ...PENDING, id: "a9300000-0000-4000-8000-0000000000c6", name: "已核准的商品", review_status: "approved" as const }])),
+    );
+    render(<AdminMarketProductsPage />);
+    await userEvent.click(screen.getByRole("button", { name: "已核准" }));
+    expect(await screen.findByText("已核准的商品")).toBeInTheDocument();
+    await act(async () => failPending(new MarketDbError({ message: "TypeError: Failed to fetch", code: "", hint: "" })));
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByText("已核准的商品")).toBeInTheDocument();
+  });
+
+  it("審核成功後重抓清單(核准完的商品離開待審清單)", async () => {
+    vi.mocked(fetchAdminProducts).mockResolvedValueOnce(pageOf([PENDING])).mockResolvedValue(pageOf([]));
+    render(<AdminMarketProductsPage />);
+    await userEvent.click(await screen.findByRole("button", { name: "查看 有機高麗菜" }));
+    await userEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "核准上架" }));
+    expect(await screen.findByText("沒有待審的商品")).toBeInTheDocument();
+    expect(fetchAdminProducts).toHaveBeenCalledTimes(2);
+  });
+
   it("核准還沒回來就切到別的篩選 → 核准完重抓的是「現在」的篩選,不會把清單換回待審", async () => {
     const APPROVED_ROW = { ...PENDING, id: "a9300000-0000-4000-8000-0000000000c3", name: "已核准的商品", review_status: "approved" as const };
     vi.mocked(fetchAdminProducts).mockImplementation(async (filter) => pageOf(filter === "approved" ? [APPROVED_ROW] : [PENDING]));
@@ -410,6 +436,16 @@ describe("AdminMarketProductsPage — 每張照片的主圖和縮圖都要審(�
     expect(within(dialog).getByRole("img", { name: "第 1 張・主圖" })).toHaveAttribute("src", publicImageUrl(PHOTO_1));
     // 其他照片不受影響
     expect(within(dialog).getByRole("img", { name: "第 2 張・縮圖" })).toHaveAttribute("src", publicImageUrl(thumbPathOf(PHOTO_2)));
+  });
+
+  it("查看視窗的圖整張顯示(object-contain),不裁切:照片邊角的內容也看得到", async () => {
+    const dialog = await openDetail();
+    const images = within(dialog).getAllByRole("img");
+    expect(images).toHaveLength(4);
+    images.forEach((img) => {
+      expect(img).toHaveClass("object-contain");
+      expect(img).not.toHaveClass("object-cover");
+    });
   });
 
   it("照片還在載入 → 不能核准;視窗裡的照片立即載入(不延遲)", async () => {
