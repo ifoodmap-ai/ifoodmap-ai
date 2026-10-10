@@ -1,0 +1,126 @@
+// 市集共用元件:版面的地標與跳到主要內容、照片的退回順序、商品卡、分類切換、店家條件。
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("@/integrations/supabase/client", () => ({ supabase: {} }));
+
+import { BEEF, CABBAGE, STORE_A } from "@/lib/market/testFixtures";
+import CategoryChips from "./CategoryChips";
+import MarketImage from "./MarketImage";
+import MarketLayout, { useMarketTitle } from "./MarketLayout";
+import ProductCard from "./ProductCard";
+import StoreInfoList from "./StoreInfoList";
+
+afterEach(cleanup);
+
+const TitleProbe = ({ title }: { title: string | null }) => {
+  useMarketTitle(title);
+  return <h1>頁面</h1>;
+};
+
+describe("MarketLayout", () => {
+  it("有跳到主要內容、logo 回市集首頁、main 地標;頁尾說明平台角色", () => {
+    render(
+      <MemoryRouter initialEntries={["/market"]}>
+        <Routes>
+          <Route path="/market" element={<MarketLayout />}>
+            <Route index element={<TitleProbe title="測試頁" />} />
+          </Route>
+        </Routes>
+      </MemoryRouter>,
+    );
+    expect(screen.getByRole("link", { name: "跳到主要內容" })).toHaveAttribute("href", "#market-main");
+    expect(screen.getByRole("link", { name: /食材市集 首頁/ })).toHaveAttribute("href", "/market");
+    expect(screen.getByRole("main")).toHaveAttribute("id", "market-main");
+    expect(screen.getByRole("contentinfo")).toHaveTextContent("商品由各店家販售、出貨與收款");
+    expect(document.title).toBe("測試頁｜iFoodmap 食材市集");
+  });
+});
+
+describe("MarketImage", () => {
+  const PATH = "a9200000-0000-4000-8000-00000000000a/a9300000-0000-4000-8000-000000000001/a9900000-0000-4000-8000-000000000001.jpg";
+
+  it("縮圖 → 主圖 → 分類圖示,一路退回", () => {
+    render(<MarketImage path={PATH} category="vegetable" alt="高麗菜" />);
+    const img = screen.getByRole("img", { name: "高麗菜" });
+    expect(img.getAttribute("src")).toMatch(/_t\.jpg$/);
+    fireEvent.error(img);
+    expect(screen.getByRole("img", { name: "高麗菜" }).getAttribute("src")).toMatch(/0001\.jpg$/);
+    fireEvent.error(screen.getByRole("img", { name: "高麗菜" }));
+    expect(screen.getByRole("img", { name: "高麗菜" })).toHaveAttribute("data-fallback", "category");
+  });
+
+  it("沒有照片就顯示分類圖示;有寬高、lazy", () => {
+    render(<MarketImage path={null} category="meat" alt="牛肉" width={200} height={200} />);
+    const img = screen.getByRole("img", { name: "牛肉" });
+    expect(img).toHaveAttribute("data-fallback", "category");
+    expect(img).toHaveAttribute("width", "200");
+    expect(img).toHaveAttribute("loading", "lazy");
+  });
+
+  it("分類圖示的留白跟著外框大小走(外框拿 className;不用百分比 padding —— 那是照父元素寬度算的)", () => {
+    render(<MarketImage path={null} category="meat" alt="牛肉" className="h-16 w-16 rounded-md" />);
+    const img = screen.getByRole("img", { name: "牛肉" });
+    expect(img.parentElement).toHaveClass("h-16", "w-16", "rounded-md", "bg-emerald-50");
+    expect(img).toHaveClass("h-[76%]", "w-[76%]");
+    expect(img.className).not.toMatch(/\bp-\[/);
+  });
+});
+
+describe("ProductCard", () => {
+  it("整張卡片連到商品頁,顯示品名、規格、價格、溫層、店名", () => {
+    render(
+      <MemoryRouter>
+        <ProductCard product={CABBAGE} />
+      </MemoryRouter>,
+    );
+    const link = screen.getByRole("link", { name: /有機高麗菜/ });
+    expect(link).toHaveAttribute("href", `/market/p/${CABBAGE.id}`);
+    expect(link).toHaveTextContent("NT$ 100");
+    expect(link).toHaveTextContent("冷藏");
+    expect(link).toHaveTextContent("市集測試 A 店");
+    expect(link).not.toHaveTextContent("已售完");
+  });
+
+  it("庫存 0 標已售完", () => {
+    render(
+      <MemoryRouter>
+        <ProductCard product={{ ...BEEF, stock: 0 }} />
+      </MemoryRouter>,
+    );
+    expect(screen.getByRole("link", { name: /牛肉片/ })).toHaveTextContent("已售完");
+  });
+});
+
+describe("CategoryChips", () => {
+  it("全部 + 12 類,目前選的 aria-pressed=true;點了回傳 key", async () => {
+    const onChange = vi.fn();
+    render(<CategoryChips value="meat" onChange={onChange} />);
+    const group = screen.getByRole("group", { name: "食材分類" });
+    expect(within(group).getAllByRole("button")).toHaveLength(13);
+    expect(within(group).getByRole("button", { name: "肉品" })).toHaveAttribute("aria-pressed", "true");
+    expect(within(group).getByRole("button", { name: "全部" })).toHaveAttribute("aria-pressed", "false");
+    await userEvent.click(within(group).getByRole("button", { name: "海鮮" }));
+    expect(onChange).toHaveBeenCalledWith("seafood");
+    await userEvent.click(within(group).getByRole("button", { name: "全部" }));
+    expect(onChange).toHaveBeenLastCalledWith(null);
+  });
+
+  it("available 只列這家店有的分類", () => {
+    render(<CategoryChips value={null} onChange={vi.fn()} available={["fruit"]} />);
+    expect(screen.getAllByRole("button").map((b) => b.textContent)).toEqual(["全部", "水果"]);
+  });
+});
+
+describe("StoreInfoList", () => {
+  it("配送縣市、運費、最低訂購、出貨、付款方式", () => {
+    render(<StoreInfoList store={STORE_A} />);
+    expect(screen.getByText("臺北市、新北市")).toBeInTheDocument();
+    expect(screen.getByText("運費 NT$ 120,滿 NT$ 1,000 免運")).toBeInTheDocument();
+    expect(screen.getByText("滿 NT$ 300 才能下單")).toBeInTheDocument();
+    expect(screen.getByText("2 個工作天內出貨")).toBeInTheDocument();
+    expect(screen.getByText("貨到付款、銀行轉帳")).toBeInTheDocument();
+  });
+});
