@@ -3,8 +3,11 @@
 // 審核用「樂觀鎖」:更新時多帶 updated_at = 畫面上那一筆的值。供應商在管理員看的同時改了內容
 // (資料庫會把 updated_at 換掉、狀態改回 pending),這次更新就會 0 列 → 告訴管理員重新整理,
 // 不會把管理員「沒看過的新內容」核准掉。
+//
+// 錯誤訊息一律中文(adminErrorMessage):頁面呼叫時都給中文備援;這裡自己丟的錯名稱一律 Market 開頭,
+// friendlyDbError 才會照原本的中文顯示、不被備援蓋掉。
 import { LIMITS, type ReviewStatus } from "./constants";
-import { marketDb, unwrap } from "./db";
+import { friendlyDbError, MarketDbError, marketDb, unwrap } from "./db";
 import type { MarketProductRow, MarketStoreRow } from "./types";
 
 export const ADMIN_PRODUCT_COLUMNS = "*, market_stores(supplier_id, is_enabled, suppliers(name))";
@@ -17,12 +20,37 @@ export const fetchAdminProducts = async (filter: ReviewFilter): Promise<MarketPr
   return unwrap(await q.order(filter === "pending" ? "submitted_at" : "updated_at", { ascending: filter === "pending" }).limit(500)) ?? [];
 };
 
-export class StaleReviewError extends Error {
+/** 核准 / 退回時這個商品剛被供應商改過(樂觀鎖一列都沒更新到) */
+export class MarketStaleReviewError extends Error {
   constructor() {
     super("這個商品剛被供應商修改過,請重新整理後再審核");
-    this.name = "StaleReviewError";
+    this.name = "MarketStaleReviewError";
   }
 }
+
+/** 停用 / 恢復店家時一列都沒更新到(店家已被移除,或權限不足被 RLS 擋掉) */
+export class MarketStoreGoneError extends Error {
+  constructor() {
+    super("沒有更新到這家店(可能已被移除或權限不足),請重新整理後再試");
+    this.name = "MarketStoreGoneError";
+  }
+}
+
+/** 頁面給 adminErrorMessage 的中文備援 */
+export const ADMIN_LOAD_FALLBACK = "伺服器暫時沒有回應,請稍後再試";
+export const ADMIN_REVIEW_FALLBACK = "審核沒有完成,請重新整理後再試";
+export const ADMIN_STORE_FALLBACK = "沒有更新成功,請重新整理後再試";
+
+/**
+ * 管理後台的錯誤 → 中文。登入過期(PostgREST 的 PGRST301 / PGRST303,訊息「JWT expired」)請管理員重新登入;
+ * 其他照 friendlyDbError(認得的 hint、斷網),認不得的顯示備援(資料庫錯誤附代碼),市集自己丟的錯照原訊息。
+ */
+export const adminErrorMessage = (e: unknown, fallback: string): string => {
+  if (e instanceof MarketDbError && (e.code === "PGRST301" || e.code === "PGRST303" || /\bJWT\b/i.test(e.message))) {
+    return "登入已過期,請重新登入後再試";
+  }
+  return friendlyDbError(e, fallback);
+};
 
 export type ReviewAction = { kind: "approve" } | { kind: "reject"; reason: string } | { kind: "delist"; reason: string };
 
@@ -43,7 +71,7 @@ export const reviewProduct = async (
   let q = marketDb<MarketProductRow>("market_products").update(patch).eq("id", product.id);
   if (product.updated_at) q = q.eq("updated_at", product.updated_at);
   const row = unwrap(await q.select(ADMIN_PRODUCT_COLUMNS).maybeSingle());
-  if (!row) throw new StaleReviewError();
+  if (!row) throw new MarketStaleReviewError();
   return row;
 };
 
@@ -73,11 +101,15 @@ export const fetchProductCounts = async (): Promise<Map<string, { listed: number
   return counts;
 };
 
-export const setStoreEnabled = async (supplierId: string, enabled: boolean, reason: string | null): Promise<AdminStoreRow> =>
-  unwrap(
+/** 停用(要原因)/ 恢復某家店的零售。用 maybeSingle:0 列時 single() 會回英文的 PGRST116,改丟中文的 MarketStoreGoneError */
+export const setStoreEnabled = async (supplierId: string, enabled: boolean, reason: string | null): Promise<AdminStoreRow> => {
+  const row = unwrap(
     await marketDb<AdminStoreRow>("market_stores")
       .update(enabled ? { is_enabled: true } : { is_enabled: false, disabled_reason: (reason ?? "").trim() })
       .eq("supplier_id", supplierId)
       .select("*, suppliers(name, phone, contact_email, is_active)")
-      .single(),
+      .maybeSingle(),
   );
+  if (!row) throw new MarketStoreGoneError();
+  return row;
+};

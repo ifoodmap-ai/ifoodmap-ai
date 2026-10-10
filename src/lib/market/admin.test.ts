@@ -1,18 +1,36 @@
-// admin.ts:審核送出的內容、樂觀鎖(updated_at)、下架 = 退回加前綴、店家停用 / 恢復、商品數統計。
+// admin.ts:審核送出的內容、樂觀鎖(updated_at)、下架 = 退回加前綴、店家停用 / 恢復、商品數統計、錯誤訊息一律中文。
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+type Call = {
+  table: string;
+  op: string;
+  payload?: unknown;
+  filters: Array<[string, unknown]>;
+  selectOptions?: unknown;
+  orders: Array<[string, boolean]>;
+  range?: [number, number];
+  terminal?: "single" | "maybeSingle";
+};
+
 const { calls, next } = vi.hoisted(() => ({
-  calls: [] as Array<{ table: string; op: string; payload?: unknown; filters: Array<[string, unknown]> }>,
-  next: { data: null as unknown },
+  calls: [] as Call[],
+  // pages:分頁測試用,每次查詢依序拿一頁(拿完就是空陣列);否則每次都回 data / error / count
+  next: { data: null as unknown, error: null as unknown, count: null as number | null, pages: null as unknown[][] | null },
 }));
 
+// 假的 PostgREST builder。single() 在 0 列時跟真的 postgrest-js 一樣回英文的 PGRST116;maybeSingle() 回 data null。
 vi.mock("@/integrations/supabase/client", () => ({
   supabase: {
     from: (table: string) => {
-      const call = { table, op: "select", payload: undefined as unknown, filters: [] as Array<[string, unknown]> };
+      const call: Call = { table, op: "select", filters: [], orders: [] };
       calls.push(call);
+      const result = () =>
+        next.pages ? { data: next.pages.shift() ?? [], error: null, count: next.count } : { data: next.data, error: next.error, count: next.count };
       const b = {
-        select: () => b,
+        select: (_columns?: string, options?: unknown) => {
+          if (options) call.selectOptions = options;
+          return b;
+        },
         update: (v: unknown) => {
           call.op = "update";
           call.payload = v;
@@ -22,11 +40,31 @@ vi.mock("@/integrations/supabase/client", () => ({
           call.filters.push([c, v]);
           return b;
         },
-        order: () => b,
+        ilike: (c: string, v: unknown) => {
+          call.filters.push([`${c} ilike`, v]);
+          return b;
+        },
+        order: (c: string, o: { ascending: boolean }) => {
+          call.orders.push([c, o.ascending]);
+          return b;
+        },
+        range: (from: number, to: number) => {
+          call.range = [from, to];
+          return b;
+        },
         limit: () => b,
-        maybeSingle: async () => ({ data: next.data, error: null }),
-        single: async () => ({ data: next.data, error: null }),
-        then: (ok: (v: unknown) => unknown) => Promise.resolve({ data: next.data, error: null }).then(ok),
+        maybeSingle: async () => {
+          call.terminal = "maybeSingle";
+          return result();
+        },
+        single: async () => {
+          call.terminal = "single";
+          const r = result();
+          return r.data == null && !r.error
+            ? { data: null, error: { message: "JSON object requested, multiple (or no) rows returned", code: "PGRST116", details: "The result contains 0 rows", hint: null } }
+            : r;
+        },
+        then: (ok: (v: unknown) => unknown, fail?: (e: unknown) => unknown) => Promise.resolve(result()).then(ok, fail),
       };
       return b;
     },
@@ -34,19 +72,25 @@ vi.mock("@/integrations/supabase/client", () => ({
 }));
 
 import {
+  adminErrorMessage,
   DELIST_PREFIX,
   DELIST_REASON_MAX,
   fetchAdminProducts,
   fetchProductCounts,
+  MarketStaleReviewError,
+  MarketStoreGoneError,
   reviewProduct,
   setStoreEnabled,
-  StaleReviewError,
 } from "./admin";
 import { LIMITS } from "./constants";
+import { friendlyDbError, MarketDbError } from "./db";
 
 beforeEach(() => {
   calls.length = 0;
   next.data = { id: "p1" };
+  next.error = null;
+  next.count = null;
+  next.pages = null;
 });
 
 describe("reviewProduct", () => {
@@ -70,9 +114,18 @@ describe("reviewProduct", () => {
     expect(calls[1].payload).toEqual({ review_status: "rejected", reject_reason: "(管理員下架)標示不實" });
   });
 
-  it("0 列(供應商剛改過)→ StaleReviewError", async () => {
+  it("0 列(供應商剛改過)→ MarketStaleReviewError", async () => {
     next.data = null;
-    await expect(reviewProduct(product, { kind: "approve" })).rejects.toBeInstanceOf(StaleReviewError);
+    await expect(reviewProduct(product, { kind: "approve" })).rejects.toBeInstanceOf(MarketStaleReviewError);
+  });
+
+  it("樂觀鎖的錯誤名稱是 Market 開頭:頁面給了中文備援,也不會蓋掉它原本的中文", async () => {
+    next.data = null;
+    const err = await reviewProduct(product, { kind: "reject", reason: "照片太暗" }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(MarketStaleReviewError);
+    expect((err as Error).name).toBe("MarketStaleReviewError");
+    expect(friendlyDbError(err, "備援")).toBe("這個商品剛被供應商修改過,請重新整理後再審核");
+    expect(adminErrorMessage(err, "備援")).toBe("這個商品剛被供應商修改過,請重新整理後再審核");
   });
 
   it("下架原因的上限要扣掉前綴:前綴 + 原因剛好是資料庫的 300 字(reject_reason <= 300)", async () => {
@@ -101,6 +154,15 @@ describe("清單與店家", () => {
     expect(calls[1].filters).toEqual([["supplier_id", "sup-1"]]);
   });
 
+  it("停用 / 恢復時一列都沒更新到 → 中文錯誤(不是 PGRST116 的「JSON object requested…」)", async () => {
+    next.data = null;
+    const err = await setStoreEnabled("sup-1", false, "客訴處理中").catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(MarketStoreGoneError);
+    expect((err as Error).message).toBe("沒有更新到這家店(可能已被移除或權限不足),請重新整理後再試");
+    expect(adminErrorMessage(err, "備援")).toBe("沒有更新到這家店(可能已被移除或權限不足),請重新整理後再試");
+    await expect(setStoreEnabled("sup-1", true, null)).rejects.toBeInstanceOf(MarketStoreGoneError);
+  });
+
   it("商品數:上架中 = 已核准且開著;待審另外算", async () => {
     next.data = [
       { supplier_id: "a", review_status: "approved", is_listed: true },
@@ -111,5 +173,27 @@ describe("清單與店家", () => {
     const counts = await fetchProductCounts();
     expect(counts.get("a")).toEqual({ listed: 1, pending: 1 });
     expect(counts.get("b")).toEqual({ listed: 0, pending: 0 });
+  });
+});
+
+describe("adminErrorMessage:管理後台的錯誤訊息一律中文", () => {
+  it("登入過期 / JWT 失效 → 請重新登入(不顯示「JWT expired」)", () => {
+    expect(adminErrorMessage(new MarketDbError({ message: "JWT expired", code: "PGRST301" }), "備援")).toBe("登入已過期,請重新登入後再試");
+    expect(adminErrorMessage(new MarketDbError({ message: "JWT expired", code: "PGRST303" }), "備援")).toBe("登入已過期,請重新登入後再試");
+    expect(adminErrorMessage(new MarketDbError({ message: "JWT expired" }), "備援")).toBe("登入已過期,請重新登入後再試");
+  });
+
+  it("認不得的資料庫錯誤 → 中文備援加錯誤代碼;認得的 hint / 斷網照 friendlyDbError;市集自己的錯照原訊息", () => {
+    expect(adminErrorMessage(new MarketDbError({ message: "JSON object requested, multiple (or no) rows returned", code: "PGRST116" }), "沒有更新成功")).toBe(
+      "沒有更新成功(錯誤代碼 PGRST116)",
+    );
+    expect(adminErrorMessage(new MarketDbError({ message: "x", code: "22023", hint: "photos_not_uploaded" }), "備援")).toBe(
+      "這個商品還有照片沒有上傳完成,無法核准",
+    );
+    expect(adminErrorMessage(new MarketDbError({ message: "TypeError: Failed to fetch", code: "", hint: "" }), "備援")).toBe(
+      "連線失敗,請檢查網路後再試一次",
+    );
+    expect(adminErrorMessage(new Error("Something broke"), "備援")).toBe("備援");
+    expect(adminErrorMessage(new MarketStaleReviewError(), "備援")).toBe("這個商品剛被供應商修改過,請重新整理後再審核");
   });
 });

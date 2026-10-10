@@ -9,9 +9,16 @@ import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
-import { fetchAdminStores, fetchProductCounts, setStoreEnabled, type AdminStoreRow } from '@/lib/market/admin';
+import {
+  ADMIN_LOAD_FALLBACK,
+  ADMIN_STORE_FALLBACK,
+  adminErrorMessage,
+  fetchAdminStores,
+  fetchProductCounts,
+  setStoreEnabled,
+  type AdminStoreRow,
+} from '@/lib/market/admin';
 import { LIMITS } from '@/lib/market/constants';
-import { friendlyDbError } from '@/lib/market/db';
 import { citiesSummary, shippingSummary } from '@/lib/market/format';
 
 const storeName = (s: AdminStoreRow) => s.suppliers?.name ?? s.supplier_id;
@@ -33,7 +40,7 @@ const AdminMarketStoresPage = () => {
       setCounts(c);
       setLoadError(null);
     } catch (e) {
-      setLoadError(friendlyDbError(e));
+      setLoadError(adminErrorMessage(e, ADMIN_LOAD_FALLBACK));
     } finally {
       setLoading(false);
     }
@@ -58,7 +65,7 @@ const AdminMarketStoresPage = () => {
       setReason('');
       await load();
     } catch (e) {
-      toast.error('處理失敗', { description: friendlyDbError(e) });
+      toast.error('處理失敗', { description: adminErrorMessage(e, ADMIN_STORE_FALLBACK) });
     } finally {
       setBusy(false);
     }

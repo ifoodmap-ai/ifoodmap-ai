@@ -17,9 +17,17 @@ import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
-import { DELIST_REASON_MAX, fetchAdminProducts, reviewProduct, StaleReviewError, type ReviewFilter } from '@/lib/market/admin';
+import {
+  ADMIN_LOAD_FALLBACK,
+  ADMIN_REVIEW_FALLBACK,
+  adminErrorMessage,
+  DELIST_REASON_MAX,
+  fetchAdminProducts,
+  MarketStaleReviewError,
+  reviewProduct,
+  type ReviewFilter,
+} from '@/lib/market/admin';
 import { CATEGORY_LABEL, LIMITS, REVIEW_STATUS_LABEL, TEMPERATURES } from '@/lib/market/constants';
-import { friendlyDbError } from '@/lib/market/db';
 import { formatTaipei, formatTwd, stockLabel } from '@/lib/market/format';
 import { publicImageUrl, thumbPathOf } from '@/lib/market/images';
 import type { MarketProductRow } from '@/lib/market/types';
@@ -107,7 +115,7 @@ const AdminMarketProductsPage = () => {
       setLoadError(null);
     } catch (e) {
       if (seq !== loadSeq.current) return;
-      setLoadError(friendlyDbError(e));
+      setLoadError(adminErrorMessage(e, ADMIN_LOAD_FALLBACK));
     } finally {
       if (seq === loadSeq.current) setLoading(false);
     }
@@ -146,9 +154,9 @@ const AdminMarketProductsPage = () => {
       setReason('');
       await load();
     } catch (e) {
-      const message = friendlyDbError(e);
+      const message = adminErrorMessage(e, ADMIN_REVIEW_FALLBACK);
       toast.error('處理失敗', { description: message });
-      if (e instanceof StaleReviewError) {
+      if (e instanceof MarketStaleReviewError) {
         // 供應商剛改過:視窗裡是舊內容,關掉;重新整理後的清單才是最新的,要重新查看
         closeDetail();
         setReasonTarget(null);

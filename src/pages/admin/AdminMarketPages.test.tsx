@@ -22,9 +22,10 @@ import {
   fetchAdminProducts,
   fetchAdminStores,
   fetchProductCounts,
+  MarketStaleReviewError,
+  MarketStoreGoneError,
   reviewProduct,
   setStoreEnabled,
-  StaleReviewError,
 } from "@/lib/market/admin";
 import { LIMITS } from "@/lib/market/constants";
 import { MarketDbError } from "@/lib/market/db";
@@ -79,7 +80,7 @@ describe("AdminMarketProductsPage", () => {
   });
 
   it("供應商剛改過(樂觀鎖擋下)→ 顯示要重新整理,並重抓清單", async () => {
-    vi.mocked(reviewProduct).mockRejectedValue(new StaleReviewError());
+    vi.mocked(reviewProduct).mockRejectedValue(new MarketStaleReviewError());
     render(<AdminMarketProductsPage />);
     await userEvent.click(await screen.findByRole("button", { name: "核准 有機高麗菜" }));
     await waitFor(() =>
@@ -89,7 +90,7 @@ describe("AdminMarketProductsPage", () => {
   });
 
   it("在查看視窗裡被樂觀鎖擋下 → 視窗關掉(畫面上的內容已經過期),要重新查看新內容", async () => {
-    vi.mocked(reviewProduct).mockRejectedValue(new StaleReviewError());
+    vi.mocked(reviewProduct).mockRejectedValue(new MarketStaleReviewError());
     render(<AdminMarketProductsPage />);
     await userEvent.click(await screen.findByRole("button", { name: "查看 有機高麗菜" }));
     await userEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "核准上架" }));
@@ -128,6 +129,23 @@ describe("AdminMarketProductsPage", () => {
     await userEvent.click(screen.getByRole("button", { name: "重新載入" }));
     expect(await screen.findByRole("button", { name: "查看 有機高麗菜" })).toBeInTheDocument();
     expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("清單載入失敗是英文錯誤(登入過期)→ 顯示中文,不出現英文原文", async () => {
+    vi.mocked(fetchAdminProducts).mockRejectedValueOnce(new MarketDbError({ message: "JWT expired", code: "PGRST301" }));
+    render(<AdminMarketProductsPage />);
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("登入已過期,請重新登入後再試");
+    expect(alert).not.toHaveTextContent("JWT");
+  });
+
+  it("審核失敗是認不得的錯誤 → toast 顯示中文備援與錯誤代碼(不顯示英文原文)", async () => {
+    vi.mocked(reviewProduct).mockRejectedValue(new MarketDbError({ message: "canceling statement due to lock timeout", code: "55P03" }));
+    render(<AdminMarketProductsPage />);
+    await userEvent.click(await screen.findByRole("button", { name: "退回 有機高麗菜" }));
+    await userEvent.type(screen.getByLabelText("原因(必填)"), "照片太暗");
+    await userEvent.click(screen.getByRole("button", { name: "確定退回" }));
+    await waitFor(() => expect(toastError).toHaveBeenCalledWith("處理失敗", { description: "審核沒有完成,請重新整理後再試(錯誤代碼 55P03)" }));
   });
 
   it("切換篩選時,比較慢回來的舊查詢不會蓋掉新的清單", async () => {
@@ -298,6 +316,30 @@ describe("AdminMarketStoresPage", () => {
     ]);
     render(<AdminMarketStoresPage />);
     expect(await screen.findByText("供應商帳號已停用,消費者看不到這家店")).toBeInTheDocument();
+  });
+
+  it("停用失敗是英文錯誤 → toast 顯示中文備援;一列都沒更新到 → 說明可能已被移除", async () => {
+    vi.mocked(setStoreEnabled).mockRejectedValueOnce(
+      new MarketDbError({ message: "JSON object requested, multiple (or no) rows returned", code: "PGRST116" }),
+    );
+    render(<AdminMarketStoresPage />);
+    await userEvent.click(await screen.findByRole("button", { name: "停用 市集測試 A 店 的零售" }));
+    await userEvent.type(screen.getByLabelText("原因(必填)"), "客訴處理中");
+    await userEvent.click(screen.getByRole("button", { name: "確定停用" }));
+    await waitFor(() => expect(toastError).toHaveBeenCalledWith("處理失敗", { description: "沒有更新成功,請重新整理後再試(錯誤代碼 PGRST116)" }));
+    vi.mocked(setStoreEnabled).mockRejectedValueOnce(new MarketStoreGoneError());
+    await userEvent.click(screen.getByRole("button", { name: "確定停用" }));
+    await waitFor(() =>
+      expect(toastError).toHaveBeenLastCalledWith("處理失敗", { description: "沒有更新到這家店(可能已被移除或權限不足),請重新整理後再試" }),
+    );
+  });
+
+  it("載入失敗是英文錯誤(登入過期)→ 顯示中文", async () => {
+    vi.mocked(fetchAdminStores).mockRejectedValueOnce(new MarketDbError({ message: "JWT expired", code: "PGRST301" }));
+    render(<AdminMarketStoresPage />);
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("登入已過期,請重新登入後再試");
+    expect(alert).not.toHaveTextContent("JWT");
   });
 
   it("載入失敗 → 顯示錯誤與「重新載入」,不會說成「還沒有供應商開零售」", async () => {
