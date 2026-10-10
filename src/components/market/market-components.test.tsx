@@ -1,7 +1,7 @@
 // 市集共用元件:版面的地標與跳到主要內容、照片的退回順序、商品卡、分類切換、店家條件。
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { MemoryRouter, Route, Routes, useNavigate } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/integrations/supabase/client", () => ({ supabase: {} }));
@@ -36,6 +36,73 @@ describe("MarketLayout", () => {
     expect(screen.getByRole("main")).toHaveAttribute("id", "market-main");
     expect(screen.getByRole("contentinfo")).toHaveTextContent("商品由各店家販售、出貨與收款");
     expect(document.title).toBe("測試頁｜iFoodmap 食材市集");
+  });
+});
+
+describe("MarketLayout 換頁", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  /** 在 router 裡、市集外面的測試用導覽 */
+  const TestNav = () => {
+    const navigate = useNavigate();
+    return (
+      <div>
+        <button type="button" onClick={() => navigate("/market")}>
+          去市集
+        </button>
+        <button type="button" onClick={() => navigate("/market/p/x")}>
+          去商品
+        </button>
+        <button type="button" onClick={() => navigate("/market/p/x?photo=2", { replace: true })}>
+          只改查詢字串
+        </button>
+        <button type="button" onClick={() => navigate(-1)}>
+          上一頁
+        </button>
+        <button type="button" onClick={() => navigate("/elsewhere")}>
+          離開市集
+        </button>
+      </div>
+    );
+  };
+  const renderShell = (initial: string) =>
+    render(
+      <MemoryRouter initialEntries={[initial]}>
+        <Routes>
+          <Route path="/market" element={<MarketLayout />}>
+            <Route index element={<TitleProbe title={null} />} />
+            <Route path="p/:id" element={<TitleProbe title="高麗菜" />} />
+          </Route>
+          <Route path="/elsewhere" element={<p>市集外的頁面</p>} />
+        </Routes>
+        <TestNav />
+      </MemoryRouter>,
+    );
+
+  it("市集裡點連結換頁捲回頂端;第一次進來、上一頁(POP)、只改查詢字串都不捲", async () => {
+    const scrollTo = vi.spyOn(window, "scrollTo").mockImplementation(() => {});
+    renderShell("/market");
+    expect(scrollTo).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: "去商品" }));
+    expect(scrollTo).toHaveBeenCalledTimes(1);
+    expect(scrollTo).toHaveBeenCalledWith(0, 0);
+    await userEvent.click(screen.getByRole("button", { name: "只改查詢字串" }));
+    await userEvent.click(screen.getByRole("button", { name: "上一頁" }));
+    expect(screen.getByRole("heading", { level: 1 })).toBeInTheDocument();
+    expect(scrollTo).toHaveBeenCalledTimes(1);
+  });
+
+  it("離開市集時,分頁標題還原成進市集之前的", async () => {
+    vi.spyOn(window, "scrollTo").mockImplementation(() => {});
+    document.title = "進市集之前的標題";
+    renderShell("/elsewhere");
+    await userEvent.click(screen.getByRole("button", { name: "去市集" }));
+    expect(document.title).toBe("iFoodmap 食材市集");
+    await userEvent.click(screen.getByRole("button", { name: "去商品" }));
+    expect(document.title).toBe("高麗菜｜iFoodmap 食材市集");
+    await userEvent.click(screen.getByRole("button", { name: "離開市集" }));
+    expect(screen.getByText("市集外的頁面")).toBeInTheDocument();
+    expect(document.title).toBe("進市集之前的標題");
   });
 });
 

@@ -24,9 +24,11 @@ export default function MarketProductPage() {
     enabled: valid,
   });
   const [photoIndex, setPhotoIndex] = useState(0);
-  useMarketTitle(product?.name ?? null);
+  const notFound = !valid || (!isLoading && !isError && !product);
+  // 分頁標題跟畫面一致(MarketNotFound 會設同一個字):子元件的 effect 先跑、父元件後跑,字不一樣的話會被這裡蓋掉
+  useMarketTitle(notFound ? "找不到商品" : isError ? "商品載入失敗" : product?.name ?? null);
 
-  if (!valid || (!isLoading && !isError && !product)) return <MarketNotFound message="找不到這個商品,可能已經下架了。" />;
+  if (notFound) return <MarketNotFound message="找不到這個商品,可能已經下架了。" title="找不到商品" />;
   if (isLoading) {
     return (
       <div className="mx-auto grid max-w-6xl gap-6 px-4 py-6 min-[881px]:grid-cols-2" aria-busy="true">

@@ -3,8 +3,9 @@
 // 手機優先;≤ 880px 是手機(跟形象站同一個分界),桌機用 Tailwind 任意斷點 min-[881px]:。
 // 無障礙:第一個 Tab 到的是「跳到主要內容」;<main id="market-main"> 可以接收焦點(scroll-mt-16:跳過去時不會被固定的頁首蓋住);
 // 每頁的 <h1> 由各頁自己畫(剛好一個)。
+// 換頁:點連結進到市集的另一頁會捲回頂端;離開市集時把分頁標題還原成進市集之前的。
 import { useEffect } from "react";
-import { Link, Outlet } from "react-router-dom";
+import { Link, Outlet, useLocation, useNavigationType } from "react-router-dom";
 
 export const MARKET_FOCUS_RING =
   "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-700 focus-visible:ring-offset-2";
@@ -12,14 +13,41 @@ export const MARKET_FOCUS_RING =
 /** 主要按鈕的顏色(白字對 emerald-700 約 5.5:1;產品站 primary 綠對白字只有約 2.3:1,市集不用 variant="default") */
 export const MARKET_PRIMARY_BUTTON = "bg-emerald-700 text-white hover:bg-emerald-800";
 
+/**
+ * 進市集之前的分頁標題:市集裡第一次設定標題時記下,MarketLayout 卸載(離開市集)時還原。
+ * 不在各頁的 effect 裡還原 —— 市集裡換頁時標題會先閃回原本的;也不在 MarketLayout 掛上時記 ——
+ * 子元件的 effect 比父元件先跑,那時標題已經被市集改掉了。
+ */
+let titleBeforeMarket: string | null = null;
+
 /** 各頁設定 document.title(換頁時螢幕閱讀器會唸) */
 export const useMarketTitle = (title: string | null | undefined) => {
   useEffect(() => {
+    if (titleBeforeMarket === null) titleBeforeMarket = document.title;
     document.title = title ? `${title}｜iFoodmap 食材市集` : "iFoodmap 食材市集";
   }, [title]);
 };
 
 export default function MarketLayout() {
+  const { pathname } = useLocation();
+  const navigationType = useNavigationType();
+
+  // 點連結換頁(PUSH / REPLACE)捲回頂端,不然手機從清單下方點進商品頁會停在半頁。
+  // 上一頁 / 下一頁(POP)交給瀏覽器還原位置;第一次載入也是 POP。
+  useEffect(() => {
+    if (navigationType !== "POP") window.scrollTo(0, 0);
+    // 只看 pathname:首頁改篩選條件(?q=、?cat=)是 REPLACE,不能每打一個字就捲回頂端
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pathname]);
+
+  useEffect(
+    () => () => {
+      if (titleBeforeMarket !== null) document.title = titleBeforeMarket;
+      titleBeforeMarket = null;
+    },
+    [],
+  );
+
   return (
     <div className="flex min-h-screen flex-col bg-slate-50 text-slate-900">
       <a

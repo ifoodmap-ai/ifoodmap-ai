@@ -26,13 +26,15 @@ export default function MarketStorePage() {
   });
   const [category, setCategory] = useState<MarketCategoryKey | null>(null);
   const store = storeQuery.data;
-  useMarketTitle(store?.suppliers?.name ?? null);
+  const notFound = !valid || (!storeQuery.isLoading && !storeQuery.isError && !isStoreOpen(store));
+  // 分頁標題跟畫面一致(MarketNotFound 會設同一個字):子元件的 effect 先跑、父元件後跑,字不一樣的話會被這裡蓋掉
+  useMarketTitle(notFound ? "找不到店家" : storeQuery.isError ? "店家資料載入失敗" : store?.suppliers?.name ?? null);
 
   const products = useMemo(() => productsQuery.data ?? [], [productsQuery.data]);
   const categories = useMemo(() => [...new Set(products.map((p) => p.category))], [products]);
   const shown = category ? products.filter((p) => p.category === category) : products;
 
-  if (!valid) return <MarketNotFound message="找不到這家店。" />;
+  if (!valid) return <MarketNotFound message="找不到這家店。" title="找不到店家" />;
   if (storeQuery.isLoading) {
     return (
       <div className="mx-auto max-w-6xl space-y-4 px-4 py-6" aria-busy="true">
@@ -52,7 +54,7 @@ export default function MarketStorePage() {
       />
     );
   }
-  if (!store || !isStoreOpen(store)) return <MarketNotFound message="這家店目前沒有開放零售。" />;
+  if (!store || !isStoreOpen(store)) return <MarketNotFound message="這家店目前沒有開放零售。" title="找不到店家" />;
 
   const name = store.suppliers?.name ?? "店家";
   return (

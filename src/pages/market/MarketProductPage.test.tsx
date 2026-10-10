@@ -61,6 +61,22 @@ describe("MarketProductPage", () => {
     expect(await screen.findByRole("heading", { level: 1, name: "有機高麗菜" })).toBeInTheDocument();
   });
 
+  it("分頁標題跟畫面一致:找不到(含網址壞掉)是「找不到商品」、載入失敗是「商品載入失敗」", async () => {
+    vi.mocked(fetchMarketProduct).mockResolvedValue(null);
+    renderAt(CABBAGE.id);
+    await screen.findByRole("heading", { name: "找不到這個商品,可能已經下架了。" });
+    expect(document.title).toBe("找不到商品｜iFoodmap 食材市集");
+    cleanup();
+    document.title = "";
+    renderAt("not-a-uuid");
+    expect(document.title).toBe("找不到商品｜iFoodmap 食材市集");
+    cleanup();
+    vi.mocked(fetchMarketProduct).mockRejectedValue(new Error("network"));
+    renderAt(CABBAGE.id);
+    await screen.findByRole("heading", { level: 1, name: "商品載入失敗" });
+    expect(document.title).toBe("商品載入失敗｜iFoodmap 食材市集");
+  });
+
   it("找不到商品、網址不是 uuid 都顯示找不到", async () => {
     vi.mocked(fetchMarketProduct).mockResolvedValue(null);
     renderAt(CABBAGE.id);

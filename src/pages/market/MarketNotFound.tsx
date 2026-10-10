@@ -2,8 +2,16 @@
 import { Link } from "react-router-dom";
 import { MARKET_FOCUS_RING, useMarketTitle } from "@/components/market/MarketLayout";
 
-export default function MarketNotFound({ message = "找不到這個頁面。" }: { message?: string }) {
-  useMarketTitle("找不到頁面");
+// title:分頁標題。商品頁、店家頁會傳跟自己 useMarketTitle 一樣的字(「找不到商品」「找不到店家」),
+// 父子兩個 effect 誰後跑結果都一樣。
+export default function MarketNotFound({
+  message = "找不到這個頁面。",
+  title = "找不到頁面",
+}: {
+  message?: string;
+  title?: string;
+}) {
+  useMarketTitle(title);
   return (
     <div className="mx-auto max-w-xl px-4 py-16 text-center">
       <h1 className="text-xl font-bold text-slate-900">{message}</h1>

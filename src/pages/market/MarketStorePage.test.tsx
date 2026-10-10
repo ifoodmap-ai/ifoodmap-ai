@@ -67,6 +67,23 @@ describe("MarketStorePage", () => {
     expect(await screen.findByRole("heading", { name: "這家店目前沒有開放零售。" })).toBeInTheDocument();
   });
 
+  it("分頁標題跟畫面一致:找不到 / 沒開放(含網址壞掉)是「找不到店家」、載入失敗是「店家資料載入失敗」", async () => {
+    vi.mocked(fetchMarketStore).mockResolvedValue(null);
+    vi.mocked(fetchStoreProducts).mockResolvedValue([]);
+    renderAt(STORE_A.supplier_id);
+    await screen.findByRole("heading", { name: "這家店目前沒有開放零售。" });
+    expect(document.title).toBe("找不到店家｜iFoodmap 食材市集");
+    cleanup();
+    document.title = "";
+    renderAt("abc");
+    expect(document.title).toBe("找不到店家｜iFoodmap 食材市集");
+    cleanup();
+    vi.mocked(fetchMarketStore).mockRejectedValue(new Error("network"));
+    renderAt(STORE_A.supplier_id);
+    await screen.findByRole("heading", { level: 1, name: "店家資料載入失敗" });
+    expect(document.title).toBe("店家資料載入失敗｜iFoodmap 食材市集");
+  });
+
   it("找不到的店、壞網址", async () => {
     vi.mocked(fetchMarketStore).mockResolvedValue(null);
     vi.mocked(fetchStoreProducts).mockResolvedValue([]);
