@@ -17189,3 +17189,50 @@ Task 3–7 照本計畫做完、規格審查逐位元相同之後,品質審查�
 - 上一節「要跟著改的 Expected」裡 `market_catalog` 的 87 一律改成 **97**(F 節第 116 行、Task 31 第 8291 / 8341 / 8387 行);`market_images_storage` 維持 18,`image_policies` 維持 2。
 - 業主實測(Task 60)或用 Dashboard 手動放照片時:主圖和 `<uuid>_t.<副檔名>` 縮圖都要放,否則核准會被擋(前端上傳本來就兩張都傳)。
 - **追加(commit `bf1681a`)**:上面「還沒解決的落差」採第二種修法 —— 商品照片(`market_products.photos`)的路徑只收小寫 `.jpg`(`.png`、`.webp`、`.jpeg` 改成 22023 `invalid_photo_path`;`.JPG` 跟 120100 的路徑規則一樣本來就不收)。理由:前端把所有照片壓成 JPEG 上傳(主圖 `.jpg`、縮圖 `_t.jpg`),限定之後資料庫推出的縮圖 `<uuid>_t.<同副檔名>` 一定是 `_t.jpg`,跟前端 `thumbPathOf` 顯示的是同一張,前端不用改;店家 logo / 封面(`store` 資料夾,不在 photos 裡)不受影響,仍收 jpg / jpeg / png / webp。`market_catalog` 乾跑 97 → **99** 項(新增「副檔名」與「store 資料夾不受影響」2 項;上面要改成 97 的 Expected 一律改成 99)。
+
+### 2026-10-10:前端修正(Task 8–18 審查)(commit `9e5cf43`–`3ad3e02`,分支 `market`)
+
+Task 8–13(`src/lib/market/`)的獨立審查(Important 1–4、Minor)與 Task 14–18 頁面的自查 / 複審找出的問題,已修正。**以 repo(`market` 分支)的 `src/lib/market/`、`src/components/market/`、`src/pages/market/` 為準,不要再照抄 Task 10–17 對應的程式碼區塊。** 沒有改任何 migration;每一項都是先寫測試、看到失敗才改。
+
+**改了什麼、為什麼**
+
+A. `src/lib/market/`(部署前必修)
+
+1. **`fetchStoreProducts` 的三道過濾沒有被測試釘住**(`.eq("review_status", "approved")`、`.eq("is_listed", true)`、`.filter(isPubliclyVisible)` 各刪一道,測試仍全綠):`catalog.test.ts` 改寫「店家頁」測試,三道各拿掉一道都會紅(突變驗證過);補 `fetchMarketStore` 的測試(查 `market_stores`、select 等於 `STORE_PUBLIC_COLUMNS`、找不到回 null、id 不是 uuid 不查);查詢失敗四支公開查詢都丟 `MarketDbError`(頁面才會顯示載入失敗,不會當成沒資料);新增「公開欄位」:兩組欄位不准 `*`、不含 `reject_reason` / `supply_id` / `disabled_reason` / `contact_email` / `reviewed_by`,四支查詢實際送出的 select 必須就是這兩組。(`9e5cf43`)
+2. **`STORE_PUBLIC_COLUMNS` 拿掉 `suppliers.contact_email`**:那是新訂單通知信箱,市集頁面用不到,不該送到每個訪客的瀏覽器。`MarketSupplierEmbed.contact_email` 改成可選(Task 26 管理後台的 `select("*, suppliers(name, phone, contact_email, is_active)")` 照樣用得到;`testFixtures.ts` 不用改)。Task 10 測試「首頁只抓已核准、上架中的商品」裡的 `suppliers(name, phone, contact_email, is_active)` 改成 `suppliers(name, phone, is_active)`。(`9e5cf43`)
+3. **首頁搜尋遇到前端不認得的分類會白屏**:`matchesQuery` 的 `CATEGORY_LABEL[p.category]` 改成 `?? ""`(資料庫先加了新分類、前端還沒部署時,`normalize(undefined)` 丟例外,一輸入搜尋字整個 app 白屏)。(`dd559ca`)
+4. **只有縣市、分類、溫層跟 migration 比對**:`constants.test.ts` 新增 5 項 —— 從 migration 120000 的 CHECK(`BETWEEN` / `<=`)讀出每個上限跟 `LIMITS` 比(多一個 key、少一個 key 都會紅);照片張數(`cardinality(photos) <= 5`)、縣市數、付款方式、審核狀態(`REVIEW_STATUS_LABEL` 的 key)跟 CHECK 比;120100 的 bucket(`market-images`、公開、2097152 bytes、JPG / PNG / WebP)跟 `MARKET_IMAGE_BUCKET`、`PHOTO_RULES` 比。每一種寫法必須在 migration 裡剛好出現一處(migration 改了格式會紅,要回來更新);另一項把 migration 的每個數字加 1,確認讀到的值跟著變(不是寫死)。前端那一邊用突變驗證過:改 `LIMITS.productName`、`PHOTO_RULES.maxBytes`、`inputTypes`、`PAYMENT_METHODS`、`REVIEW_STATUS_LABEL` 都會紅。(`af1e450`)
+5. Minor(`cd05649`、`2d27fa9`):
+   - `friendlyDbError` 用 `Object.prototype.hasOwnProperty.call(HINT_MESSAGES, hint)`:原本 `"constructor"`、`"toString"` 這類 hint 會拿到 Object 原型上的函式。審查建議 `Object.hasOwn`,但 `tsconfig.app.json` 的 lib 是 ES2020,會多一個 TS2550(tsc 錯誤超過 72),效果相同所以用 `hasOwnProperty.call`。
+   - 斷網:postgrest-js 2.78 在 fetch 失敗時回 `{ message: "TypeError: Failed to fetch", hint: "", code: "" }`(Safari 是 `Load failed`、Firefox 是 `NetworkError…`),直接丟出的 `TypeError` 也一樣 →「連線失敗,請檢查網路後再試一次」。資料庫有回錯誤碼時照原本的規則。
+   - 新 hint `photos_not_uploaded` →「這個商品還有照片沒有上傳完成,無法核准」(資料庫端見上一節「第 2 輪複審」)。中文標點照 repo 慣例用半形逗號。
+   - `compressToJpeg` 的 `img.onload` 包 try/catch,例外轉 reject(`MarketImageError`):事件處理裡的例外不會變成 reject,原本照片超過瀏覽器的 canvas 上限時 Promise 永遠 pending、上傳一直轉。`drawImage` 前設 `imageSmoothingEnabled = true`、`imageSmoothingQuality = "high"`(主圖與 480px 縮圖共用同一支)。檔頭註解改成現況:120100 只有 SELECT / INSERT policy,物件只能寫一次,前端不能覆寫也不能刪。`images.test.ts` 補 3 項(Image / canvas 用假的)。
+
+B. 頁面
+
+6. **商品卡的鍵盤焦點框被整圈裁掉**:外框、圓角、`overflow-hidden` 從 `<article>` 移到 `<Link>` 自己身上(焦點框是畫在連結外面的 box-shadow,連結填滿卡片,外層 `overflow-hidden` 會把它切掉;WCAG 2.4.7)。測試:連結到卡片外框之間不准有 `overflow-hidden` / `overflow-clip`。另用 headless Chrome 實際按 Tab:焦點落在商品卡時 `:focus-visible` 成立、box-shadow 是白色 2px + emerald-700 4px、所有祖先的 overflow 都是 visible(390 與 1280 寬)。(`1023c48`)
+7. **店家頁商品查詢失敗會誤說「這家店還沒有上架的商品」**(還顯示「共 0 項」):改成 `role="alert"` 的錯誤訊息 +「重新載入」(只重抓商品),件數欄空白。(`97af257`)
+8. **載入失敗的畫面**:首頁件數欄空白(不顯示「共 0 項」);新增 `src/pages/market/MarketLoadError.tsx`(一個 h1、「請檢查網路後再試一次」、「重新載入」只重抓資料、「回市集首頁」),商品頁「商品載入失敗」、店家頁「店家資料載入失敗」改用它(原本只有一行紅字,沒有 h1、沒有重試)。重試按鈕的字沿用首頁的「重新載入」。(`89abdf5`)
+9. **換頁與分頁標題**(`3ad3e02`):
+   - `MarketLayout`:pathname 變了、而且是點連結(PUSH / REPLACE)就 `window.scrollTo(0, 0)`;上一頁 / 下一頁(POP,含第一次載入)交給瀏覽器還原;只改查詢字串(首頁篩選是 REPLACE)不捲。
+   - `useMarketTitle` 第一次設定時記下進市集之前的標題(模組層變數),`MarketLayout` 卸載(離開 `/market`)時還原。不在各頁的 effect 裡還原(市集裡換頁時標題會先閃回原本的),也不在 MarketLayout 掛上時記(子元件的 effect 比父元件先跑,那時標題已經被改掉)。
+   - 商品頁 / 店家頁的標題跟畫面一致:找不到(含網址不是 uuid)是「找不到商品」「找不到店家」(店家沒開放零售也是「找不到店家」),載入失敗是「商品載入失敗」「店家資料載入失敗」。`MarketNotFound` 加 `title`(預設「找不到頁面」),頁面傳跟自己一樣的字 —— 原本網址壞掉時父元件的 `useMarketTitle(null)` 比子元件晚跑,標題變回通用的「iFoodmap 食材市集」。
+
+**測試數字跟本計畫不一樣的地方**
+
+- vitest:Task 18 做完是 89 檔 / 1294 項,現在 **89 檔 / 1321 項**(+27 項,沒有新的測試檔)。各檔:`catalog.test.ts` 9 → 16、`constants.test.ts` 5 → 10、`db.test.ts` 6 → 9、`images.test.ts` 11 → 14、`market-components.test.tsx` 9 → 12、`MarketHomePage.test.tsx` 7 → 8、`MarketProductPage.test.tsx` 4 → 6、`MarketStorePage.test.tsx` 3 → 6。
+- 「F. 共用指令與基準數字」的總數(含第一節勘誤的 +38)再**多 27 項**:第 1 階段完成 97 檔 / **1376** 項,第 2、3 階段完成 111 檔 / **1493** 項。tsc 72、eslint 10 不變;兩種 build 都過。
+- 之後的 Task 跑到上面這些測試檔時,Expected 的項數要加上該檔多出來的數目,例如:
+  - Task 44 Step 2(第 12380 行):`catalog.test.ts` 1 failed、9 passed → **1 failed、16 passed**;Step 4(第 12592 行):`Tests  25 passed (25)`(cart 15 + catalog 10)→ **`Tests  32 passed (32)`(cart 15 + catalog 17)**。
+  - Task 46 Step 2(第 13005 行)仍是 3 failed(另外 18 passed);Step 4(第 13311 行):`Tests  16 passed (16)`(10 + 6)→ **`Tests  21 passed (21)`(13 + 8)**。
+
+**給後續 Task 的注意事項**
+
+1. 第 4611 行之後所有「在 `檔案` 找到 → 換成」依序模擬套到現在的 repo,只有下面 4 組對不上,其餘(`App.tsx` 10 組、`constants.ts`、`catalog.ts`、`market-components.test.tsx` 2 組、`MarketProductPage.test.tsx` 5 組、`MarketLayout.tsx` 另外 3 組、`MarketProductPage.tsx` 4 組)都剛好命中一次:
+   - Task 44,`catalog.test.ts` 第 12329 行(import 清單):現在是 `fetchMarketProduct,` / `fetchMarketStore,` / `fetchStoreProducts,`,把 `fetchProductsByIds,` 加在 `fetchMarketStore,` 後面。
+   - Task 44,`catalog.test.ts` 第 12348 行(舊的「店家頁只抓那一家的商品」測試結尾):那個測試已經改寫,找不到。把「購物車:依 id 重新抓…」那個 `it(...)` 放進 `describe("公開查詢")` 的最後(「查詢失敗一律丟 MarketDbError…」之後、`describe("公開欄位")` 之前)。
+   - Task 46,`MarketLayout.tsx` 第 13131 行(import):react-router-dom 那行現在是 `import { Link, Outlet, useLocation, useNavigationType } from "react-router-dom";`,`ShoppingCart`、`useCart` 兩行 import 加在它後面。
+   - Task 46,`MarketLayout.tsx` 第 13151 行(`export default function MarketLayout() {`):函式開頭現在先有 `useLocation()` / `useNavigationType()` 與兩個 effect;`const { count } = useCart();` 放在函式的第一行。
+2. 會在 `MarketLayout` 裡用點連結換頁(PUSH)的測試,jsdom 會印 `Not implemented: window.scrollTo`(不影響結果);要安靜就在那個測試裡 `vi.spyOn(window, "scrollTo").mockImplementation(() => {})`。Task 46 之後 `MarketLayout` 會呼叫 `useCart()`;`useCart` 讀寫 localStorage 都有 try/catch,`market-components.test.tsx` 新增的兩個換頁測試不用另外換 localStorage。
+3. 新頁面要設分頁標題一律用 `useMarketTitle`(離開市集會自動還原);頁面裡畫 `MarketNotFound` 時傳跟頁面自己一樣的 `title`。整頁載入失敗用 `MarketLoadError`(要有 h1 與重試)。
+4. 🔴 **Task 43 在 `LIMITS` 最後加 7 個訂單上限(第 11900 行)之後,`constants.test.ts` 的「LIMITS 每一個上限都等於 migration 120000 的 CHECK」會紅**(多出來的 key 沒有對照)—— 這是故意的:每個上限都要跟資料庫比。Task 43 要同時在 `constants.test.ts` 加 130000 的對照(寫法以當時 repo 裡的 migration 為準):讀 `supabase/migrations/20261009130000_market_orders.sql`,`buyerName` ← `char_length(buyer_name) BETWEEN 1 AND 50`、`addressMin` / `address` ← `char_length(ship_address) BETWEEN 5 AND 200`、`buyerNote` ← `char_length(buyer_note) <= 300`、`orderNote` ← `char_length(note) <= 300`(`market_order_events.note`)、`carrier` ← `char_length(v_carrier) > 50`、`trackingNo` ← `char_length(v_tracking) > 100`;第一項把兩份對照合併後再跟 `{ ...LIMITS }` 比,「數字真的是從 migration 讀出來的」那一項也跑新的對照。項數不變。
