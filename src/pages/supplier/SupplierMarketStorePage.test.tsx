@@ -1,5 +1,5 @@
 // 供應商「店家設定」:讀既有設定、驗證錯誤顯示在欄位旁(aria-invalid)、儲存、被停用時顯示原因。
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -22,7 +22,7 @@ vi.mock("@/lib/market/images", async (importOriginal) => ({
 }));
 
 import { uploadMarketImage } from "@/lib/market/images";
-import { fetchOwnStore, saveStore } from "@/lib/market/store";
+import { fetchOwnStore, MarketStaleError, saveStore } from "@/lib/market/store";
 import { STORE_A } from "@/lib/market/testFixtures";
 import type { MarketStoreRow } from "@/lib/market/types";
 import SupplierMarketStorePage from "./SupplierMarketStorePage";
@@ -332,5 +332,54 @@ describe("SupplierMarketStorePage — 上傳、儲存同時發生", () => {
     await waitFor(() => expect(intro).toBeEnabled());
     expect(intro).toHaveValue("資料庫裡的介紹");
     expect(saveStore).toHaveBeenCalledTimes(1);
+  });
+});
+
+// 兩個分頁、兩位同事同時改:更新時比對讀到的 updated_at(原字串),對不上就不覆寫。
+describe("SupplierMarketStorePage — 不蓋掉別人的修改", () => {
+  const READ_AT = "2026-10-10T07:00:00.123456+00:00";
+  const SAVED_AT = "2026-10-10T07:05:00.654321+00:00";
+
+  it("更新時把讀到的 updated_at 原字串與轉帳資訊交給 saveStore;存完下一次用資料庫回的新 updated_at", async () => {
+    vi.mocked(fetchOwnStore).mockResolvedValue({ store: { ...STORE_A, updated_at: READ_AT }, transferInfo: "台灣銀行 004 帳號 123" });
+    vi.mocked(saveStore).mockResolvedValue({ ...STORE_A, updated_at: SAVED_AT });
+    renderPage();
+    await userEvent.click(await screen.findByRole("button", { name: "儲存店家設定" }));
+    await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith("已儲存店家設定"));
+    expect(vi.mocked(saveStore).mock.calls[0][2]).toEqual({ updatedAt: READ_AT, transferInfo: "台灣銀行 004 帳號 123" });
+
+    await userEvent.click(screen.getByRole("button", { name: "儲存店家設定" }));
+    await waitFor(() => expect(saveStore).toHaveBeenCalledTimes(2));
+    expect(vi.mocked(saveStore).mock.calls[1][2]).toEqual({ updatedAt: SAVED_AT, transferInfo: "台灣銀行 004 帳號 123" });
+  });
+
+  it("還沒建店:saveStore 拿到 updatedAt null(第一次建立)", async () => {
+    renderPage();
+    await userEvent.click(await screen.findByLabelText("臺北市"));
+    await userEvent.click(screen.getByRole("button", { name: "儲存店家設定" }));
+    await waitFor(() => expect(saveStore).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(saveStore).mock.calls[0][2]).toEqual({ updatedAt: null, transferInfo: null });
+  });
+
+  it("資料已被其他人更新:顯示訊息與「重新載入」,表單保留剛改的(不覆寫);重新載入才換成資料庫的值", async () => {
+    vi.mocked(fetchOwnStore)
+      .mockResolvedValueOnce({ store: { ...STORE_A, updated_at: READ_AT }, transferInfo: "台灣銀行 004 帳號 123" })
+      .mockResolvedValueOnce({ store: { ...STORE_A, intro: "同事改過的介紹", updated_at: SAVED_AT }, transferInfo: "台灣銀行 004 帳號 123" });
+    vi.mocked(saveStore).mockRejectedValue(new MarketStaleError());
+    renderPage();
+    const intro = await screen.findByLabelText("店家介紹");
+    await userEvent.clear(intro);
+    await userEvent.type(intro, "我改的介紹");
+    await userEvent.click(screen.getByRole("button", { name: "儲存店家設定" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("資料已被其他人更新,請重新載入後再改");
+    expect(intro).toHaveValue("我改的介紹");
+    expect(toastSuccess).not.toHaveBeenCalled();
+
+    await userEvent.click(within(alert).getByRole("button", { name: "重新載入" }));
+    await waitFor(() => expect(screen.getByLabelText("店家介紹")).toHaveValue("同事改過的介紹"));
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(fetchOwnStore).toHaveBeenCalledTimes(2);
   });
 });

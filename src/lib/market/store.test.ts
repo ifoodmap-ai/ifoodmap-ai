@@ -26,8 +26,10 @@ vi.mock("@/integrations/supabase/client", () => ({
         }
         const q = queue[`${table}.${call.op}`];
         if (q && q.length) return Promise.resolve(q.shift() as Res);
-        // 預設:查詢查無資料;寫入成功並回傳一列
-        return Promise.resolve(call.op === "select" ? { data: null, error: null } : { data: { supplier_id: "sup-1" }, error: null });
+        // 預設:查詢查無資料;寫入成功並回傳一列(update 加 .select() 回的是陣列)
+        if (call.op === "select") return Promise.resolve({ data: null, error: null });
+        if (call.op === "update") return Promise.resolve({ data: [{ supplier_id: "sup-1", updated_at: "2026-10-10T08:00:00.000001+00:00" }], error: null });
+        return Promise.resolve({ data: { supplier_id: "sup-1" }, error: null });
       };
       const b = {
         select: (cols?: string) => {
@@ -65,11 +67,13 @@ import { STORE_A } from "./testFixtures";
 import {
   emptyStoreForm,
   fetchOwnStore,
+  MarketStaleError,
   saveStore,
   STORE_OWNER_COLUMNS,
   storeFormFromRow,
   storePayload,
   validateStoreForm,
+  type StoreBase,
   type StoreForm,
 } from "./store";
 
@@ -195,24 +199,64 @@ describe("fetchOwnStore", () => {
   });
 });
 
+/** PostgREST 回的 updated_at:微秒精度。轉成 Date 再轉回字串會掉到毫秒(.123Z),比對就永遠對不上 */
+const READ_AT = "2026-10-10T07:00:00.123456+00:00";
+const NEW_STORE: StoreBase = { updatedAt: null, transferInfo: null };
+const EXISTING: StoreBase = { updatedAt: READ_AT, transferInfo: null };
+
 describe("saveStore", () => {
   it("轉帳資訊存失敗 → 丟錯,不會接著存店家", async () => {
     queue["market_store_transfer.upsert"] = [{ data: null, error: { message: "value too long", code: "23514" } }];
-    await expect(saveStore("sup-1", valid({ acceptTransfer: true, transferInfo: "台灣銀行 004 帳號 123" }))).rejects.toBeInstanceOf(
-      MarketDbError,
-    );
+    await expect(
+      saveStore("sup-1", valid({ acceptTransfer: true, transferInfo: "台灣銀行 004 帳號 123" }), NEW_STORE),
+    ).rejects.toBeInstanceOf(MarketDbError);
     expect(calls.map((c) => c.table)).toEqual(["market_store_transfer"]);
   });
 
   it("接受轉帳:先存轉帳資訊、再存店家", async () => {
-    await saveStore("sup-1", valid({ acceptTransfer: true, transferInfo: " 台灣銀行 004 帳號 123 " }));
+    await saveStore("sup-1", valid({ acceptTransfer: true, transferInfo: " 台灣銀行 004 帳號 123 " }), NEW_STORE);
     expect(calls.map((c) => c.table)).toEqual(["market_store_transfer", "market_stores"]);
     expect(calls[0].payload).toEqual({ supplier_id: "sup-1", transfer_info: "台灣銀行 004 帳號 123" });
-    expect(calls[1].opts).toEqual({ onConflict: "supplier_id" });
   });
 
   it("只收貨到付款:不碰轉帳資訊", async () => {
-    await saveStore("sup-1", valid());
+    await saveStore("sup-1", valid(), NEW_STORE);
     expect(calls.map((c) => c.table)).toEqual(["market_stores"]);
+  });
+});
+
+// 兩個分頁、兩位同事同時改:後存的人不能把對方的修改整份蓋掉。
+describe("saveStore — 不蓋掉別人的修改(比對讀到的 updated_at)", () => {
+  it("第一次建立店家:insert(沒有 updated_at 可比對),回傳資料庫的那一列", async () => {
+    queue["market_stores.insert"] = [{ data: { ...STORE_A, updated_at: READ_AT }, error: null }];
+    await expect(saveStore("sup-1", valid(), NEW_STORE)).resolves.toEqual({ ...STORE_A, updated_at: READ_AT });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ table: "market_stores", op: "insert", returning: STORE_OWNER_COLUMNS, filters: [] });
+    expect(calls[0].payload).toEqual(storePayload("sup-1", valid()));
+  });
+
+  it("第一次建立時別的分頁已經先建好(23505)→ MarketStaleError,不覆寫", async () => {
+    queue["market_stores.insert"] = [{ data: null, error: { message: "duplicate key value violates unique constraint", code: "23505" } }];
+    await expect(saveStore("sup-1", valid(), NEW_STORE)).rejects.toBeInstanceOf(MarketStaleError);
+  });
+
+  it("更新既有店家:update + 比對讀到的 updated_at 原字串(微秒精度,不轉成 Date)", async () => {
+    const saved = { ...STORE_A, updated_at: "2026-10-10T07:05:00.654321+00:00" };
+    queue["market_stores.update"] = [{ data: [saved], error: null }];
+    await expect(saveStore("sup-1", valid(), EXISTING)).resolves.toEqual(saved);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ table: "market_stores", op: "update", returning: STORE_OWNER_COLUMNS });
+    expect(calls[0].filters).toEqual([
+      ["supplier_id", "sup-1"],
+      ["updated_at", "2026-10-10T07:00:00.123456+00:00"],
+    ]);
+    expect(calls[0].payload).toEqual(storePayload("sup-1", valid()));
+  });
+
+  it("updated_at 對不上(沒有更新到任何一列)→ MarketStaleError「資料已被其他人更新,請重新載入後再改」", async () => {
+    queue["market_stores.update"] = [{ data: [], error: null }];
+    const err = await saveStore("sup-1", valid(), EXISTING).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(MarketStaleError);
+    expect((err as Error).message).toBe("資料已被其他人更新,請重新載入後再改");
   });
 });

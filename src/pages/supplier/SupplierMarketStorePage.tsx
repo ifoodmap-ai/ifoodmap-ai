@@ -4,6 +4,7 @@
 // 「零售啟用」只有管理員能改:被停用時這頁最上面顯示原因。
 // 讀取失敗 ≠ 還沒建店:讀取失敗只顯示錯誤與「重新載入」、不顯示表單 —— 顯示空白表單的話,
 // 供應商一儲存,upsert 就把原本的介紹、退換貨說明、logo、封面蓋掉。只有讀取成功、而且查無店家,才是新店家表單。
+// 兩個分頁 / 兩位同事同時改:儲存時把讀到的 updated_at 交給 saveStore 比對,對不上就顯示「資料已被其他人更新」、不覆寫。
 import { useEffect, useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
 import { Loader2 } from "lucide-react";
@@ -15,7 +16,9 @@ import { friendlyDbError } from "@/lib/market/db";
 import {
   emptyStoreForm,
   fetchOwnStore,
+  MarketStaleError,
   saveStore,
+  STALE_STORE_MESSAGE,
   storeFormFromRow,
   validateStoreForm,
   type StoreForm,
@@ -50,6 +53,8 @@ export default function SupplierMarketStorePage() {
   /** logo / 封面上傳中:不能儲存(存進去的會是舊圖,或存完才冒出資料庫沒有的新圖) */
   const [uploading, setUploading] = useState({ logo: false, cover: false });
   const anyUploading = uploading.logo || uploading.cover;
+  /** 儲存時發現資料已被其他人更新:沒有覆寫,要重新載入才能再改 */
+  const [stale, setStale] = useState(false);
 
   useEffect(() => {
     if (!supplierId) return;
@@ -61,6 +66,8 @@ export default function SupplierMarketStorePage() {
         setRow(store);
         setSavedTransfer(transferInfo);
         setForm(store ? storeFormFromRow(store, transferInfo) : emptyStoreForm());
+        setErrors({});
+        setStale(false);
         setLoadError(null);
       } catch (e) {
         if (!cancelled) setLoadError(friendlyDbError(e));
@@ -95,7 +102,8 @@ export default function SupplierMarketStorePage() {
     }
     setSaving(true);
     try {
-      const saved = await saveStore(supplierId, form);
+      // updatedAt 用讀到(或上次存完資料庫回)的原字串,saveStore 拿它比對,對不上就不覆寫
+      const saved = await saveStore(supplierId, form, { updatedAt: row?.updated_at ?? null, transferInfo: savedTransfer });
       // 畫面換成資料庫整理過的值(market_stores_guard 把縣市照官方順序排好、介紹 / 退換貨說明去掉頭尾空白),
       // 下一次存的才不會跟資料庫不一致。轉帳資訊:有勾就是剛存的值(saveStore 存的是 trim 過的,資料庫的 btrim
       // 不會再改);沒勾的話 saveStore 不會動它,換回資料庫裡原本的值。
@@ -103,8 +111,11 @@ export default function SupplierMarketStorePage() {
       setRow(saved);
       setSavedTransfer(transfer);
       setForm(storeFormFromRow(saved, transfer));
+      setStale(false);
       toast.success("已儲存店家設定");
     } catch (err) {
+      // 資料已被其他人更新:什麼都沒寫,表單保留剛改的內容,顯示重新載入(重新載入才換成資料庫的值)
+      setStale(err instanceof MarketStaleError);
       toast.error("儲存失敗", { description: friendlyDbError(err) });
     } finally {
       setSaving(false);
@@ -328,6 +339,15 @@ export default function SupplierMarketStorePage() {
           </div>
         </section>
       </fieldset>
+
+      {stale ? (
+        <div role="alert" className="flex flex-wrap items-center gap-3 rounded-lg border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900">
+          <p className="min-w-0 flex-1">{STALE_STORE_MESSAGE}。這次沒有儲存,你剛改的內容還在畫面上;重新載入會換成最新的設定。</p>
+          <Button type="button" variant="outline" onClick={reload} className="min-h-11">
+            重新載入
+          </Button>
+        </div>
+      ) : null}
 
       <div className="flex flex-wrap items-center gap-3">
         <Button

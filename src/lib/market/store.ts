@@ -1,10 +1,33 @@
 // 供應商「零售市集 › 店家設定」的表單邏輯:資料列 ↔ 表單、驗證(跟資料庫 CHECK 同樣的上限)、儲存。
 //
-// 儲存順序:勾了銀行轉帳 → 先 upsert market_store_transfer,再 upsert market_stores
+// 儲存順序:勾了銀行轉帳 → 先 upsert market_store_transfer,再寫 market_stores
 // (資料庫的 market_stores_guard 會檢查「接受轉帳一定要已經有轉帳資訊」,所以轉帳資訊要先存)。
+//
+// 不蓋掉別人的修改:更新既有店家時只更新 updated_at 還是「讀到的那個值」的列(兩個分頁、兩位同事同時改,
+// 後存的人更新不到任何一列 → MarketStaleError,什麼都不覆寫)。updated_at 一定用讀到的原字串比對:
+// PostgREST 回的是微秒精度,轉成 Date 再轉回字串會掉到毫秒,就永遠對不上。第一次建立店家沒有值可比對,用 insert
+// (別的分頁先建好了 → 23505 → 一樣是 MarketStaleError,不會用 upsert 把它蓋掉)。
 import { isTwCity, LIMITS, type PaymentMethod, type TwCity } from "./constants";
-import { marketDb, unwrap } from "./db";
+import { MarketDbError, marketDb, unwrap } from "./db";
 import type { MarketStoreRow } from "./types";
+
+export const STALE_STORE_MESSAGE = "資料已被其他人更新,請重新載入後再改";
+
+/** 資料已被其他人更新(另一個分頁、另一位同事):這次沒有覆寫任何東西 */
+export class MarketStaleError extends Error {
+  constructor() {
+    super(STALE_STORE_MESSAGE);
+    this.name = "MarketStaleError";
+  }
+}
+
+/** 頁面讀到的資料庫狀態,儲存時拿來比對 */
+export interface StoreBase {
+  /** 讀到的 market_stores.updated_at 原字串;還沒建店是 null */
+  updatedAt: string | null;
+  /** 資料庫裡目前的轉帳資訊;沒有是 null */
+  transferInfo: string | null;
+}
 
 export interface StoreForm {
   intro: string;
@@ -114,7 +137,31 @@ export const fetchOwnStore = async (supplierId: string): Promise<{ store: Market
   return { store, transferInfo: transfer?.transfer_info ?? null };
 };
 
-export const saveStore = async (supplierId: string, f: StoreForm): Promise<MarketStoreRow> => {
+const isUniqueViolation = (e: unknown) => e instanceof MarketDbError && e.code === "23505";
+
+/** 寫店家:第一次建立用 insert;更新時比對讀到的 updated_at,沒有更新到任何一列就是資料已被其他人更新 */
+const writeStore = async (supplierId: string, f: StoreForm, updatedAt: string | null): Promise<MarketStoreRow> => {
+  const payload = storePayload(supplierId, f);
+  if (updatedAt === null) {
+    try {
+      return unwrap(await marketDb<MarketStoreRow>("market_stores").insert(payload).select(STORE_OWNER_COLUMNS).single());
+    } catch (e) {
+      if (isUniqueViolation(e)) throw new MarketStaleError();
+      throw e;
+    }
+  }
+  const rows = unwrap(
+    await marketDb<MarketStoreRow[]>("market_stores")
+      .update(payload)
+      .eq("supplier_id", supplierId)
+      .eq("updated_at", updatedAt)
+      .select(STORE_OWNER_COLUMNS),
+  );
+  if (!Array.isArray(rows) || rows.length === 0) throw new MarketStaleError();
+  return rows[0];
+};
+
+export const saveStore = async (supplierId: string, f: StoreForm, base: StoreBase): Promise<MarketStoreRow> => {
   if (f.acceptTransfer) {
     unwrap(
       await marketDb("market_store_transfer").upsert(
@@ -123,10 +170,5 @@ export const saveStore = async (supplierId: string, f: StoreForm): Promise<Marke
       ),
     );
   }
-  return unwrap(
-    await marketDb<MarketStoreRow>("market_stores")
-      .upsert(storePayload(supplierId, f), { onConflict: "supplier_id" })
-      .select(STORE_OWNER_COLUMNS)
-      .single(),
-  );
+  return writeStore(supplierId, f, base.updatedAt);
 };
