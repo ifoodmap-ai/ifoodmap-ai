@@ -2,11 +2,11 @@
 // 欄位定義的唯一來源是 supabase/migrations/20261009120000_market_catalog.sql。
 import type { MarketCategoryKey, PaymentMethod, ReviewStatus, Temperature, TwCity } from "./constants";
 
-/** PostgREST 嵌入的 suppliers(name, phone, contact_email, is_active) —— suppliers 本來就是公開表 */
+/** PostgREST 嵌入的 suppliers。市集公開查詢只抓 name, phone, is_active;contact_email 只有管理後台的查詢會帶 */
 export interface MarketSupplierEmbed {
   name: string;
   phone: string | null;
-  contact_email: string | null;
+  contact_email?: string | null;
   is_active?: boolean | null;
 }
 

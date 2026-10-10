@@ -14,9 +14,11 @@ import {
 import { isUuid, marketDb, unwrap } from "./db";
 import type { MarketProductRow, MarketStoreRow } from "./types";
 
+// 公開欄位一律明列(不用 *):不抓 disabled_reason、reject_reason、supply_id、reviewed_by;
+// 供應商只抓 name / phone / is_active —— contact_email 是新訂單通知信箱,市集頁面用不到,不送到瀏覽器(catalog.test.ts 釘住)。
 export const STORE_PUBLIC_COLUMNS =
   "supplier_id, is_enabled, logo_path, cover_path, intro, return_policy, delivery_cities, shipping_fee, " +
-  "free_shipping_threshold, min_order_amount, ship_days, payment_methods, suppliers(name, phone, contact_email, is_active)";
+  "free_shipping_threshold, min_order_amount, ship_days, payment_methods, suppliers(name, phone, is_active)";
 
 export const PRODUCT_PUBLIC_COLUMNS =
   "id, supplier_id, name, category, spec, price, stock, temperature, origin, storage_method, shelf_life, " +

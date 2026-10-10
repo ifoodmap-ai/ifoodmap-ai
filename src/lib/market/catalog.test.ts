@@ -1,9 +1,11 @@
 // catalog.ts:公開查詢帶對篩選條件、再篩一次可見性;首頁篩選、精選店家。supabase 換成記錄查詢的假物件。
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { calls, rows } = vi.hoisted(() => ({
+const { calls, rows, failWith } = vi.hoisted(() => ({
   calls: [] as Array<{ table: string; select: string; filters: Array<[string, string, unknown]> }>,
   rows: { value: [] as unknown[] },
+  /** 設了就讓查詢回這個錯誤(模擬 PostgREST 擋下來 / 斷線) */
+  failWith: { value: null as null | { message: string; code: string; hint: string } },
 }));
 
 vi.mock("@/integrations/supabase/client", () => ({
@@ -11,7 +13,8 @@ vi.mock("@/integrations/supabase/client", () => ({
     from: (table: string) => {
       const call = { table, select: "", filters: [] as Array<[string, string, unknown]> };
       calls.push(call);
-      const result = () => Promise.resolve({ data: rows.value, error: null });
+      const result = () =>
+        Promise.resolve(failWith.value ? { data: null, error: failWith.value } : { data: rows.value, error: null });
       const builder = {
         select: (c: string) => {
           call.select = c;
@@ -29,7 +32,8 @@ vi.mock("@/integrations/supabase/client", () => ({
           call.filters.push(["limit", "limit", n]);
           return builder;
         },
-        maybeSingle: () => Promise.resolve({ data: rows.value[0] ?? null, error: null }),
+        maybeSingle: () =>
+          Promise.resolve(failWith.value ? { data: null, error: failWith.value } : { data: rows.value[0] ?? null, error: null }),
         then: (ok: (v: unknown) => unknown, bad?: (e: unknown) => unknown) => result().then(ok, bad),
       };
       return builder;
@@ -41,17 +45,22 @@ import {
   featuredStores,
   fetchListedProducts,
   fetchMarketProduct,
+  fetchMarketStore,
   fetchStoreProducts,
   filterProducts,
   filtersFromParams,
   isPubliclyVisible,
   paramsFromFilters,
+  PRODUCT_PUBLIC_COLUMNS,
+  STORE_PUBLIC_COLUMNS,
 } from "./catalog";
-import { BEEF, CABBAGE, SALMON, STORE_A, STORE_B, SUPPLIER_A, makeProduct } from "./testFixtures";
+import { MarketDbError } from "./db";
+import { BEEF, CABBAGE, SALMON, STORE_A, STORE_B, SUPPLIER_A, SUPPLIER_B, makeProduct } from "./testFixtures";
 
 beforeEach(() => {
   calls.length = 0;
   rows.value = [];
+  failWith.value = null;
 });
 
 describe("公開查詢", () => {
@@ -60,7 +69,7 @@ describe("公開查詢", () => {
     const list = await fetchListedProducts();
     expect(calls[0].table).toBe("market_products");
     expect(calls[0].select).toContain("market_stores(");
-    expect(calls[0].select).toContain("suppliers(name, phone, contact_email, is_active)");
+    expect(calls[0].select).toContain("suppliers(name, phone, is_active)");
     expect(calls[0].filters).toEqual(
       expect.arrayContaining([
         ["eq", "review_status", "approved"],
@@ -77,10 +86,73 @@ describe("公開查詢", () => {
     expect(calls).toHaveLength(0);
   });
 
-  it("店家頁只抓那一家的商品", async () => {
+  it("店家頁:只抓那一家、已核准、上架中的商品,回來再篩一次可見性(三道少一道都會紅)", async () => {
+    rows.value = [
+      CABBAGE,
+      makeProduct({ market_stores: { ...STORE_A, is_enabled: false } }),
+      makeProduct({ review_status: "pending" }),
+      makeProduct({ is_listed: false }),
+    ];
+    const list = await fetchStoreProducts(SUPPLIER_A);
+    expect(calls[0].table).toBe("market_products");
+    expect(calls[0].filters).toEqual(
+      expect.arrayContaining([
+        ["eq", "supplier_id", SUPPLIER_A],
+        ["eq", "review_status", "approved"],
+        ["eq", "is_listed", true],
+      ]),
+    );
+    // 登入中的店家 / 管理員看得到自家停用、待審、下架的商品(RLS 放行),市集上不能出現
+    expect(list.map((p) => p.id)).toEqual([CABBAGE.id]);
+  });
+
+  it("店家頁:供應商 id 不是 uuid 就不查", async () => {
+    await expect(fetchStoreProducts("abc")).resolves.toEqual([]);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("店家:用 supplier_id 查 market_stores 的公開欄位,回傳那一列", async () => {
+    rows.value = [STORE_A];
+    await expect(fetchMarketStore(SUPPLIER_A)).resolves.toEqual(STORE_A);
+    expect(calls[0].table).toBe("market_stores");
+    expect(calls[0].select).toBe(STORE_PUBLIC_COLUMNS);
+    expect(calls[0].filters).toEqual([["eq", "supplier_id", SUPPLIER_A]]);
+  });
+
+  it("店家:沒有這家(或 RLS 看不到)回 null;id 不是 uuid 就不查", async () => {
+    await expect(fetchMarketStore(SUPPLIER_B)).resolves.toBeNull();
+    calls.length = 0;
+    await expect(fetchMarketStore("abc")).resolves.toBeNull();
+    expect(calls).toHaveLength(0);
+  });
+
+  it("查詢失敗一律丟 MarketDbError(頁面才會顯示載入失敗,不會當成沒資料)", async () => {
+    failWith.value = { message: "Could not find the table", code: "PGRST205", hint: "" };
+    await expect(fetchMarketStore(SUPPLIER_A)).rejects.toBeInstanceOf(MarketDbError);
+    await expect(fetchStoreProducts(SUPPLIER_A)).rejects.toBeInstanceOf(MarketDbError);
+    await expect(fetchListedProducts()).rejects.toBeInstanceOf(MarketDbError);
+    await expect(fetchMarketProduct(CABBAGE.id)).rejects.toBeInstanceOf(MarketDbError);
+  });
+});
+
+describe("公開欄位", () => {
+  const HIDDEN = ["reject_reason", "supply_id", "disabled_reason", "contact_email", "reviewed_by"];
+
+  it("明列欄位、不用 *;不含審核原因、批發對應、停用原因、店家聯絡信箱", () => {
+    for (const columns of [STORE_PUBLIC_COLUMNS, PRODUCT_PUBLIC_COLUMNS]) {
+      expect(columns).not.toContain("*");
+      for (const name of HIDDEN) expect(columns).not.toMatch(new RegExp(`\\b${name}\\b`));
+    }
+  });
+
+  it("四支公開查詢實際送出的 select 都是這兩組欄位", async () => {
     rows.value = [CABBAGE];
+    await fetchListedProducts();
     await fetchStoreProducts(SUPPLIER_A);
-    expect(calls[0].filters).toEqual(expect.arrayContaining([["eq", "supplier_id", SUPPLIER_A]]));
+    await fetchMarketProduct(CABBAGE.id);
+    await fetchMarketStore(SUPPLIER_A);
+    const withStore = `${PRODUCT_PUBLIC_COLUMNS}, market_stores(${STORE_PUBLIC_COLUMNS})`;
+    expect(calls.map((c) => c.select)).toEqual([withStore, withStore, withStore, STORE_PUBLIC_COLUMNS]);
   });
 });
 
