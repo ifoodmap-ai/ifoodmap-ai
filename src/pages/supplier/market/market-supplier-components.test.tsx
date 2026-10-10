@@ -239,3 +239,39 @@ describe("MarketProductDialog — 上傳中、出錯的焦點、版面", () => {
     expect(screen.getByLabelText("庫存")).toHaveClass("disabled:bg-slate-100");
   });
 });
+
+describe("SupplierMarketProductsPanel — 讀取失敗與版面", () => {
+  it("讀取失敗:只顯示原因與「重新載入」,不顯示清單與新增鈕(不能拿舊的或空的資料編輯)", async () => {
+    const onRetry = vi.fn();
+    render(
+      <MemoryRouter>
+        <SupplierMarketProductsPanel
+          products={[CABBAGE]}
+          hasStore
+          loading={false}
+          error="連線失敗,請檢查網路後再試一次"
+          onCreate={vi.fn()}
+          onEdit={vi.fn()}
+          onRetry={onRetry}
+        />
+      </MemoryRouter>,
+    );
+    expect(screen.getByRole("alert")).toHaveTextContent("零售商品讀取失敗:連線失敗,請檢查網路後再試一次");
+    expect(screen.queryByRole("button", { name: "新增零售商品" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "編輯 有機高麗菜" })).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "重新載入" }));
+    expect(onRetry).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("button", { name: "重新載入" })).toHaveClass("min-h-11");
+  });
+
+  it("狀態徽章跟品名放在同一個資訊欄(窄螢幕不跟編輯鈕搶寬度、不會把品名擠成「動物…」);新增鈕 44px", () => {
+    const rejected = { ...CABBAGE, review_status: "rejected" as const, reject_reason: "照片太暗" };
+    render(
+      <MemoryRouter>
+        <SupplierMarketProductsPanel products={[rejected]} hasStore loading={false} error={null} onCreate={vi.fn()} onEdit={vi.fn()} />
+      </MemoryRouter>,
+    );
+    expect(screen.getByText("有機高麗菜").parentElement).toContainElement(screen.getByText("退回"));
+    expect(screen.getByRole("button", { name: "新增零售商品" })).toHaveClass("min-h-11");
+  });
+});

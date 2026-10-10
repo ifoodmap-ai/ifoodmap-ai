@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { Loader2, Plus, Pencil, Trash2, PackageX } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -77,6 +78,8 @@ export default function SupplierCatalogPage() {
   const [saving, setSaving] = useState(false);
   const [deleteId, setDeleteId] = useState<string | null>(null);
   // 零售市集(B2C):自家零售商品;編輯視窗每次打開給新的 key(新商品的 id 在打開時決定)
+  // 讀取中、讀取失敗時「零售」欄不給任何按鈕:還不知道有沒有店家、有沒有對應的零售商品,
+  // 用空的清單會重複開放零售,用舊的資料會在儲存時蓋掉剛存的修改(上方顯示原因與「重新載入」)。
   const market = useSupplierMarketProducts(supplierId);
   const [retail, setRetail] = useState<{ key: number; product: MarketProductRow | null; seed: SupplySeed | null } | null>(null);
   const retailBySupply = useMemo(
@@ -198,6 +201,23 @@ export default function SupplierCatalogPage() {
         </Button>
       </div>
 
+      {supplierId && supplies.length > 0 && market.error ? (
+        <div role="alert" className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-800">
+          <p>零售商品資料讀取失敗:{market.error}。讀到之前「零售」欄先不能操作。</p>
+          <Button type="button" variant="outline" className="min-h-11 bg-white" onClick={market.retry}>
+            重新載入
+          </Button>
+        </div>
+      ) : supplierId && supplies.length > 0 && !market.loading && !market.hasStore ? (
+        <p role="status" className="mb-4 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
+          要把商品開放給一般消費者購買,請先完成{' '}
+          <Link to="/supplier/market/store" className="font-semibold underline underline-offset-2">
+            零售市集 › 店家設定
+          </Link>
+          (配送縣市、運費、付款方式)。
+        </p>
+      ) : null}
+
       {loading ? (
         <div className="flex justify-center py-20"><Loader2 className="animate-spin text-emerald-500" size={28} /></div>
       ) : !supplierId ? (
@@ -246,8 +266,17 @@ export default function SupplierCatalogPage() {
                     <Switch checked={s.is_available} onCheckedChange={() => toggleAvailable(s)} />
                   </td>
                   <td className="px-5 py-3 text-center whitespace-nowrap">
-                    {retailItem ? (
-                      <button type="button" className="text-xs text-emerald-800 underline underline-offset-2" onClick={() => openRetail(retailItem)}>
+                    {market.loading ? null : market.error ? (
+                      <span className="text-xs text-gray-400">
+                        <span aria-hidden="true">—</span>
+                        <span className="sr-only">零售資料讀取失敗</span>
+                      </span>
+                    ) : retailItem ? (
+                      <button
+                        type="button"
+                        className="inline-flex min-h-8 items-center px-1 text-xs text-emerald-800 underline underline-offset-2"
+                        onClick={() => openRetail(retailItem)}
+                      >
                         {statusText(retailItem)}
                       </button>
                     ) : (
@@ -289,6 +318,7 @@ export default function SupplierCatalogPage() {
               error={market.error}
               onCreate={() => openRetail(null)}
               onEdit={(p) => openRetail(p)}
+              onRetry={market.retry}
             />
           ) : (
             <div className="text-center py-20 text-gray-400">此帳號尚未綁定供應商</div>
@@ -306,7 +336,11 @@ export default function SupplierCatalogPage() {
           supplierId={supplierId}
           product={retail.product}
           fromSupply={retail.seed}
-          onSaved={() => void market.reload()}
+          onSaved={(row) => {
+            // 先換上資料庫回傳的那一筆(重抓還沒回來或失敗,也不會留著舊內容讓人再編輯),再背景重抓
+            market.applySaved(row);
+            void market.reload();
+          }}
         />
       ) : null}
 

@@ -1,5 +1,6 @@
 // 商品目錄頁的「零售商品」分頁內容:列出自家零售商品(狀態、退回原因、上架開關)、新增、編輯。
 // 編輯視窗由父層(SupplierCatalogPage)畫,這裡只發出 onCreate / onEdit —— 「開放零售」也用同一個視窗。
+// 讀取失敗只顯示原因與「重新載入」(onRetry),不顯示清單與新增鈕:不能拿舊的或空的資料編輯。
 import { Link } from "react-router-dom";
 import { Loader2, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -26,9 +27,11 @@ interface PanelProps {
   error: string | null;
   onCreate: () => void;
   onEdit: (product: MarketProductRow) => void;
+  /** 讀取失敗後按「重新載入」 */
+  onRetry?: () => void;
 }
 
-export default function SupplierMarketProductsPanel({ products, hasStore, loading, error, onCreate, onEdit }: PanelProps) {
+export default function SupplierMarketProductsPanel({ products, hasStore, loading, error, onCreate, onEdit, onRetry }: PanelProps) {
   if (loading) {
     return (
       <div className="flex justify-center py-16">
@@ -36,13 +39,26 @@ export default function SupplierMarketProductsPanel({ products, hasStore, loadin
       </div>
     );
   }
-  if (error) return <p role="alert" className="py-8 text-center text-red-700">{error}</p>;
+  if (error) {
+    return (
+      <div className="space-y-3 py-8 text-center">
+        <p role="alert" className="text-red-700">
+          零售商品讀取失敗:{error}
+        </p>
+        {onRetry ? (
+          <Button type="button" variant="outline" className="min-h-11" onClick={onRetry}>
+            重新載入
+          </Button>
+        ) : null}
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <p className="text-sm text-gray-500">賣給一般消費者的商品(iFoodmap 食材市集)。第一次上架要經過管理員審核。</p>
-        <Button onClick={onCreate} disabled={!hasStore} className="bg-emerald-700 text-white hover:bg-emerald-800">
+        <Button onClick={onCreate} disabled={!hasStore} className="min-h-11 bg-emerald-700 text-white hover:bg-emerald-800">
           <Plus size={16} className="mr-1.5" aria-hidden="true" />
           新增零售商品
         </Button>
@@ -61,17 +77,20 @@ export default function SupplierMarketProductsPanel({ products, hasStore, loadin
       ) : (
         <ul className="divide-y divide-gray-100 overflow-hidden rounded-xl border border-gray-200 bg-white">
           {products.map((p) => (
-            <li key={p.id} className="flex flex-wrap items-center gap-3 p-3">
+            <li key={p.id} className="flex items-center gap-3 p-3">
               <MarketImage path={p.photos[0]} category={p.category} alt="" width={56} height={56} className="h-14 w-14 shrink-0 rounded-md" />
+              {/* 狀態徽章放在品名旁邊(放不下就換到下一行),不跟編輯鈕搶寬度:390 寬時品名才不會被擠成「動物…」 */}
               <div className="min-w-0 flex-1">
-                <p className="truncate font-medium text-gray-800">{p.name}</p>
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                  <p className="min-w-0 max-w-full truncate font-medium text-gray-800">{p.name}</p>
+                  <span className={`shrink-0 rounded-full border px-2 py-0.5 text-xs ${STATUS_CLASS[p.review_status]}`}>{statusText(p)}</span>
+                </div>
                 <p className="text-xs text-gray-500">
                   {p.spec}・{formatTwd(p.price)}・{TEMPERATURES[p.temperature]}・庫存 {p.stock === null ? "不限" : p.stock}
                 </p>
                 {p.review_status === "rejected" && p.reject_reason ? <p className="text-xs text-red-700">退回原因:{p.reject_reason}</p> : null}
               </div>
-              <span className={`rounded-full border px-2 py-0.5 text-xs ${STATUS_CLASS[p.review_status]}`}>{statusText(p)}</span>
-              <Button variant="outline" size="sm" className="min-h-11" onClick={() => onEdit(p)} aria-label={`編輯 ${p.name}`}>
+              <Button variant="outline" size="sm" className="min-h-11 shrink-0" onClick={() => onEdit(p)} aria-label={`編輯 ${p.name}`}>
                 編輯
               </Button>
             </li>

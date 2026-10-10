@@ -1,7 +1,7 @@
 // 商品目錄頁多了「零售商品」分頁與每列的「開放零售」(設計:擴充 SupplierCatalogPage)。
 // 驗證:①兩個分頁 ②批發商品列:沒有對應零售商品的出現「開放零售」,有的顯示零售狀態 ③開放零售打開視窗並帶入品名
 // ④零售分頁列出自家零售商品 ⑤還沒建零售店家時「開放零售」停用。supabase 換成記憶體假資料。
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -11,6 +11,10 @@ const { db } = vi.hoisted(() => ({
     supplies: [] as Record<string, unknown>[],
     marketProducts: [] as Record<string, unknown>[],
     hasStore: true,
+    // 審查後補的:零售商品讀取失敗、讀取卡住(放行前不回應)、存檔時資料庫回傳的那一筆
+    marketFails: false,
+    marketHold: null as Promise<void> | null,
+    saved: null as Record<string, unknown> | null,
   },
 }));
 
@@ -23,16 +27,21 @@ vi.mock("@/integrations/supabase/client", () => ({
       const result = () => {
         if (table === "supplier_accounts") return { data: { supplier_id: "a9200000-0000-4000-8000-00000000000a" }, error: null };
         if (table === "supplies") return { data: db.supplies, error: null };
+        if (table === "market_products" && db.marketFails) return { data: null, error: { message: "TypeError: Failed to fetch", code: "", hint: "" } };
         if (table === "market_products") return { data: db.marketProducts, error: null };
         if (table === "market_stores") return { data: db.hasStore ? { supplier_id: "a9200000-0000-4000-8000-00000000000a" } : null, error: null };
         return { data: [], error: null };
       };
+      const respond = () => (table === "market_products" && db.marketHold ? db.marketHold.then(result) : Promise.resolve(result()));
       const b = {
         select: () => b,
         eq: () => b,
         order: () => b,
+        insert: () => b,
+        update: () => b,
+        single: () => Promise.resolve({ data: db.saved, error: null }),
         maybeSingle: () => Promise.resolve(result()),
-        then: (ok: (v: unknown) => unknown, bad?: (e: unknown) => unknown) => Promise.resolve(result()).then(ok, bad),
+        then: (ok: (v: unknown) => unknown, bad?: (e: unknown) => unknown) => respond().then(ok, bad),
       };
       return b;
     },
@@ -66,6 +75,9 @@ beforeEach(() => {
   db.supplies = [SUPPLY("s-cabbage", "高麗菜"), SUPPLY("s-onion", "洋蔥")];
   db.marketProducts = [{ ...CABBAGE, supply_id: "s-cabbage", review_status: "pending" }];
   db.hasStore = true;
+  db.marketFails = false;
+  db.marketHold = null;
+  db.saved = null;
 });
 afterEach(cleanup);
 
@@ -105,5 +117,74 @@ describe("SupplierCatalogPage — 零售市集", () => {
     const onionRow = (await screen.findByText("洋蔥")).closest("tr") as HTMLElement;
     const button = await within(onionRow).findByRole("button", { name: "洋蔥 開放消費者購買" });
     expect(button).toBeDisabled();
+  });
+});
+
+// 讀取失敗 / 讀取中 / 存檔之後:「零售」欄不能拿舊的或空的資料讓人重複開放零售、或用舊內容蓋掉剛存的修改。
+describe("SupplierCatalogPage — 零售資料讀取失敗、讀取中、存檔後", () => {
+  it("讀取失敗:批發分頁不給「開放零售」與零售狀態,顯示原因與「重新載入」;重新載入成功才恢復", async () => {
+    db.marketFails = true;
+    renderPage();
+    const onionRow = (await screen.findByText("洋蔥")).closest("tr") as HTMLElement;
+    const cabbageRow = screen.getByText("高麗菜").closest("tr") as HTMLElement;
+    expect(await screen.findByText(/零售商品資料讀取失敗:連線失敗,請檢查網路後再試一次/)).toBeInTheDocument();
+    expect(within(onionRow).queryByRole("button", { name: "洋蔥 開放消費者購買" })).toBeNull();
+    expect(within(cabbageRow).queryByRole("button", { name: "待審" })).toBeNull();
+
+    db.marketFails = false;
+    await userEvent.click(screen.getByRole("button", { name: "重新載入" }));
+    expect(await within(onionRow).findByRole("button", { name: "洋蔥 開放消費者購買" })).toBeEnabled();
+    expect(within(cabbageRow).getByRole("button", { name: "待審" })).toBeInTheDocument();
+    expect(screen.queryByText(/零售商品資料讀取失敗/)).toBeNull();
+  });
+
+  it("還在讀:先不顯示「開放零售」(還不知道有沒有店家、有沒有對應的零售商品),讀完才出現", async () => {
+    let release: () => void = () => {};
+    db.marketHold = new Promise<void>((r) => {
+      release = r;
+    });
+    renderPage();
+    const onionRow = (await screen.findByText("洋蔥")).closest("tr") as HTMLElement;
+    expect(within(onionRow).queryByRole("button", { name: "洋蔥 開放消費者購買" })).toBeNull();
+    release();
+    expect(await within(onionRow).findByRole("button", { name: "洋蔥 開放消費者購買" })).toBeEnabled();
+  });
+
+  it("還沒建零售店家:批發分頁直接說明要先完成店家設定(手機看不到停用按鈕的提示文字)", async () => {
+    db.hasStore = false;
+    db.marketProducts = [];
+    renderPage();
+    expect(await screen.findByRole("link", { name: "零售市集 › 店家設定" })).toHaveAttribute("href", "/supplier/market/store");
+  });
+
+  it("存檔後清單立刻換成資料庫回傳的那一筆:重抓還沒回來,也不會留著舊價格讓人再編輯", async () => {
+    db.marketProducts = [{ ...CABBAGE, supply_id: "s-cabbage", review_status: "approved", price: 100 }];
+    renderPage();
+    await userEvent.click(screen.getByRole("tab", { name: "零售商品(給消費者)" }));
+    await userEvent.click(await screen.findByRole("button", { name: "編輯 有機高麗菜" }));
+    const dialog = await screen.findByRole("dialog");
+    const price = within(dialog).getByLabelText("零售價(元)*");
+    await userEvent.clear(price);
+    await userEvent.type(price, "120");
+
+    let release: () => void = () => {};
+    db.marketHold = new Promise<void>((r) => {
+      release = r;
+    });
+    db.saved = { ...CABBAGE, supply_id: "s-cabbage", review_status: "approved", price: 120 };
+    await userEvent.click(within(dialog).getByRole("button", { name: "儲存" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(screen.getByText(/NT\$ 120/)).toBeInTheDocument();
+    expect(screen.queryByText(/NT\$ 100/)).toBeNull();
+
+    db.marketProducts = [db.saved];
+    release();
+    expect(await screen.findByText(/NT\$ 120/)).toBeInTheDocument();
+  });
+
+  it("零售狀態按鈕的可點範圍跟同一列的按鈕一樣高(至少 32px)", async () => {
+    renderPage();
+    const cabbageRow = (await screen.findByText("高麗菜")).closest("tr") as HTMLElement;
+    expect(await within(cabbageRow).findByRole("button", { name: "待審" })).toHaveClass("min-h-8");
   });
 });
