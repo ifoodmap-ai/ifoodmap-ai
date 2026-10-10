@@ -17332,3 +17332,23 @@ Task 23–25 先照計畫做完(三個 commit 跟計畫的程式碼區塊逐字�
 ### 2026-10-10:Task 23–25 獨立審查後的修正(commit `8398058`、`cc13ecd`、`64158c4`、`1799f09`、`4d0a0e2`、`cae435f`、`6bad165`、`b6640e8`,分支 `market`)
 
 以 repo 為準(同上面 Task 23–25 一節);每一項都先寫測試、看到失敗才改,補測試的兩項用突變驗證:①**新商品重送**:撞主鍵 23505、讀回的是自家那一筆時,用它的 `updated_at` 把這一次的內容與按的按鈕(明講 `review_status` 草稿 / 待審)再存一次 —— 原本直接當作已存好,「儲存草稿」回應遺失 → 改價格 → 送審,資料庫仍是舊價格、草稿,畫面卻說已儲存;父層(`SupplierCatalogPage`)依來源(批發商品 id,或「新增零售商品」)沿用還沒確認存好的商品 id(`MarketProductDialog` 新增 `newProductId`),確認存好才換,沒確認存好就關窗時重新讀取清單 —— 原本每次換新 uuid,會建出第二筆、又沒有刪除鈕;②**測試時紅時綠**:商品目錄頁的假 client 讓零售資料一律晚 25ms 回來,「兩個分頁」那項改成 `await findByRole`(150ms 也全過,沒有其他同類寫法);③390 寬時長的狀態徽章最多跟資訊欄一樣寬、括號前 `<wbr>` 換行、`break-keep`(headless Chrome 實測不再壓到「編輯」鈕);④已核准的商品存完變回待審 → 提示「已重新送審,通過前消費者看不到」;⑤儲存中 `<fieldset disabled>` 鎖住欄位與照片欄;⑥錯誤訊息一律中文:`friendlyDbError` 給中文備援(視窗與清單「請稍後再試」、照片欄「上傳失敗,請再試一次」),自己丟的錯改名 `MarketStaleProductError`、`MarketProductIdTakenError`(名稱 Market 開頭,備援不會蓋掉);⑦`productForm.test.ts` 的假 client 分開 `single` / `maybeSingle`(0 列時 single 回英文的 PGRST116,修改改用 `.single()` 會紅),`images.test.ts` 補縮圖上傳失敗(拿掉 `upThumb.error` 檢查會紅,`images.ts` 沒改)—— vitest 多 14 項(`productForm` 18 → **21**、`market-supplier-components` 22 → **28**、`useSupplierMarketProducts` 4 → **5**、`SupplierCatalogPage.market` 12 → **15**、`images` 14 → **15**);`0d3933b` 的乾淨副本連跑 3 次都是 **99 檔 / 1523 項**全過(上一節的 1481 沒算到 Task 23–25 第 2 輪 `4a9a04c` 的 14 項),tsc 72、eslint 錯誤 10,兩種 build 都過。
+
+### 2026-10-10:Task 26–28 獨立審查後的修正(commit `713dc50`、`6ccf381`、`0d3933b`、`b7a2d0b`、`5f4a390`、`f4379a6`、`5e4caa9`、`886157c`,分支 `market`)
+
+接上面兩節 Task 26–28。以 repo 的 `src/lib/market/admin.ts`、`src/pages/admin/AdminMarketProductsPage.tsx`、`AdminMarketStoresPage.tsx` 與兩支測試為準。沒有改 migration;`productForm.ts`、`db.ts` 只 import、沒有改。每一點都先寫測試、看到失敗才改。
+
+1. 【Important】**核准只能在查看視窗裡做,而且每個檔都載入成功才能按**(`5f4a390`):
+   - 拿掉清單上的「核准」:清單只看得到第 1 張的縮圖,第 2–5 張與所有主圖都沒看到;清單縮圖出紅框時照樣送得出核准。
+   - 查看視窗原本只有圖報錯後才停用,載入中按得下去 → 改成每張照片的主圖和縮圖都 `load` 成功才能核准(載入中、讀不到都不行,各自有一行說明);照片改成立即載入(`loading="eager"`,原本延遲載入)。
+   - 視窗內容抽成 `ReviewDetail`,每次打開都換 key:圖重新載入、載入結果歸零(Radix 的關閉動畫沒跑完就重開同一個商品時,圖不會再觸發 load,沒有 key 會永遠卡在「載入中」)。
+2. 【Important】**錯誤訊息一律中文**(`713dc50`):新增 `adminErrorMessage(e, 備援)` —— 登入過期(PGRST301 / PGRST303 /「JWT expired」)→「登入已過期,請重新登入後再試」,其他照 `friendlyDbError` 的選填備援(認不得的資料庫錯誤顯示「備援(錯誤代碼 X)」),四個顯示錯誤的地方都給中文備援。停用 / 恢復店家改用 `maybeSingle`,0 列丟 `MarketStoreGoneError`(`single()` 回英文的 PGRST116)。樂觀鎖的錯誤改名 `MarketStaleReviewError`(Market 開頭,給了備援也照原本的中文)。
+3. **審核結果只作用在同一個商品**(`f4379a6`):查看視窗的錯誤、退回 / 下架視窗與打到一半的原因都跟著商品走(`row.id` 比對);送出中的商品改成清單 `busyIds`(A 送出中不會擋住 B)。
+4. **數量與上限**(`b7a2d0b`,沒有 migration):
+   - 審核清單一頁 50 筆(`range` + `count: "exact"` 算總數,排序最後加 `id` 才不會重複或漏掉)、上一頁 / 下一頁、品名搜尋(`ilike`,`% _ \` 當一般字跳脫、`*` 換成 `_`);審核完那一頁空了就回到前一頁。`fetchAdminProducts(filter, { page, search })` 改回傳 `{ rows, total }`。
+   - 商品數與零售店家清單用 `src/lib/metrics.ts` 的 `fetchAllPages` 分頁讀完(讀到空的一頁為止,伺服器上限比 1000 小也不會漏)。
+5. **下架不套樂觀鎖**(`6ccf381`):供應商改價格、庫存(第 2 階段下單扣庫存也算)不會再擋住下架;下架 0 列(商品已被刪)丟 `MarketReviewGoneError`。核准、退回照舊帶 `updated_at`。
+6. **原因只有看不見的字元時按不下去**(`0d3933b`):兩頁的按鈕改用 `productForm.ts` 的 `hasVisibleText`;`admin.ts` 送出前也擋(`MarketReasonRequiredError`:下架有「(管理員下架)」前綴,資料庫的 `reject_reason_required` 擋不到)。
+7. **補測試**(`5e4caa9`):查看視窗的圖改成裁切(`object-cover`)、審核成功後不重抓、舊查詢晚到的失敗蓋掉新清單 —— 審查的突變 M6 / M15 / M10 原本全綠,現在各自被對應的測試抓到。第 1 點另外用 4 種改壞驗過(只看讀不到不看載入中、拿掉主圖的 onFail、改回延遲載入、只等縮圖載入),都會紅。
+8. (自查)拿掉清單的「核准」後,390 寬時狀態與兩顆按鈕剛好擠進同一行,品名欄被壓到約 58px → 品名欄 `min-w-[10rem]`、放不下時按鈕換行,搜尋鈕跟輸入框同一行(`886157c`,headless Chrome 1280 / 390 截圖確認)。
+9. **測試數字**:`admin.test.ts` 7 → **20**、`AdminMarketPages.test.tsx` 21 → **43**。`886157c` 的乾淨副本(`git archive`)連跑 3 次都是 **99 檔 / 1544 項**全過(含其他節同時新增的測試),tsc 72、eslint 錯誤 10,兩種 build 都過,前台站的 build 裡沒有這兩頁。
+10. 之後的 Task:Task 55 對 `App.tsx`、`AdminLayout.tsx`、兩支版面 / 路由測試的「找到 → 換成」不受影響(這次沒動那幾個檔)。
