@@ -67,6 +67,7 @@ import { STORE_A } from "./testFixtures";
 import {
   emptyStoreForm,
   fetchOwnStore,
+  MarketPartialSaveError,
   MarketStaleError,
   saveStore,
   STORE_OWNER_COLUMNS,
@@ -205,23 +206,94 @@ const NEW_STORE: StoreBase = { updatedAt: null, transferInfo: null };
 const EXISTING: StoreBase = { updatedAt: READ_AT, transferInfo: null };
 
 describe("saveStore", () => {
-  it("轉帳資訊存失敗 → 丟錯,不會接著存店家", async () => {
-    queue["market_store_transfer.upsert"] = [{ data: null, error: { message: "value too long", code: "23514" } }];
+  it("第一次接受轉帳、轉帳資訊存失敗 → 丟錯,不會接著存店家", async () => {
+    queue["market_store_transfer.insert"] = [{ data: null, error: { message: "value too long", code: "23514" } }];
     await expect(
       saveStore("sup-1", valid({ acceptTransfer: true, transferInfo: "台灣銀行 004 帳號 123" }), NEW_STORE),
     ).rejects.toBeInstanceOf(MarketDbError);
     expect(calls.map((c) => c.table)).toEqual(["market_store_transfer"]);
   });
 
-  it("接受轉帳:先存轉帳資訊、再存店家", async () => {
+  it("第一次接受轉帳(資料庫還沒有轉帳資訊):先 insert 轉帳資訊(guard 要求),再存店家", async () => {
     await saveStore("sup-1", valid({ acceptTransfer: true, transferInfo: " 台灣銀行 004 帳號 123 " }), NEW_STORE);
-    expect(calls.map((c) => c.table)).toEqual(["market_store_transfer", "market_stores"]);
+    expect(calls.map((c) => [c.table, c.op])).toEqual([
+      ["market_store_transfer", "insert"],
+      ["market_stores", "insert"],
+    ]);
     expect(calls[0].payload).toEqual({ supplier_id: "sup-1", transfer_info: "台灣銀行 004 帳號 123" });
   });
 
   it("只收貨到付款:不碰轉帳資訊", async () => {
     await saveStore("sup-1", valid(), NEW_STORE);
     expect(calls.map((c) => c.table)).toEqual(["market_stores"]);
+  });
+});
+
+// 轉帳資訊與店家是兩張表、兩個請求:順序要讓「只存好一半」越少越好,真的只存好一半時要講清楚是哪一半。
+describe("saveStore — 儲存順序與只存好一部分", () => {
+  const WITH_TRANSFER: StoreBase = { updatedAt: READ_AT, transferInfo: "舊帳號 1111" };
+  const transferForm = (info: string) => valid({ acceptTransfer: true, transferInfo: info });
+
+  it("第一次接受轉帳,但別的分頁已經存了轉帳資訊(23505)→ MarketStaleError,店家也不寫", async () => {
+    queue["market_store_transfer.insert"] = [{ data: null, error: { message: "duplicate key value", code: "23505" } }];
+    await expect(saveStore("sup-1", transferForm("新帳號 2222"), EXISTING)).rejects.toBeInstanceOf(MarketStaleError);
+    expect(calls.map((c) => c.table)).toEqual(["market_store_transfer"]);
+  });
+
+  it("已經有轉帳資訊而且改了:先存店家,店家存好才更新轉帳資訊", async () => {
+    await saveStore("sup-1", transferForm(" 新帳號 2222 "), WITH_TRANSFER);
+    expect(calls.map((c) => [c.table, c.op])).toEqual([
+      ["market_stores", "update"],
+      ["market_store_transfer", "upsert"],
+    ]);
+    expect(calls[1].payload).toEqual({ supplier_id: "sup-1", transfer_info: "新帳號 2222" });
+  });
+
+  it("已經有轉帳資訊、店家過期:什麼都不寫(轉帳資訊也不動)", async () => {
+    queue["market_stores.update"] = [{ data: [], error: null }];
+    await expect(saveStore("sup-1", transferForm("新帳號 2222"), WITH_TRANSFER)).rejects.toBeInstanceOf(MarketStaleError);
+    expect(calls.map((c) => c.table)).toEqual(["market_stores"]);
+  });
+
+  it("已經有轉帳資訊、店家存失敗:丟原本的錯(不是只存好一部分),轉帳資訊不動", async () => {
+    queue["market_stores.update"] = [{ data: null, error: { message: "check", code: "23514" } }];
+    const err = await saveStore("sup-1", transferForm("新帳號 2222"), WITH_TRANSFER).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(MarketDbError);
+    expect(calls.map((c) => c.table)).toEqual(["market_stores"]);
+  });
+
+  it("轉帳資訊沒改:不寫轉帳資訊", async () => {
+    await saveStore("sup-1", transferForm(" 舊帳號 1111 "), WITH_TRANSFER);
+    expect(calls.map((c) => c.table)).toEqual(["market_stores"]);
+  });
+
+  it("店家存好、轉帳資訊存失敗 → MarketPartialSaveError(saved=store),帶存好的店家,訊息講清楚哪一部分存好", async () => {
+    const saved = { ...STORE_A, updated_at: "2026-10-10T07:05:00.654321+00:00" };
+    queue["market_stores.update"] = [{ data: [saved], error: null }];
+    queue["market_store_transfer.upsert"] = [{ data: null, error: { message: "check", code: "23514" } }];
+    const err = await saveStore("sup-1", transferForm("新帳號 2222"), WITH_TRANSFER).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(MarketPartialSaveError);
+    const partial = err as MarketPartialSaveError;
+    expect(partial.saved).toBe("store");
+    expect(partial.store).toEqual(saved);
+    expect(partial.message).toBe(
+      "店家設定已儲存,但轉帳資訊沒有存到:有欄位超過長度上限或格式不對,請檢查後再送出。消費者看到的仍是原本的轉帳資訊,請再按一次儲存。",
+    );
+  });
+
+  it("轉帳資訊先存好、店家存失敗 → MarketPartialSaveError(saved=transfer),帶存好的轉帳資訊,訊息講清楚", async () => {
+    queue["market_stores.update"] = [{ data: [], error: null }];
+    const err = await saveStore("sup-1", transferForm(" 新帳號 2222 "), EXISTING).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(MarketPartialSaveError);
+    const partial = err as MarketPartialSaveError;
+    expect(partial.saved).toBe("transfer");
+    expect(partial.transferInfo).toBe("新帳號 2222");
+    expect(partial.failure).toBeInstanceOf(MarketStaleError);
+    expect(partial.message).toBe("轉帳資訊已儲存,但店家設定(配送、付款等)沒有存到:資料已被其他人更新,請重新載入後再改");
+    expect(calls.map((c) => [c.table, c.op])).toEqual([
+      ["market_store_transfer", "insert"],
+      ["market_stores", "update"],
+    ]);
   });
 });
 

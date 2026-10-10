@@ -16,6 +16,7 @@ import { friendlyDbError } from "@/lib/market/db";
 import {
   emptyStoreForm,
   fetchOwnStore,
+  MarketPartialSaveError,
   MarketStaleError,
   saveStore,
   STALE_STORE_MESSAGE,
@@ -114,9 +115,20 @@ export default function SupplierMarketStorePage() {
       setStale(false);
       toast.success("已儲存店家設定");
     } catch (err) {
-      // 資料已被其他人更新:什麼都沒寫,表單保留剛改的內容,顯示重新載入(重新載入才換成資料庫的值)
-      setStale(err instanceof MarketStaleError);
-      toast.error("儲存失敗", { description: friendlyDbError(err) });
+      // 只存好一部分:狀態要跟資料庫一致
+      if (err instanceof MarketPartialSaveError) {
+        if (err.saved === "transfer") {
+          // 轉帳資訊已經是新的:記下來(之後沒勾轉帳存檔時表單換回的是它,不會把舊帳號帶回來)
+          setSavedTransfer(err.transferInfo);
+        } else if (err.store) {
+          // 店家已經存好:換成資料庫的值(下次比對用新的 updated_at);轉帳資訊還沒存到,保留剛打的讓使用者再存一次
+          setRow(err.store);
+          setForm(storeFormFromRow(err.store, form.transferInfo));
+        }
+      }
+      // 資料已被其他人更新:店家沒有寫,表單保留剛改的內容,顯示重新載入(重新載入才換成資料庫的值)
+      setStale(err instanceof MarketStaleError || (err instanceof MarketPartialSaveError && err.failure instanceof MarketStaleError));
+      toast.error(err instanceof MarketPartialSaveError ? "只存好一部分" : "儲存失敗", { description: friendlyDbError(err) });
     } finally {
       setSaving(false);
     }
@@ -342,7 +354,7 @@ export default function SupplierMarketStorePage() {
 
       {stale ? (
         <div role="alert" className="flex flex-wrap items-center gap-3 rounded-lg border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900">
-          <p className="min-w-0 flex-1">{STALE_STORE_MESSAGE}。這次沒有儲存,你剛改的內容還在畫面上;重新載入會換成最新的設定。</p>
+          <p className="min-w-0 flex-1">{STALE_STORE_MESSAGE}。店家設定這次沒有儲存,你剛改的內容還在畫面上;重新載入會換成最新的設定。</p>
           <Button type="button" variant="outline" onClick={reload} className="min-h-11">
             重新載入
           </Button>

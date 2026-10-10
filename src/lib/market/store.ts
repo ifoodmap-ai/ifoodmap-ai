@@ -1,14 +1,18 @@
 // 供應商「零售市集 › 店家設定」的表單邏輯:資料列 ↔ 表單、驗證(跟資料庫 CHECK 同樣的上限)、儲存。
 //
-// 儲存順序:勾了銀行轉帳 → 先 upsert market_store_transfer,再寫 market_stores
-// (資料庫的 market_stores_guard 會檢查「接受轉帳一定要已經有轉帳資訊」,所以轉帳資訊要先存)。
+// 儲存順序(轉帳資訊與店家是兩張表、兩個請求,順序要讓「只存好一半」越少越好):
+//   1. 第一次接受轉帳(資料庫還沒有轉帳資訊):market_stores_guard 要求勾轉帳前已經有轉帳資訊,只能先寫;
+//      用 insert —— 別的分頁先存了 → 23505 → MarketStaleError,不覆寫。
+//   2. 店家(更新時比對 updated_at,見下)。
+//   3. 已經有轉帳資訊而且改了:店家存好之後才更新(店家過期或驗證失敗就什麼都不寫)。
+//   真的只存好一部分 → MarketPartialSaveError,訊息講清楚哪一部分存好、帶著已經存進資料庫的值。
 //
 // 不蓋掉別人的修改:更新既有店家時只更新 updated_at 還是「讀到的那個值」的列(兩個分頁、兩位同事同時改,
 // 後存的人更新不到任何一列 → MarketStaleError,什麼都不覆寫)。updated_at 一定用讀到的原字串比對:
 // PostgREST 回的是微秒精度,轉成 Date 再轉回字串會掉到毫秒,就永遠對不上。第一次建立店家沒有值可比對,用 insert
 // (別的分頁先建好了 → 23505 → 一樣是 MarketStaleError,不會用 upsert 把它蓋掉)。
 import { isTwCity, LIMITS, type PaymentMethod, type TwCity } from "./constants";
-import { MarketDbError, marketDb, unwrap } from "./db";
+import { friendlyDbError, MarketDbError, marketDb, unwrap } from "./db";
 import type { MarketStoreRow } from "./types";
 
 export const STALE_STORE_MESSAGE = "資料已被其他人更新,請重新載入後再改";
@@ -18,6 +22,30 @@ export class MarketStaleError extends Error {
   constructor() {
     super(STALE_STORE_MESSAGE);
     this.name = "MarketStaleError";
+  }
+}
+
+/** 只存好一部分:saved 是已經寫進資料庫的那一部分,store / transferInfo 是它在資料庫裡現在的值 */
+export class MarketPartialSaveError extends Error {
+  readonly saved: "store" | "transfer";
+  /** saved = "store":資料庫回傳的店家(updated_at 已經是新的) */
+  readonly store: MarketStoreRow | null;
+  /** saved = "transfer":資料庫裡現在的轉帳資訊 */
+  readonly transferInfo: string | null;
+  /** 沒存到的那一部分的錯誤 */
+  readonly failure: unknown;
+  constructor(saved: "store" | "transfer", store: MarketStoreRow | null, transferInfo: string | null, failure: unknown) {
+    const reason = friendlyDbError(failure);
+    super(
+      saved === "store"
+        ? `店家設定已儲存,但轉帳資訊沒有存到:${reason}。消費者看到的仍是原本的轉帳資訊,請再按一次儲存。`
+        : `轉帳資訊已儲存,但店家設定(配送、付款等)沒有存到:${reason}`,
+    );
+    this.name = "MarketPartialSaveError";
+    this.saved = saved;
+    this.store = store;
+    this.transferInfo = transferInfo;
+    this.failure = failure;
   }
 }
 
@@ -161,14 +189,39 @@ const writeStore = async (supplierId: string, f: StoreForm, updatedAt: string | 
   return rows[0];
 };
 
-export const saveStore = async (supplierId: string, f: StoreForm, base: StoreBase): Promise<MarketStoreRow> => {
-  if (f.acceptTransfer) {
-    unwrap(
-      await marketDb("market_store_transfer").upsert(
-        { supplier_id: supplierId, transfer_info: f.transferInfo.trim() },
-        { onConflict: "supplier_id" },
-      ),
-    );
+/** 第一次存轉帳資訊:insert(別的分頁先存了 → 23505 → 過期,不覆寫) */
+const insertTransfer = async (supplierId: string, info: string) => {
+  try {
+    unwrap(await marketDb("market_store_transfer").insert({ supplier_id: supplierId, transfer_info: info }));
+  } catch (e) {
+    if (isUniqueViolation(e)) throw new MarketStaleError();
+    throw e;
   }
-  return writeStore(supplierId, f, base.updatedAt);
+};
+
+const upsertTransfer = async (supplierId: string, info: string) => {
+  unwrap(await marketDb("market_store_transfer").upsert({ supplier_id: supplierId, transfer_info: info }, { onConflict: "supplier_id" }));
+};
+
+export const saveStore = async (supplierId: string, f: StoreForm, base: StoreBase): Promise<MarketStoreRow> => {
+  const info = f.transferInfo.trim();
+  const transferFirst = f.acceptTransfer && base.transferInfo === null;
+  if (transferFirst) await insertTransfer(supplierId, info);
+
+  let store: MarketStoreRow;
+  try {
+    store = await writeStore(supplierId, f, base.updatedAt);
+  } catch (e) {
+    if (transferFirst) throw new MarketPartialSaveError("transfer", null, info, e);
+    throw e;
+  }
+
+  if (f.acceptTransfer && !transferFirst && info !== base.transferInfo) {
+    try {
+      await upsertTransfer(supplierId, info);
+    } catch (e) {
+      throw new MarketPartialSaveError("store", store, null, e);
+    }
+  }
+  return store;
 };

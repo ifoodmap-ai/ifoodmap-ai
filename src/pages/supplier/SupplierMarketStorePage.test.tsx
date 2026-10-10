@@ -22,7 +22,8 @@ vi.mock("@/lib/market/images", async (importOriginal) => ({
 }));
 
 import { uploadMarketImage } from "@/lib/market/images";
-import { fetchOwnStore, MarketStaleError, saveStore } from "@/lib/market/store";
+import { MarketDbError } from "@/lib/market/db";
+import { fetchOwnStore, MarketPartialSaveError, MarketStaleError, saveStore } from "@/lib/market/store";
 import { STORE_A } from "@/lib/market/testFixtures";
 import type { MarketStoreRow } from "@/lib/market/types";
 import SupplierMarketStorePage from "./SupplierMarketStorePage";
@@ -381,5 +382,64 @@ describe("SupplierMarketStorePage — 不蓋掉別人的修改", () => {
     await waitFor(() => expect(screen.getByLabelText("店家介紹")).toHaveValue("同事改過的介紹"));
     expect(screen.queryByRole("alert")).toBeNull();
     expect(fetchOwnStore).toHaveBeenCalledTimes(2);
+  });
+});
+
+// 只存好一部分:訊息講清楚哪一部分存好,狀態跟資料庫一致(不會之後把舊帳號帶回表單)。
+describe("SupplierMarketStorePage — 只存好一部分", () => {
+  const READ_AT = "2026-10-10T07:00:00.123456+00:00";
+  const SAVED_AT = "2026-10-10T07:05:00.654321+00:00";
+  const checkFailed = () => new MarketDbError({ message: "check", code: "23514" });
+
+  it("轉帳資訊存好、店家沒存到:訊息講清楚;之後存檔用資料庫裡的新轉帳資訊,取消勾轉帳再勾回來看到的也是新的", async () => {
+    vi.mocked(fetchOwnStore).mockResolvedValue({ store: { ...STORE_A, payment_methods: ["cod"], updated_at: READ_AT }, transferInfo: null });
+    vi.mocked(saveStore)
+      .mockRejectedValueOnce(new MarketPartialSaveError("transfer", null, "新帳號 2222", checkFailed()))
+      .mockResolvedValueOnce({ ...STORE_A, payment_methods: ["cod"], updated_at: SAVED_AT });
+    renderPage();
+    await userEvent.click(await screen.findByLabelText(/銀行轉帳/));
+    await userEvent.type(screen.getByLabelText("轉帳資訊(銀行、分行、帳號、戶名)"), "新帳號 2222");
+    await userEvent.click(screen.getByRole("button", { name: "儲存店家設定" }));
+    await waitFor(() =>
+      expect(toastError).toHaveBeenCalledWith("只存好一部分", {
+        description: "轉帳資訊已儲存,但店家設定(配送、付款等)沒有存到:有欄位超過長度上限或格式不對,請檢查後再送出",
+      }),
+    );
+    expect(toastSuccess).not.toHaveBeenCalled();
+
+    // 取消勾轉帳再存:這次 saveStore 拿到的是資料庫裡的新轉帳資訊;存完勾回來看到的也是它(不是原本的空白)
+    await userEvent.click(screen.getByLabelText(/銀行轉帳/));
+    await userEvent.click(screen.getByRole("button", { name: "儲存店家設定" }));
+    await waitFor(() => expect(saveStore).toHaveBeenCalledTimes(2));
+    expect(vi.mocked(saveStore).mock.calls[1][2]).toEqual({ updatedAt: READ_AT, transferInfo: "新帳號 2222" });
+    await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith("已儲存店家設定"));
+    await userEvent.click(screen.getByLabelText(/銀行轉帳/));
+    expect(screen.getByLabelText("轉帳資訊(銀行、分行、帳號、戶名)")).toHaveValue("新帳號 2222");
+  });
+
+  it("店家存好、轉帳資訊沒存到:訊息講清楚;店家換成資料庫的值、下次用新的 updated_at,轉帳資訊保留剛打的、資料庫的舊帳號記錄不變", async () => {
+    vi.mocked(fetchOwnStore).mockResolvedValue({ store: { ...STORE_A, updated_at: READ_AT }, transferInfo: "舊帳號 1111" });
+    vi.mocked(saveStore)
+      .mockRejectedValueOnce(
+        new MarketPartialSaveError("store", { ...STORE_A, intro: "資料庫的介紹", updated_at: SAVED_AT }, null, checkFailed()),
+      )
+      .mockResolvedValueOnce({ ...STORE_A, updated_at: "2026-10-10T07:09:00.000001+00:00" });
+    renderPage();
+    const info = await screen.findByLabelText("轉帳資訊(銀行、分行、帳號、戶名)");
+    await userEvent.clear(info);
+    await userEvent.type(info, "新帳號 2222");
+    await userEvent.click(screen.getByRole("button", { name: "儲存店家設定" }));
+    await waitFor(() =>
+      expect(toastError).toHaveBeenCalledWith("只存好一部分", {
+        description:
+          "店家設定已儲存,但轉帳資訊沒有存到:有欄位超過長度上限或格式不對,請檢查後再送出。消費者看到的仍是原本的轉帳資訊,請再按一次儲存。",
+      }),
+    );
+    await waitFor(() => expect(screen.getByLabelText("店家介紹")).toHaveValue("資料庫的介紹"));
+    expect(screen.getByLabelText("轉帳資訊(銀行、分行、帳號、戶名)")).toHaveValue("新帳號 2222");
+
+    await userEvent.click(screen.getByRole("button", { name: "儲存店家設定" }));
+    await waitFor(() => expect(saveStore).toHaveBeenCalledTimes(2));
+    expect(vi.mocked(saveStore).mock.calls[1][2]).toEqual({ updatedAt: SAVED_AT, transferInfo: "舊帳號 1111" });
   });
 });
