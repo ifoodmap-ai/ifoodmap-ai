@@ -17268,3 +17268,18 @@ B. 頁面
 ### 2026-10-10:Task 21 店家設定頁自查修正(commit `b7d52d8`、`235a482`、`f80f7d4`,分支 `market`)
 
 以 repo 的 `src/pages/supplier/SupplierMarketStorePage.tsx`、`src/pages/supplier/market/MarketImageField.tsx` 為準、不要再照抄 Task 21 的程式碼區塊:讀取失敗改成錯誤畫面加「重新載入」、不顯示表單(原本照樣畫出空白的新店家表單,一儲存 upsert 就蓋掉原本的介紹、退換貨說明、logo、封面;只有讀取成功而且查無店家才是新店家表單),勾選框加 `shrink-0`(390 寬的「銀行轉帳」換行時不再被壓小),選檔欄位與裡面的按鈕 `min-h-11`,縣市 / 付款方式出錯時每個勾選框標 `aria-invalid` + `aria-describedby`,儲存成功後表單換成資料庫回傳的值(縣市照官方順序、去掉頭尾空白)—— `SupplierMarketStorePage.test.tsx` 4 → 14 項,第 1 階段完成改成 97 檔 / **1397** 項、第 2、3 階段 111 檔 / **1514** 項。
+
+### 2026-10-10:Task 26–28 管理後台審核與零售店家(commit `3e5d3a6`、`00d0b94`、`9b0f0e4`、`ec97402`,分支 `market`)
+
+以 repo 的 `src/lib/market/admin.ts`、`src/pages/admin/AdminMarketProductsPage.tsx`、`src/pages/admin/AdminMarketStoresPage.tsx` 與兩支測試為準,不要再照抄 Task 26、27 的程式碼區塊;Task 28(選單分區、兩條路由)照計畫,沒有改。
+
+1. **照片審核**(上面「120000 / 120100 品質審查」一節的注意事項第 1 點):查看視窗每張照片並排顯示主圖(`<uuid>.jpg`,商品頁大圖)與縮圖(`thumbPathOf` = `<uuid>_t.jpg`,商品卡先顯示)。不用 `MarketImage` —— 它讀不到縮圖會改顯示主圖,兩格看起來一樣,審核者看不出縮圖缺了;改用頁內的 `ReviewImage`:沒有任何退回,讀不到就在原位顯示紅色虛線框「讀不到縮圖 / 讀不到主圖」(`role="img"`,名稱「第 N 張・縮圖:讀不到」),圖用 `object-contain` 看整張不裁切。縮圖跟主圖不是同一張時,並排就看得出來。清單第 1 張也改成不退回的縮圖(紅框寫「讀不到 / 縮圖」兩行;沒有照片顯示「沒有照片」)。
+2. **核准被資料庫擋下**(22023 `photos_not_uploaded`):除了 toast,查看視窗裡也顯示「這個商品還有照片沒有上傳完成,無法核准」(`role="alert"`),視窗不關,讀不到的那一格就在旁邊。
+3. **自查修正**(每項都先寫測試、看到失敗才改):
+   - 下架會在原因前加「(管理員下架)」7 個字,原本輸入框上限 300,填滿會被 `reject_reason <= 300` 擋(23514)→ `admin.ts` 新增 `DELIST_PREFIX`、`DELIST_REASON_MAX`(= 293),下架時輸入框用它。
+   - 樂觀鎖擋下(`StaleReviewError`)時關掉查看 / 原因視窗(畫面上是舊內容),清單重抓,要重新查看才看得到新內容。
+   - 原因視窗每次從空白開始(原本上一個商品 / 店家沒送出的原因會帶到下一個)。
+   - 清單載入失敗改成錯誤訊息加「重新載入」(原本只有 toast,畫面還寫「沒有待審的商品」/「還沒有供應商開零售」);切換篩選時,比較慢回來的舊查詢不會蓋掉新清單。
+   - 零售店家:供應商帳號停用(`suppliers.is_active = false`)時加一行「供應商帳號已停用,消費者看不到這家店」(零售開著也看不到,`market_store_is_open`);停用視窗的標題沒有店名時用 supplier_id。
+4. **測試數字**:`admin.test.ts` 6 → **7**、`AdminMarketPages.test.tsx` 6 → **19**;Task 28 的 `AdminLayout` 28 + `AdminRoutes` 34 = 62 跟計畫一樣。第 1 階段完成(上一節 1397)再多 14 項:97 檔 / **1411** 項(`9b0f0e4` 實測全過);第 2、3 階段 111 檔 / **1528** 項。tsc 72、eslint 10 不變,兩種 build 都過(管理員站 build 才有這兩頁,前台站 build 裡沒有)。
+5. 第 8176 行之後對 `src/App.tsx`、`AdminLayout.tsx`、`AdminLayout.test.tsx`、`AdminRoutes.test.tsx` 的「找到 → 換成」(Task 52、54、55 共 14 組)依序模擬套到現在的 repo,全部剛好命中一次。
