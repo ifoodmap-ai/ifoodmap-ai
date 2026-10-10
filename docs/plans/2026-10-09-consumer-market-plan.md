@@ -17306,3 +17306,4 @@ Task 23–25 先照計畫做完(三個 commit 跟計畫的程式碼區塊逐字�
    - 「已上架」只看 `review_status` 與 `is_listed`:店家被管理員停用、或庫存 0 時一樣寫「已上架」。
    - 新商品存檔時回應遺失(資料庫其實寫入了)再按一次會撞主鍵 23505,`friendlyDbError` 只顯示英文原文。
    - shadcn `DialogContent` 右上角的關閉鈕 16×16(共用元件,不在這次範圍;底部有 44px 的「取消」)。
+10. **追加(commit `4a9a04c`)**:第 9 點前三項已修 —— 修改既有商品比對讀到的 `updated_at` 原字串,沒更新到任何一列就顯示「這個商品已被其他人更新,請重新載入後再改」、不覆寫(視窗留著但不能再存,按「重新載入」才關視窗並重新讀取;用語同店家設定的「資料已被其他人更新,請重新載入後再改」);狀態文字照消費者實際看到的寫(店家零售或供應商帳號停用 →「已核准・店家停用中(消費者看不到)」、庫存 0 →「已上架・缺貨」,這類徽章改琥珀色);新商品撞主鍵 23505 時讀回那一筆,是自家的就當作已存好(換進清單、提示「已儲存」),否則顯示中文錯誤、不覆寫。`saveMarketProduct` 改回傳 `{ row, alreadySaved }`、多收 `expectedUpdatedAt`;vitest 再多 14 項(`productForm` 12 → 18、`market-supplier-components` 17 → 22、`useSupplierMarketProducts` 3 → 4、`SupplierCatalogPage.market` 10 → 12),`4a9a04c` 實測全套 99 檔 / 1466 項全過(含店家設定同時新增的測試),tsc 72、eslint 錯誤 10,兩種 build 都過。
