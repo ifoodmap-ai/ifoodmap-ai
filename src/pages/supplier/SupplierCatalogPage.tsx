@@ -267,7 +267,8 @@ export default function SupplierCatalogPage() {
                   </td>
                   <td className="px-5 py-3 text-center whitespace-nowrap">
                     {market.loading ? null : market.error ? (
-                      <span className="text-xs text-gray-400">
+                      // relative:sr-only 是 absolute,沒有定位的祖先時會跑出表格的橫向捲動範圍,把手機整頁撐寬(390 實測 646px)
+                      <span className="relative text-xs text-gray-400">
                         <span aria-hidden="true">—</span>
                         <span className="sr-only">零售資料讀取失敗</span>
                       </span>

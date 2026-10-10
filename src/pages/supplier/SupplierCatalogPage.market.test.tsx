@@ -138,6 +138,15 @@ describe("SupplierCatalogPage — 零售資料讀取失敗、讀取中、存檔�
     expect(screen.queryByText(/零售商品資料讀取失敗/)).toBeNull();
   });
 
+  it("讀取失敗的「—」:螢幕報讀文字(sr-only 是 absolute)包在 relative 裡,不會跑出表格的橫向捲動、把手機整頁撐寬", async () => {
+    db.marketFails = true;
+    renderPage();
+    const onionRow = (await screen.findByText("洋蔥")).closest("tr") as HTMLElement;
+    const hint = await within(onionRow).findByText("零售資料讀取失敗");
+    expect(hint).toHaveClass("sr-only");
+    expect(hint.parentElement).toHaveClass("relative");
+  });
+
   it("還在讀:先不顯示「開放零售」(還不知道有沒有店家、有沒有對應的零售商品),讀完才出現", async () => {
     let release: () => void = () => {};
     db.marketHold = new Promise<void>((r) => {
