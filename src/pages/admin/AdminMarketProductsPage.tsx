@@ -236,14 +236,14 @@ const AdminMarketProductsPage = () => {
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
-  /** 開著的查看視窗;session 每次打開都換新(ReviewDetail 的 key) */
-  const [detail, setDetail] = useState<{ row: MarketProductRow; session: number } | null>(null);
-  /** 在查看視窗裡審核失敗的原因(例如照片沒上傳完成),顯示在視窗裡 */
-  const [detailError, setDetailError] = useState<string | null>(null);
+  // 審核結果回來時,開著的視窗可能已經換成別的商品:結果只作用在同一個商品(以下都用 row.id 比對)。
+  /** 開著的查看視窗;session 每次打開都換新(ReviewDetail 的 key);error 是這個商品審核失敗的原因 */
+  const [detail, setDetail] = useState<{ row: MarketProductRow; session: number; error: string | null } | null>(null);
   const detailSession = useRef(0);
-  const [reasonTarget, setReasonTarget] = useState<{ row: MarketProductRow; mode: ReasonMode } | null>(null);
-  const [reason, setReason] = useState('');
-  const [busyId, setBusyId] = useState<string | null>(null);
+  /** 開著的退回 / 下架視窗與打到一半的原因 */
+  const [reasonDraft, setReasonDraft] = useState<{ row: MarketProductRow; mode: ReasonMode; text: string } | null>(null);
+  /** 審核送出中的商品(可以同時有好幾個) */
+  const [busyIds, setBusyIds] = useState<string[]>([]);
   const loadSeq = useRef(0);
   // load 一律讀「現在」的篩選、頁數、搜尋字:審核完的重抓用的是按下按鈕那次 render 的 load,
   // 那之後才切了篩選的話,照閉包裡的舊篩選重抓會把清單換回舊分頁的內容
@@ -294,52 +294,50 @@ const AdminMarketProductsPage = () => {
   const pageCount = Math.max(1, Math.ceil(total / ADMIN_PAGE_SIZE));
 
   const openDetail = (row: MarketProductRow) => {
-    setDetailError(null);
     detailSession.current += 1;
-    setDetail({ row, session: detailSession.current });
+    setDetail({ row, session: detailSession.current, error: null });
   };
-  const closeDetail = () => {
-    setDetail(null);
-    setDetailError(null);
-  };
+  const closeDetail = () => setDetail(null);
+  /** 只改「同一個商品」的視窗;開著的是別的商品就不動 */
+  const forDetailOf = (id: string, change: (d: NonNullable<typeof detail>) => typeof detail) =>
+    setDetail((d) => (d && d.row.id === id ? change(d) : d));
+  const closeReasonOf = (id: string) => setReasonDraft((r) => (r && r.row.id === id ? null : r));
   // 每次都從空白開始:上一個商品沒送出的原因不能帶到下一個商品
-  const openReason = (row: MarketProductRow, mode: ReasonMode) => {
-    setReason('');
-    setReasonTarget({ row, mode });
-  };
+  const openReason = (row: MarketProductRow, mode: ReasonMode) => setReasonDraft({ row, mode, text: '' });
 
   const act = async (row: MarketProductRow, run: () => Promise<unknown>, done: string) => {
-    setBusyId(row.id);
-    setDetailError(null);
+    setBusyIds((ids) => [...ids, row.id]);
+    forDetailOf(row.id, (d) => ({ ...d, error: null }));
     try {
       await run();
       toast.success(done);
-      closeDetail();
-      setReasonTarget(null);
-      setReason('');
+      forDetailOf(row.id, () => null);
+      closeReasonOf(row.id);
       await load();
     } catch (e) {
       const message = adminErrorMessage(e, ADMIN_REVIEW_FALLBACK);
       toast.error('處理失敗', { description: message });
       if (e instanceof MarketStaleReviewError) {
         // 供應商剛改過:視窗裡是舊內容,關掉;重新整理後的清單才是最新的,要重新查看
-        closeDetail();
-        setReasonTarget(null);
-        setReason('');
+        forDetailOf(row.id, () => null);
+        closeReasonOf(row.id);
       } else {
-        setDetailError(message);
+        forDetailOf(row.id, (d) => ({ ...d, error: message }));
       }
       await load();
     } finally {
-      setBusyId(null);
+      setBusyIds((ids) => {
+        const i = ids.indexOf(row.id);
+        return i < 0 ? ids : [...ids.slice(0, i), ...ids.slice(i + 1)];
+      });
     }
   };
 
   const approve = (row: MarketProductRow) => act(row, () => reviewProduct(row, { kind: 'approve' }), `已核准「${row.name}」`);
   const submitReason = () => {
-    if (!reasonTarget || !hasVisibleText(reason)) return;
-    const { row, mode } = reasonTarget;
-    void act(row, () => reviewProduct(row, { kind: mode, reason }), mode === 'delist' ? `已下架「${row.name}」` : `已退回「${row.name}」`);
+    if (!reasonDraft || !hasVisibleText(reasonDraft.text)) return;
+    const { row, mode, text } = reasonDraft;
+    void act(row, () => reviewProduct(row, { kind: mode, reason: text }), mode === 'delist' ? `已下架「${row.name}」` : `已退回「${row.name}」`);
   };
 
   return (
@@ -475,8 +473,8 @@ const AdminMarketProductsPage = () => {
             <ReviewDetail
               key={detail.session}
               row={detail.row}
-              error={detailError}
-              busy={busyId === detail.row.id}
+              error={detail.error}
+              busy={busyIds.includes(detail.row.id)}
               onApprove={() => approve(detail.row)}
               onReject={() => openReason(detail.row, 'reject')}
             />
@@ -484,10 +482,10 @@ const AdminMarketProductsPage = () => {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={!!reasonTarget} onOpenChange={(o) => !o && setReasonTarget(null)}>
+      <Dialog open={!!reasonDraft} onOpenChange={(o) => !o && setReasonDraft(null)}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>{reasonTarget?.mode === 'delist' ? '下架' : '退回'}「{reasonTarget?.row.name}」</DialogTitle>
+            <DialogTitle>{reasonDraft?.mode === 'delist' ? '下架' : '退回'}「{reasonDraft?.row.name}」</DialogTitle>
             <DialogDescription>原因會顯示給供應商,供應商修改後可以重新送審。</DialogDescription>
           </DialogHeader>
           <div className="space-y-1.5">
@@ -496,17 +494,24 @@ const AdminMarketProductsPage = () => {
             <Textarea
               id="market-review-reason"
               rows={3}
-              maxLength={reasonTarget?.mode === 'delist' ? DELIST_REASON_MAX : LIMITS.rejectReason}
-              value={reason}
-              onChange={(e) => setReason(e.target.value)}
+              maxLength={reasonDraft?.mode === 'delist' ? DELIST_REASON_MAX : LIMITS.rejectReason}
+              value={reasonDraft?.text ?? ''}
+              onChange={(e) => {
+                const text = e.target.value;
+                setReasonDraft((r) => (r ? { ...r, text } : r));
+              }}
             />
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setReasonTarget(null)}>
+            <Button variant="outline" onClick={() => setReasonDraft(null)}>
               取消
             </Button>
-            <Button className="bg-red-600 text-white hover:bg-red-700" disabled={!hasVisibleText(reason) || !!busyId} onClick={submitReason}>
-              {reasonTarget?.mode === 'delist' ? '確定下架' : '確定退回'}
+            <Button
+              className="bg-red-600 text-white hover:bg-red-700"
+              disabled={!reasonDraft || !hasVisibleText(reasonDraft.text) || busyIds.includes(reasonDraft.row.id)}
+              onClick={submitReason}
+            >
+              {reasonDraft?.mode === 'delist' ? '確定下架' : '確定退回'}
             </Button>
           </DialogFooter>
         </DialogContent>

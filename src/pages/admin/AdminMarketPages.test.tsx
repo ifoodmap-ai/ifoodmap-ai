@@ -219,6 +219,61 @@ describe("AdminMarketProductsPage", () => {
   });
 });
 
+describe("AdminMarketProductsPage — 審核結果只作用在同一個商品", () => {
+  const TOMATO = { ...PENDING, id: "a9300000-0000-4000-8000-0000000000c4", name: "牛番茄" };
+
+  beforeEach(() => {
+    vi.mocked(fetchAdminProducts).mockResolvedValue(pageOf([PENDING, TOMATO]));
+  });
+
+  /** 打開有機高麗菜按核准(請求不回來),關掉視窗 */
+  const approveCabbageAndClose = async () => {
+    render(<AdminMarketProductsPage />);
+    await userEvent.click(await screen.findByRole("button", { name: "查看 有機高麗菜" }));
+    await userEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "核准上架" }));
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  };
+
+  it("A 的核准還在送出時改看 B:A 回來的「照片沒上傳完成」不會顯示在 B 的視窗裡", async () => {
+    let failA: (e: unknown) => void = () => {};
+    vi.mocked(reviewProduct).mockImplementationOnce(
+      () =>
+        new Promise<MarketProductRow>((_resolve, reject) => {
+          failA = reject;
+        }),
+    );
+    await approveCabbageAndClose();
+    await userEvent.click(screen.getByRole("button", { name: "查看 牛番茄" }));
+    expect(within(await screen.findByRole("dialog")).getByRole("heading", { name: "牛番茄" })).toBeInTheDocument();
+    await act(async () => failA(new MarketDbError({ message: "x", code: "22023", hint: "photos_not_uploaded" })));
+    await waitFor(() => expect(toastError).toHaveBeenCalledWith("處理失敗", { description: "這個商品還有照片沒有上傳完成,無法核准" }));
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByRole("heading", { name: "牛番茄" })).toBeInTheDocument();
+    expect(within(dialog).queryByRole("alert")).toBeNull();
+    expect(within(dialog).getByRole("button", { name: "核准上架" })).toBeEnabled();
+  });
+
+  it("A 核准成功時,開著的 B 退回視窗與打到一半的原因不受影響;A 送出中也不會擋住 B", async () => {
+    let finishA: () => void = () => {};
+    vi.mocked(reviewProduct).mockImplementationOnce(
+      () =>
+        new Promise<MarketProductRow>((resolve) => {
+          finishA = () => resolve(PENDING);
+        }),
+    );
+    await approveCabbageAndClose();
+    await userEvent.click(screen.getByRole("button", { name: "退回 牛番茄" }));
+    await userEvent.type(screen.getByLabelText("原因(必填)"), "照片太");
+    expect(screen.getByRole("button", { name: "確定退回" })).toBeEnabled();
+    await act(async () => finishA());
+    await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith("已核准「有機高麗菜」"));
+    expect(screen.getByRole("dialog")).toHaveTextContent("退回「牛番茄」");
+    expect(screen.getByLabelText("原因(必填)")).toHaveValue("照片太");
+    expect(screen.getByRole("button", { name: "確定退回" })).toBeEnabled();
+  });
+});
+
 describe("AdminMarketProductsPage — 分頁與搜尋(任何商品都找得到、下得了架)", () => {
   const productOn = (page: number, total: number) =>
     pageOf([{ ...PENDING, id: `a9300000-0000-4000-8000-${String(900 + page).padStart(12, "0")}`, name: `第 ${page + 1} 頁的商品` }], total);
