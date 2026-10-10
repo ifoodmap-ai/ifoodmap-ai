@@ -114,7 +114,8 @@ describe("MarketProductDialog", () => {
     const input = save.mock.calls[0][0];
     expect(input).toMatchObject({ supplierId: SUPPLIER_A, isNew: true, submit: true, form: { name: "有機高麗菜", temperature: "chilled" } });
     expect(input.productId).toMatch(/^[0-9a-f-]{36}$/);
-    expect(onSaved).toHaveBeenCalled();
+    // onSaved 與提示在 save 的 Promise 回來之後才跑:要等,不能看到 save 被呼叫就同步檢查
+    await waitFor(() => expect(onSaved).toHaveBeenCalled());
     expect(toastSuccess).toHaveBeenCalledWith("已送出審核");
   });
 

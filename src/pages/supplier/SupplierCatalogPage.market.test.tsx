@@ -18,6 +18,9 @@ const { db } = vi.hoisted(() => ({
     // 店家零售有沒有被管理員停用;最後一次 update 帶的條件(看樂觀鎖有沒有比對 updated_at)
     storeEnabled: true,
     updateFilters: [] as Array<[string, unknown]>,
+    // 零售資料(market_products、market_stores)一律比批發商品晚回來:測試不能假設兩邊同時到
+    // (審查實測:晚 30ms 回來,「找到批發商品後同步查零售狀態」就穩定失敗)
+    marketDelayMs: 25,
   },
 }));
 
@@ -38,7 +41,9 @@ vi.mock("@/integrations/supabase/client", () => ({
         }
         return { data: [], error: null };
       };
-      const respond = () => (table === "market_products" && db.marketHold ? db.marketHold.then(result) : Promise.resolve(result()));
+      const late = <T,>(value: T) => new Promise<T>((resolve) => setTimeout(() => resolve(value), db.marketDelayMs));
+      const respond = () =>
+        table === "market_products" ? (db.marketHold ?? Promise.resolve()).then(() => late(result())) : Promise.resolve(result());
       // insert / update 之後的 single / maybeSingle 回 db.saved(null = 沒有更新到任何一列)
       let writing = false;
       const filters: Array<[string, unknown]> = [];
@@ -59,7 +64,8 @@ vi.mock("@/integrations/supabase/client", () => ({
           return b;
         },
         single: () => Promise.resolve({ data: db.saved, error: null }),
-        maybeSingle: () => Promise.resolve(writing ? { data: db.saved, error: null } : result()),
+        maybeSingle: () =>
+          writing ? Promise.resolve({ data: db.saved, error: null }) : table === "market_stores" ? late(result()) : Promise.resolve(result()),
         then: (ok: (v: unknown) => unknown, bad?: (e: unknown) => unknown) => respond().then(ok, bad),
       };
       return b;
@@ -99,6 +105,7 @@ beforeEach(() => {
   db.saved = null;
   db.storeEnabled = true;
   db.updateFilters = [];
+  db.marketDelayMs = 25;
 });
 afterEach(cleanup);
 
@@ -108,7 +115,8 @@ describe("SupplierCatalogPage — 零售市集", () => {
     expect(screen.getByRole("tab", { name: "批發商品(給餐廳)" })).toHaveAttribute("aria-selected", "true");
     expect(screen.getByRole("tab", { name: "零售商品(給消費者)" })).toBeInTheDocument();
     const cabbageRow = (await screen.findByText("高麗菜")).closest("tr") as HTMLElement;
-    expect(within(cabbageRow).getByRole("button", { name: "待審" })).toBeInTheDocument();
+    // 零售狀態跟批發商品是分開讀的,晚一點才到:一定要等(findBy),不能找到批發商品就同步查
+    expect(await within(cabbageRow).findByRole("button", { name: "待審" })).toBeInTheDocument();
     const onionRow = screen.getByText("洋蔥").closest("tr") as HTMLElement;
     expect(await within(onionRow).findByRole("button", { name: "洋蔥 開放消費者購買" })).toBeEnabled();
   });
