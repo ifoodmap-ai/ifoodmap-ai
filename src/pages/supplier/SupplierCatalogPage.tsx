@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Loader2, Plus, Pencil, Trash2, PackageX } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -21,8 +21,14 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useToast } from '@/hooks/use-toast';
 import { supabase } from '@/integrations/supabase/client';
+import type { SupplySeed } from '@/lib/market/productForm';
+import type { MarketProductRow } from '@/lib/market/types';
+import MarketProductDialog from './market/MarketProductDialog';
+import SupplierMarketProductsPanel, { statusText } from './market/SupplierMarketProductsPanel';
+import { useSupplierMarketProducts } from './market/useSupplierMarketProducts';
 
 interface Supply {
   id: string;
@@ -70,6 +76,15 @@ export default function SupplierCatalogPage() {
   const [formOpen, setFormOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [deleteId, setDeleteId] = useState<string | null>(null);
+  // 零售市集(B2C):自家零售商品;編輯視窗每次打開給新的 key(新商品的 id 在打開時決定)
+  const market = useSupplierMarketProducts(supplierId);
+  const [retail, setRetail] = useState<{ key: number; product: MarketProductRow | null; seed: SupplySeed | null } | null>(null);
+  const retailBySupply = useMemo(
+    () => new Map(market.products.filter((p) => p.supply_id).map((p) => [p.supply_id as string, p])),
+    [market.products],
+  );
+  const openRetail = (product: MarketProductRow | null, seed: SupplySeed | null = null) =>
+    setRetail({ key: Date.now(), product, seed });
 
   const fetchSupplies = async (sid: string) => {
     const { data } = (await (supabase as never)
@@ -169,13 +184,19 @@ export default function SupplierCatalogPage() {
 
   return (
     <div className="p-6 max-w-5xl mx-auto">
-      <div className="flex items-center justify-between mb-1">
-        <h1 className="text-xl font-bold text-gray-900">商品目錄</h1>
+      <h1 className="text-xl font-bold text-gray-900 mb-4">商品目錄</h1>
+      <Tabs defaultValue="wholesale">
+        <TabsList className="mb-4 h-auto flex-wrap">
+          <TabsTrigger value="wholesale" className="min-h-11">批發商品(給餐廳)</TabsTrigger>
+          <TabsTrigger value="retail" className="min-h-11">零售商品(給消費者)</TabsTrigger>
+        </TabsList>
+        <TabsContent value="wholesale">
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
+        <p className="text-sm text-gray-500">管理您上架給 ifoodmap 買家的商品品項與價格</p>
         <Button onClick={openCreate} className="bg-emerald-600 hover:bg-emerald-700 text-white" disabled={!supplierId}>
           <Plus size={16} className="mr-1.5" />新增商品
         </Button>
       </div>
-      <p className="text-sm text-gray-500 mb-6">管理您上架給 ifoodmap 買家的商品品項與價格</p>
 
       {loading ? (
         <div className="flex justify-center py-20"><Loader2 className="animate-spin text-emerald-500" size={28} /></div>
@@ -190,7 +211,7 @@ export default function SupplierCatalogPage() {
         <div className="bg-white rounded-xl border border-gray-200 overflow-hidden overflow-x-auto">
           {/* overflow-x-auto:手機放不下整張表時讓表格自己橫向捲,
               而不是把整個頁面撐寬 */}
-          <table className="w-full text-sm min-w-[640px]">
+          <table className="w-full text-sm min-w-[760px]">
             <thead className="bg-gray-50 border-b border-gray-200">
               <tr>
                 <th className="text-left px-5 py-3 font-medium text-gray-600">商品</th>
@@ -198,11 +219,14 @@ export default function SupplierCatalogPage() {
                 <th className="text-left px-5 py-3 font-medium text-gray-600">規格</th>
                 <th className="text-right px-5 py-3 font-medium text-gray-600">單價</th>
                 <th className="text-center px-5 py-3 font-medium text-gray-600">上架</th>
+                <th className="text-center px-5 py-3 font-medium text-gray-600">零售</th>
                 <th className="text-right px-5 py-3 font-medium text-gray-600 w-24">操作</th>
               </tr>
             </thead>
             <tbody>
-              {supplies.map((s) => (
+              {supplies.map((s) => {
+                const retailItem = retailBySupply.get(s.id);
+                return (
                 <tr key={s.id} className="border-b border-gray-100 last:border-0 hover:bg-gray-50">
                   <td className="px-5 py-3">
                     <p className="font-medium text-gray-800">{s.name}</p>
@@ -221,6 +245,25 @@ export default function SupplierCatalogPage() {
                   <td className="px-5 py-3 text-center">
                     <Switch checked={s.is_available} onCheckedChange={() => toggleAvailable(s)} />
                   </td>
+                  <td className="px-5 py-3 text-center whitespace-nowrap">
+                    {retailItem ? (
+                      <button type="button" className="text-xs text-emerald-800 underline underline-offset-2" onClick={() => openRetail(retailItem)}>
+                        {statusText(retailItem)}
+                      </button>
+                    ) : (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-8"
+                        disabled={!market.hasStore}
+                        title={market.hasStore ? undefined : '請先完成「零售市集 › 店家設定」'}
+                        aria-label={`${s.name} 開放消費者購買`}
+                        onClick={() => openRetail(null, s)}
+                      >
+                        開放零售
+                      </Button>
+                    )}
+                  </td>
                   <td className="px-5 py-3 text-right whitespace-nowrap">
                     <Button variant="ghost" size="icon" className="h-8 w-8 text-gray-400 hover:text-gray-700" onClick={() => openEdit(s)} aria-label="編輯">
                       <Pencil className="h-4 w-4" />
@@ -230,11 +273,42 @@ export default function SupplierCatalogPage() {
                     </Button>
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>
       )}
+        </TabsContent>
+        <TabsContent value="retail">
+          {supplierId ? (
+            <SupplierMarketProductsPanel
+              products={market.products}
+              hasStore={market.hasStore}
+              loading={market.loading}
+              error={market.error}
+              onCreate={() => openRetail(null)}
+              onEdit={(p) => openRetail(p)}
+            />
+          ) : (
+            <div className="text-center py-20 text-gray-400">此帳號尚未綁定供應商</div>
+          )}
+        </TabsContent>
+      </Tabs>
+
+      {retail && supplierId ? (
+        <MarketProductDialog
+          key={retail.key}
+          open
+          onOpenChange={(o) => {
+            if (!o) setRetail(null);
+          }}
+          supplierId={supplierId}
+          product={retail.product}
+          fromSupply={retail.seed}
+          onSaved={() => void market.reload()}
+        />
+      ) : null}
 
       <Dialog open={formOpen} onOpenChange={setFormOpen}>
         <DialogContent>
