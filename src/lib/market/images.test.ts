@@ -210,4 +210,14 @@ describe("uploadMarketImage", () => {
     const { d } = deps("new row violates row-level security policy");
     await expect(uploadMarketImage(SUP, PROD, file(), d)).rejects.toThrow("上傳失敗:沒有權限上傳到這個店家的資料夾,請重新登入後再試");
   });
+
+  // 主圖上傳成功、縮圖失敗:整張算失敗 —— 回傳主圖路徑的話,表單會留下沒有縮圖的照片(核准時被 photos_not_uploaded 擋)
+  it("縮圖上傳失敗:丟錯、不回傳主圖路徑", async () => {
+    const { d, upload } = deps();
+    upload
+      .mockResolvedValueOnce({ data: {}, error: null })
+      .mockResolvedValueOnce({ data: null, error: { message: "new row violates row-level security policy" } });
+    await expect(uploadMarketImage(SUP, PROD, file(), d)).rejects.toThrow("縮圖上傳失敗:沒有權限上傳到這個店家的資料夾,請重新登入後再試");
+    expect(upload.mock.calls.map((c) => c[0])).toEqual([`${SUP}/${PROD}/${IMG}.jpg`, `${SUP}/${PROD}/${IMG}_t.jpg`]);
+  });
 });
