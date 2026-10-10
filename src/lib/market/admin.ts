@@ -1,8 +1,9 @@
 // 管理後台「零售市集」的資料存取:商品審核、零售店家停用 / 恢復。全部用管理員既有的 RLS(is_admin())。
 //
-// 審核用「樂觀鎖」:更新時多帶 updated_at = 畫面上那一筆的值。供應商在管理員看的同時改了內容
+// 核准、退回用「樂觀鎖」:更新時多帶 updated_at = 畫面上那一筆的值。供應商在管理員看的同時改了內容
 // (資料庫會把 updated_at 換掉、狀態改回 pending),這次更新就會 0 列 → 告訴管理員重新整理,
-// 不會把管理員「沒看過的新內容」核准掉。
+// 不會把管理員「沒看過的新內容」核准掉。下架不鎖:下架只會讓商品下市集、不會核准任何內容,
+// 鎖了反而會被供應商改價格、庫存(第 2 階段下單扣庫存也算)擋住,怎麼按都是「剛被修改過」。
 //
 // 錯誤訊息一律中文(adminErrorMessage):頁面呼叫時都給中文備援;這裡自己丟的錯名稱一律 Market 開頭,
 // friendlyDbError 才會照原本的中文顯示、不被備援蓋掉。
@@ -25,6 +26,14 @@ export class MarketStaleReviewError extends Error {
   constructor() {
     super("這個商品剛被供應商修改過,請重新整理後再審核");
     this.name = "MarketStaleReviewError";
+  }
+}
+
+/** 下架時一列都沒更新到(商品已被供應商刪除,或權限不足被 RLS 擋掉) */
+export class MarketReviewGoneError extends Error {
+  constructor() {
+    super("沒有更新到這個商品(可能已被供應商刪除或權限不足),請重新整理後再試");
+    this.name = "MarketReviewGoneError";
   }
 }
 
@@ -69,9 +78,10 @@ export const reviewProduct = async (
       ? { review_status: "approved" }
       : { review_status: "rejected", reject_reason: action.kind === "delist" ? `${DELIST_PREFIX}${action.reason.trim()}` : action.reason.trim() };
   let q = marketDb<MarketProductRow>("market_products").update(patch).eq("id", product.id);
-  if (product.updated_at) q = q.eq("updated_at", product.updated_at);
+  const locked = action.kind !== "delist";
+  if (locked && product.updated_at) q = q.eq("updated_at", product.updated_at);
   const row = unwrap(await q.select(ADMIN_PRODUCT_COLUMNS).maybeSingle());
-  if (!row) throw new MarketStaleReviewError();
+  if (!row) throw locked ? new MarketStaleReviewError() : new MarketReviewGoneError();
   return row;
 };
 

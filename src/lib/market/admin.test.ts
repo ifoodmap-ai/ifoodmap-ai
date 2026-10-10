@@ -77,6 +77,7 @@ import {
   DELIST_REASON_MAX,
   fetchAdminProducts,
   fetchProductCounts,
+  MarketReviewGoneError,
   MarketStaleReviewError,
   MarketStoreGoneError,
   reviewProduct,
@@ -126,6 +127,24 @@ describe("reviewProduct", () => {
     expect((err as Error).name).toBe("MarketStaleReviewError");
     expect(friendlyDbError(err, "備援")).toBe("這個商品剛被供應商修改過,請重新整理後再審核");
     expect(adminErrorMessage(err, "備援")).toBe("這個商品剛被供應商修改過,請重新整理後再審核");
+  });
+
+  it("退回仍有樂觀鎖(帶 updated_at);下架不鎖、只帶 id —— 供應商改價格 / 庫存(第 2 階段下單扣庫存也算)不會擋住下架", async () => {
+    await reviewProduct(product, { kind: "reject", reason: "照片太暗" });
+    expect(calls[0].filters).toEqual([
+      ["id", "p1"],
+      ["updated_at", product.updated_at],
+    ]);
+    await reviewProduct(product, { kind: "delist", reason: "標示不實" });
+    expect(calls[1].filters).toEqual([["id", "p1"]]);
+  });
+
+  it("下架一列都沒更新到(商品已被刪除)→ 中文的 MarketReviewGoneError,不是「剛被供應商修改過」", async () => {
+    next.data = null;
+    const err = await reviewProduct(product, { kind: "delist", reason: "標示不實" }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(MarketReviewGoneError);
+    expect(err).not.toBeInstanceOf(MarketStaleReviewError);
+    expect(adminErrorMessage(err, "備援")).toBe("沒有更新到這個商品(可能已被供應商刪除或權限不足),請重新整理後再試");
   });
 
   it("下架原因的上限要扣掉前綴:前綴 + 原因剛好是資料庫的 300 字(reject_reason <= 300)", async () => {
