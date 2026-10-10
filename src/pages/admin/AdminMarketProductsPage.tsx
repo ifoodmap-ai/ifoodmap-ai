@@ -373,7 +373,7 @@ const AdminMarketProductsPage = () => {
           maxLength={LIMITS.productName}
           value={searchInput}
           onChange={(e) => setSearchInput(e.target.value)}
-          className="h-9 w-full max-w-xs"
+          className="h-9 min-w-0 flex-1 sm:max-w-xs"
         />
         <Button type="submit" size="sm" variant="outline">
           搜尋
@@ -424,7 +424,8 @@ const AdminMarketProductsPage = () => {
                 ) : (
                   <span className="flex h-16 w-16 shrink-0 items-center justify-center rounded-md bg-slate-100 text-center text-[11px] text-slate-500">沒有照片</span>
                 )}
-                <div className="min-w-0 flex-1">
+                {/* 至少 10rem:窄螢幕上狀態與按鈕放不下時換到下一行,品名欄才不會被擠成一兩個字一行 */}
+                <div className="min-w-[10rem] flex-1">
                   <p className="font-medium text-slate-800">{r.name}</p>
                   <p className="text-xs text-slate-500">
                     {r.market_stores?.suppliers?.name ?? '—'}・{CATEGORY_LABEL[r.category]}・{r.spec}・{formatTwd(r.price)}・送審 {formatTaipei(r.submitted_at)}

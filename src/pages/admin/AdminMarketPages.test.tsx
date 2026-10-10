@@ -90,6 +90,12 @@ describe("AdminMarketProductsPage", () => {
     expect(screen.queryByRole("button", { name: /^核准/ })).toBeNull();
   });
 
+  it("390 寬時品名欄至少 10rem:按鈕少了一顆之後,按鈕列要換到下一行,品名不會被擠成一兩個字一行", async () => {
+    render(<AdminMarketProductsPage />);
+    const name = await screen.findByText("有機高麗菜");
+    expect(name.parentElement).toHaveClass("min-w-[10rem]", "flex-1");
+  });
+
   it("供應商剛改過(樂觀鎖擋下)→ 顯示要重新整理,並重抓清單", async () => {
     vi.mocked(reviewProduct).mockRejectedValue(new MarketStaleReviewError());
     render(<AdminMarketProductsPage />);
