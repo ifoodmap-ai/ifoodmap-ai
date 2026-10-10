@@ -1,5 +1,6 @@
 // 單張圖片欄位(店家 logo、封面):選檔 → 瀏覽器壓縮 → 上傳到 <supplier_id>/store/ → 回傳路徑給表單。
 // 換圖或移除時不刪舊檔(舊檔可能還被已儲存的設定引用;孤兒檔無害)。
+// 上傳中用 onBusyChange 告訴父層:店家設定頁上傳中不能儲存(否則存進去的是舊圖,或存完才冒出資料庫沒有的新圖)。
 import { useId, useState } from "react";
 import { Loader2 } from "lucide-react";
 import { publicImageUrl, uploadMarketImage } from "@/lib/market/images";
@@ -11,9 +12,18 @@ interface MarketImageFieldProps {
   value: string | null;
   onChange: (path: string | null) => void;
   upload?: (supplierId: string, folder: string, file: File) => Promise<string>;
+  onBusyChange?: (busy: boolean) => void;
 }
 
-export default function MarketImageField({ label, hint, supplierId, value, onChange, upload = uploadMarketImage }: MarketImageFieldProps) {
+export default function MarketImageField({
+  label,
+  hint,
+  supplierId,
+  value,
+  onChange,
+  upload = uploadMarketImage,
+  onBusyChange,
+}: MarketImageFieldProps) {
   const id = useId();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -21,6 +31,7 @@ export default function MarketImageField({ label, hint, supplierId, value, onCha
   const onFile = async (file: File | undefined) => {
     if (!file) return;
     setBusy(true);
+    onBusyChange?.(true);
     setError(null);
     try {
       onChange(await upload(supplierId, "store", file));
@@ -28,6 +39,7 @@ export default function MarketImageField({ label, hint, supplierId, value, onCha
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
+      onBusyChange?.(false);
     }
   };
 

@@ -16,9 +16,15 @@ vi.mock("@/lib/market/store", async (importOriginal) => ({
   fetchOwnStore: vi.fn(),
   saveStore: vi.fn(),
 }));
+vi.mock("@/lib/market/images", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/market/images")>()),
+  uploadMarketImage: vi.fn(),
+}));
 
+import { uploadMarketImage } from "@/lib/market/images";
 import { fetchOwnStore, saveStore } from "@/lib/market/store";
 import { STORE_A } from "@/lib/market/testFixtures";
+import type { MarketStoreRow } from "@/lib/market/types";
 import SupplierMarketStorePage from "./SupplierMarketStorePage";
 
 const renderPage = () =>
@@ -241,5 +247,90 @@ describe("SupplierMarketStorePage — 儲存成功後換成資料庫整理過的
     await waitFor(() => expect(screen.getByLabelText(/銀行轉帳/)).not.toBeChecked());
     await userEvent.click(screen.getByLabelText(/銀行轉帳/));
     expect(screen.getByLabelText("轉帳資訊(銀行、分行、帳號、戶名)")).toHaveValue("台灣銀行 004 帳號 123");
+  });
+});
+
+// 審查重現的三種情況(review1922/race.log):上傳中按儲存、儲存中繼續編輯,資料會亂掉。
+// 修法:照片上傳中儲存鈕停用並說明原因;儲存中用 <fieldset disabled> 鎖住所有欄位。
+describe("SupplierMarketStorePage — 上傳、儲存同時發生", () => {
+  const NEW_LOGO = "a9200000-0000-4000-8000-00000000000a/store/a9900000-0000-4000-8000-0000000000ff.jpg";
+  const jpg = () => new File(["x"], "a.jpg", { type: "image/jpeg" });
+  const pendingUpload = () => {
+    const ctl = { finish: (_p: string) => {} };
+    vi.mocked(uploadMarketImage).mockImplementation(() => new Promise<string>((r) => (ctl.finish = r)));
+    return ctl;
+  };
+
+  beforeEach(() => {
+    vi.mocked(fetchOwnStore).mockResolvedValue({ store: STORE_A, transferInfo: "台灣銀行 004 帳號 123" });
+  });
+
+  it("A. 上傳中按儲存、上傳先完成:儲存鈕停用並說明原因、按了不會送出;新 logo 不會被蓋回舊值,上傳完才存得進去", async () => {
+    const upload = pendingUpload();
+    vi.mocked(saveStore).mockImplementation(async (_s, f) => ({ ...STORE_A, logo_path: f.logoPath }));
+    renderPage();
+    await userEvent.upload(await screen.findByLabelText("店家 logo"), jpg());
+    const save = screen.getByRole("button", { name: "儲存店家設定" });
+    expect(save).toBeDisabled();
+    expect(save).toHaveAccessibleDescription("照片上傳中,上傳完成才能儲存");
+    await userEvent.click(save);
+    expect(saveStore).not.toHaveBeenCalled();
+
+    upload.finish(NEW_LOGO);
+    await waitFor(() => expect(save).toBeEnabled());
+    expect(screen.queryByText("照片上傳中,上傳完成才能儲存")).toBeNull();
+    expect(screen.getByAltText("目前的店家 logo").getAttribute("src")).toContain("a9900000-0000-4000-8000-0000000000ff.jpg");
+    await userEvent.click(save);
+    await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith("已儲存店家設定"));
+    expect(vi.mocked(saveStore).mock.calls[0][1].logoPath).toBe(NEW_LOGO);
+    expect(screen.getByAltText("目前的店家 logo").getAttribute("src")).toContain("a9900000-0000-4000-8000-0000000000ff.jpg");
+  });
+
+  it("B. 上傳中按儲存、儲存原本會先回來:不會先跳「已儲存」再冒出資料庫沒有的新 logo", async () => {
+    const upload = pendingUpload();
+    vi.mocked(saveStore).mockResolvedValue({ ...STORE_A });
+    renderPage();
+    await userEvent.upload(await screen.findByLabelText("店家封面"), jpg());
+    await userEvent.click(screen.getByRole("button", { name: "儲存店家設定" }));
+    upload.finish(NEW_LOGO.replace("ff.jpg", "fe.jpg"));
+    expect(await screen.findByAltText("目前的店家封面")).toBeInTheDocument();
+    expect(saveStore).not.toHaveBeenCalled();
+    expect(toastSuccess).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "儲存店家設定" })).toBeEnabled();
+  });
+
+  it("logo 跟封面同時上傳:先完成一張還是不能存,兩張都完成才能存", async () => {
+    const finishes: Array<(p: string) => void> = [];
+    vi.mocked(uploadMarketImage).mockImplementation(() => new Promise<string>((r) => finishes.push(r)));
+    renderPage();
+    await userEvent.upload(await screen.findByLabelText("店家 logo"), jpg());
+    await userEvent.upload(screen.getByLabelText("店家封面"), jpg());
+    const save = screen.getByRole("button", { name: "儲存店家設定" });
+    expect(finishes).toHaveLength(2);
+    finishes[0](NEW_LOGO);
+    expect(await screen.findByAltText("目前的店家 logo")).toBeInTheDocument();
+    expect(save).toBeDisabled();
+    finishes[1](NEW_LOGO.replace("ff.jpg", "fe.jpg"));
+    await waitFor(() => expect(save).toBeEnabled());
+  });
+
+  it("C. 儲存中不能繼續編輯:所有欄位鎖住(打字無效),存完才解鎖、換成資料庫的值", async () => {
+    let finishSave: (r: MarketStoreRow) => void = () => {};
+    vi.mocked(saveStore).mockImplementation(() => new Promise((r) => (finishSave = r)));
+    renderPage();
+    const intro = await screen.findByLabelText("店家介紹");
+    await userEvent.click(screen.getByRole("button", { name: "儲存店家設定" }));
+    expect(screen.getByRole("button", { name: "儲存中…" })).toBeDisabled();
+    expect(intro).toBeDisabled();
+    expect(screen.getByLabelText("臺北市")).toBeDisabled();
+    expect(screen.getByLabelText("店家 logo")).toBeDisabled();
+    expect(screen.getByLabelText("固定運費(元)")).toBeDisabled();
+    await userEvent.type(intro, "補一句");
+    expect(intro).toHaveValue(STORE_A.intro);
+
+    finishSave({ ...STORE_A, intro: "資料庫裡的介紹" });
+    await waitFor(() => expect(intro).toBeEnabled());
+    expect(intro).toHaveValue("資料庫裡的介紹");
+    expect(saveStore).toHaveBeenCalledTimes(1);
   });
 });

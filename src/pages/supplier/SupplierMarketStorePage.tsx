@@ -47,6 +47,9 @@ export default function SupplierMarketStorePage() {
   /** 資料庫裡目前的轉帳資訊(沒勾轉帳時儲存不會動它,存完表單要換回這個值) */
   const [savedTransfer, setSavedTransfer] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  /** logo / 封面上傳中:不能儲存(存進去的會是舊圖,或存完才冒出資料庫沒有的新圖) */
+  const [uploading, setUploading] = useState({ logo: false, cover: false });
+  const anyUploading = uploading.logo || uploading.cover;
 
   useEffect(() => {
     if (!supplierId) return;
@@ -82,8 +85,8 @@ export default function SupplierMarketStorePage() {
 
   const onSubmit = async (e: FormEvent) => {
     e.preventDefault();
-    // 沒讀到原本的設定就不准存(表單本來就不會顯示,這裡再擋一次)
-    if (!supplierId || loading || loadError) return;
+    // 沒讀到原本的設定、儲存中、照片上傳中都不准存(畫面上本來就按不到,這裡再擋一次)
+    if (!supplierId || loading || loadError || saving || anyUploading) return;
     const errs = validateStoreForm(form);
     setErrors(errs);
     if (Object.keys(errs).length > 0) {
@@ -155,163 +158,192 @@ export default function SupplierMarketStorePage() {
         </div>
       ) : null}
 
-      <section className="space-y-4" aria-labelledby="store-look">
-        <h2 id="store-look" className="font-semibold text-gray-900">
-          外觀與介紹
-        </h2>
-        <MarketImageField label="店家 logo" hint="正方形最好看;JPG、PNG、WebP" supplierId={supplierId} value={form.logoPath} onChange={(p) => set("logoPath", p)} />
-        <MarketImageField label="店家封面" hint="橫式,建議 3:1" supplierId={supplierId} value={form.coverPath} onChange={(p) => set("coverPath", p)} />
-        <div>
-          <label htmlFor="store-intro" className="mb-1 block text-sm font-medium text-slate-700">
-            店家介紹
-          </label>
-          <textarea
-            id="store-intro"
-            rows={4}
-            maxLength={LIMITS.storeIntro}
-            value={form.intro}
-            onChange={(e) => set("intro", e.target.value)}
-            aria-invalid={!!errors.intro}
-            aria-describedby={describe("intro")}
-            className={`${INPUT} py-2`}
+      {/* 儲存中鎖住所有欄位:存完表單會換成資料庫的值,期間的修改會被蓋掉(min-w-0:fieldset 預設 min-width 會撐寬手機版面) */}
+      <fieldset disabled={saving} className="min-w-0 space-y-8">
+        <section className="space-y-4" aria-labelledby="store-look">
+          <h2 id="store-look" className="font-semibold text-gray-900">
+            外觀與介紹
+          </h2>
+          <MarketImageField
+            label="店家 logo"
+            hint="正方形最好看;JPG、PNG、WebP"
+            supplierId={supplierId}
+            value={form.logoPath}
+            onChange={(p) => set("logoPath", p)}
+            onBusyChange={(busy) => setUploading((u) => ({ ...u, logo: busy }))}
           />
-          <FieldError id="store-intro-error" message={errors.intro} />
-        </div>
-      </section>
-
-      <section className="space-y-4" aria-labelledby="store-delivery">
-        <h2 id="store-delivery" className="font-semibold text-gray-900">
-          配送
-        </h2>
-        {/* 錯誤標示放在每個勾選框上(aria-invalid + aria-describedby,跟其他欄位一樣),fieldset 不再重複指一次 */}
-        <fieldset>
-          <legend className="mb-2 text-sm font-medium text-slate-700">配送縣市(收件地址不在這裡的訂單不能結帳)</legend>
-          <div className="mb-2 flex gap-2">
-            <button type="button" onClick={() => set("deliveryCities", [...TW_CITIES])} className="min-h-11 rounded-md border border-slate-300 px-3 text-sm">
-              全選
-            </button>
-            <button type="button" onClick={() => set("deliveryCities", [])} className="min-h-11 rounded-md border border-slate-300 px-3 text-sm">
-              清除
-            </button>
-          </div>
-          <div className="grid grid-cols-2 gap-1 min-[640px]:grid-cols-4">
-            {TW_CITIES.map((c) => (
-              <label key={c} className="flex min-h-11 items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  checked={form.deliveryCities.includes(c)}
-                  onChange={() => toggleCity(c)}
-                  aria-invalid={!!errors.deliveryCities}
-                  aria-describedby={describe("deliveryCities")}
-                  className={CHECKBOX}
-                />
-                {c}
-              </label>
-            ))}
-          </div>
-          <FieldError id="store-deliveryCities-error" message={errors.deliveryCities} />
-        </fieldset>
-        <div className="grid gap-4 min-[640px]:grid-cols-2">
-          {(
-            [
-              ["shippingFee", "固定運費(元)", "0 = 免運費"],
-              ["freeShippingThreshold", "滿多少免運(元)", "不提供免運就留白"],
-              ["minOrderAmount", "最低訂購金額(元)", "沒有就填 0;看商品小計,不含運費"],
-              ["shipDays", "幾個工作天內出貨", "0 = 當天出貨"],
-            ] as Array<[keyof StoreForm, string, string]>
-          ).map(([key, label, hint]) => (
-            <div key={key}>
-              <label htmlFor={`store-${key}`} className="mb-1 block text-sm font-medium text-slate-700">
-                {label}
-              </label>
-              <input
-                id={`store-${key}`}
-                inputMode="numeric"
-                value={String(form[key])}
-                onChange={(e) => set(key, e.target.value as never)}
-                aria-invalid={!!errors[key]}
-                aria-describedby={describe(key) ?? `store-${key}-hint`}
-                className={INPUT}
-              />
-              <p id={`store-${key}-hint`} className="mt-1 text-xs text-slate-500">
-                {hint}
-              </p>
-              <FieldError id={`store-${key}-error`} message={errors[key]} />
-            </div>
-          ))}
-        </div>
-      </section>
-
-      <section className="space-y-4" aria-labelledby="store-payment">
-        <h2 id="store-payment" className="font-semibold text-gray-900">
-          付款(店家自己收款,平台不經手)
-        </h2>
-        <fieldset>
-          <legend className="sr-only">接受的付款方式</legend>
-          <label className="flex min-h-11 items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              checked={form.acceptCod}
-              onChange={(e) => set("acceptCod", e.target.checked)}
-              aria-invalid={!!errors.acceptCod}
-              aria-describedby={describe("acceptCod")}
-              className={CHECKBOX}
-            />
-            貨到付款
-          </label>
-          <label className="flex min-h-11 items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              checked={form.acceptTransfer}
-              onChange={(e) => set("acceptTransfer", e.target.checked)}
-              aria-invalid={!!errors.acceptCod}
-              aria-describedby={describe("acceptCod")}
-              className={CHECKBOX}
-            />
-            銀行轉帳(接單後,消費者會在訂單查詢頁看到下面的轉帳資訊)
-          </label>
-          <FieldError id="store-acceptCod-error" message={errors.acceptCod} />
-        </fieldset>
-        {form.acceptTransfer ? (
+          <MarketImageField
+            label="店家封面"
+            hint="橫式,建議 3:1"
+            supplierId={supplierId}
+            value={form.coverPath}
+            onChange={(p) => set("coverPath", p)}
+            onBusyChange={(busy) => setUploading((u) => ({ ...u, cover: busy }))}
+          />
           <div>
-            <label htmlFor="store-transferInfo" className="mb-1 block text-sm font-medium text-slate-700">
-              轉帳資訊(銀行、分行、帳號、戶名)
+            <label htmlFor="store-intro" className="mb-1 block text-sm font-medium text-slate-700">
+              店家介紹
             </label>
             <textarea
-              id="store-transferInfo"
-              rows={3}
-              maxLength={LIMITS.transferInfo}
-              value={form.transferInfo}
-              onChange={(e) => set("transferInfo", e.target.value)}
-              aria-invalid={!!errors.transferInfo}
-              aria-describedby={describe("transferInfo")}
+              id="store-intro"
+              rows={4}
+              maxLength={LIMITS.storeIntro}
+              value={form.intro}
+              onChange={(e) => set("intro", e.target.value)}
+              aria-invalid={!!errors.intro}
+              aria-describedby={describe("intro")}
               className={`${INPUT} py-2`}
             />
-            <FieldError id="store-transferInfo-error" message={errors.transferInfo} />
+            <FieldError id="store-intro-error" message={errors.intro} />
           </div>
-        ) : null}
-        <div>
-          <label htmlFor="store-returnPolicy" className="mb-1 block text-sm font-medium text-slate-700">
-            退換貨說明
-          </label>
-          <textarea
-            id="store-returnPolicy"
-            rows={3}
-            maxLength={LIMITS.returnPolicy}
-            value={form.returnPolicy}
-            onChange={(e) => set("returnPolicy", e.target.value)}
-            placeholder="例:生鮮食品收到後 24 小時內有問題請拍照聯絡我們"
-            aria-invalid={!!errors.returnPolicy}
-            aria-describedby={describe("returnPolicy")}
-            className={`${INPUT} py-2`}
-          />
-          <FieldError id="store-returnPolicy-error" message={errors.returnPolicy} />
-        </div>
-      </section>
+        </section>
 
-      <Button type="submit" disabled={saving} className="min-h-11 bg-emerald-700 text-white hover:bg-emerald-800">
-        {saving ? "儲存中…" : "儲存店家設定"}
-      </Button>
+        <section className="space-y-4" aria-labelledby="store-delivery">
+          <h2 id="store-delivery" className="font-semibold text-gray-900">
+            配送
+          </h2>
+          {/* 錯誤標示放在每個勾選框上(aria-invalid + aria-describedby,跟其他欄位一樣),fieldset 不再重複指一次 */}
+          <fieldset>
+            <legend className="mb-2 text-sm font-medium text-slate-700">配送縣市(收件地址不在這裡的訂單不能結帳)</legend>
+            <div className="mb-2 flex gap-2">
+              <button type="button" onClick={() => set("deliveryCities", [...TW_CITIES])} className="min-h-11 rounded-md border border-slate-300 px-3 text-sm">
+                全選
+              </button>
+              <button type="button" onClick={() => set("deliveryCities", [])} className="min-h-11 rounded-md border border-slate-300 px-3 text-sm">
+                清除
+              </button>
+            </div>
+            <div className="grid grid-cols-2 gap-1 min-[640px]:grid-cols-4">
+              {TW_CITIES.map((c) => (
+                <label key={c} className="flex min-h-11 items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={form.deliveryCities.includes(c)}
+                    onChange={() => toggleCity(c)}
+                    aria-invalid={!!errors.deliveryCities}
+                    aria-describedby={describe("deliveryCities")}
+                    className={CHECKBOX}
+                  />
+                  {c}
+                </label>
+              ))}
+            </div>
+            <FieldError id="store-deliveryCities-error" message={errors.deliveryCities} />
+          </fieldset>
+          <div className="grid gap-4 min-[640px]:grid-cols-2">
+            {(
+              [
+                ["shippingFee", "固定運費(元)", "0 = 免運費"],
+                ["freeShippingThreshold", "滿多少免運(元)", "不提供免運就留白"],
+                ["minOrderAmount", "最低訂購金額(元)", "沒有就填 0;看商品小計,不含運費"],
+                ["shipDays", "幾個工作天內出貨", "0 = 當天出貨"],
+              ] as Array<[keyof StoreForm, string, string]>
+            ).map(([key, label, hint]) => (
+              <div key={key}>
+                <label htmlFor={`store-${key}`} className="mb-1 block text-sm font-medium text-slate-700">
+                  {label}
+                </label>
+                <input
+                  id={`store-${key}`}
+                  inputMode="numeric"
+                  value={String(form[key])}
+                  onChange={(e) => set(key, e.target.value as never)}
+                  aria-invalid={!!errors[key]}
+                  aria-describedby={describe(key) ?? `store-${key}-hint`}
+                  className={INPUT}
+                />
+                <p id={`store-${key}-hint`} className="mt-1 text-xs text-slate-500">
+                  {hint}
+                </p>
+                <FieldError id={`store-${key}-error`} message={errors[key]} />
+              </div>
+            ))}
+          </div>
+        </section>
+
+        <section className="space-y-4" aria-labelledby="store-payment">
+          <h2 id="store-payment" className="font-semibold text-gray-900">
+            付款(店家自己收款,平台不經手)
+          </h2>
+          <fieldset>
+            <legend className="sr-only">接受的付款方式</legend>
+            <label className="flex min-h-11 items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={form.acceptCod}
+                onChange={(e) => set("acceptCod", e.target.checked)}
+                aria-invalid={!!errors.acceptCod}
+                aria-describedby={describe("acceptCod")}
+                className={CHECKBOX}
+              />
+              貨到付款
+            </label>
+            <label className="flex min-h-11 items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={form.acceptTransfer}
+                onChange={(e) => set("acceptTransfer", e.target.checked)}
+                aria-invalid={!!errors.acceptCod}
+                aria-describedby={describe("acceptCod")}
+                className={CHECKBOX}
+              />
+              銀行轉帳(接單後,消費者會在訂單查詢頁看到下面的轉帳資訊)
+            </label>
+            <FieldError id="store-acceptCod-error" message={errors.acceptCod} />
+          </fieldset>
+          {form.acceptTransfer ? (
+            <div>
+              <label htmlFor="store-transferInfo" className="mb-1 block text-sm font-medium text-slate-700">
+                轉帳資訊(銀行、分行、帳號、戶名)
+              </label>
+              <textarea
+                id="store-transferInfo"
+                rows={3}
+                maxLength={LIMITS.transferInfo}
+                value={form.transferInfo}
+                onChange={(e) => set("transferInfo", e.target.value)}
+                aria-invalid={!!errors.transferInfo}
+                aria-describedby={describe("transferInfo")}
+                className={`${INPUT} py-2`}
+              />
+              <FieldError id="store-transferInfo-error" message={errors.transferInfo} />
+            </div>
+          ) : null}
+          <div>
+            <label htmlFor="store-returnPolicy" className="mb-1 block text-sm font-medium text-slate-700">
+              退換貨說明
+            </label>
+            <textarea
+              id="store-returnPolicy"
+              rows={3}
+              maxLength={LIMITS.returnPolicy}
+              value={form.returnPolicy}
+              onChange={(e) => set("returnPolicy", e.target.value)}
+              placeholder="例:生鮮食品收到後 24 小時內有問題請拍照聯絡我們"
+              aria-invalid={!!errors.returnPolicy}
+              aria-describedby={describe("returnPolicy")}
+              className={`${INPUT} py-2`}
+            />
+            <FieldError id="store-returnPolicy-error" message={errors.returnPolicy} />
+          </div>
+        </section>
+      </fieldset>
+
+      <div className="flex flex-wrap items-center gap-3">
+        <Button
+          type="submit"
+          disabled={saving || anyUploading}
+          aria-describedby={anyUploading ? "store-save-blocked" : undefined}
+          className="min-h-11 bg-emerald-700 text-white hover:bg-emerald-800"
+        >
+          {saving ? "儲存中…" : "儲存店家設定"}
+        </Button>
+        {anyUploading ? (
+          <p id="store-save-blocked" className="text-sm text-slate-600">
+            照片上傳中,上傳完成才能儲存
+          </p>
+        ) : null}
+      </div>
     </form>
   );
 }
