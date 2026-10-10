@@ -2,6 +2,10 @@
 //
 // 審核狀態由資料庫決定(market_products_guard):這裡只在「送出審核 / 重新送審」時把 review_status 設成 pending;
 // 一般儲存不送 review_status —— 已核准的商品改了內容,資料庫會自己改回 pending。
+//
+// 修改既有商品用樂觀鎖:多比對畫面讀到的 updated_at(原字串,不經過 Date —— JavaScript 的 Date 只到毫秒,
+// 資料庫是微秒,轉過就永遠比不到);沒有更新到任何一列 = 別人(管理員、另一個分頁)先改過 → StaleProductError,不覆寫。
+// 新商品重送:第一次其實存好了、只是回應在路上遺失,再按一次會撞主鍵 23505 → 讀回那一筆,是自家的就當作已經存好。
 import {
   CATEGORY_LABEL,
   isCategoryKey,
@@ -11,7 +15,7 @@ import {
   type ReviewStatus,
   type Temperature,
 } from "./constants";
-import { marketDb, unwrap } from "./db";
+import { MarketDbError, marketDb, unwrap } from "./db";
 import type { MarketProductRow } from "./types";
 
 /**
@@ -149,25 +153,62 @@ export interface SaveProductInput {
   form: ProductForm;
   /** true = 送出審核 / 重新送審(review_status → pending) */
   submit: boolean;
+  /** 修改既有商品:畫面讀到的 updated_at 原字串(樂觀鎖);新商品不用 */
+  expectedUpdatedAt?: string | null;
 }
 
-export const saveMarketProduct = async ({ supplierId, productId, isNew, form, submit }: SaveProductInput): Promise<MarketProductRow> => {
+export interface SaveProductResult {
+  row: MarketProductRow;
+  /** true = 新商品重按時資料庫已經有自家的這一筆(上一次其實存好了),畫面提示「已儲存」 */
+  alreadySaved: boolean;
+}
+
+/** 修改時沒有更新到任何一列:畫面上那一筆已經不是最新的 */
+export class StaleProductError extends Error {
+  constructor() {
+    super("這個商品已被其他人更新,請重新載入後再改");
+    this.name = "StaleProductError";
+  }
+}
+
+export const saveMarketProduct = async ({
+  supplierId,
+  productId,
+  isNew,
+  form,
+  submit,
+  expectedUpdatedAt,
+}: SaveProductInput): Promise<SaveProductResult> => {
   const fields = productPayload(form);
   if (isNew) {
-    return unwrap(
-      await marketDb<MarketProductRow>("market_products")
-        .insert({ id: productId, supplier_id: supplierId, ...fields, review_status: submit ? "pending" : "draft" })
-        .select("*")
-        .single(),
-    );
+    try {
+      const row = unwrap(
+        await marketDb<MarketProductRow>("market_products")
+          .insert({ id: productId, supplier_id: supplierId, ...fields, review_status: submit ? "pending" : "draft" })
+          .select("*")
+          .single(),
+      );
+      return { row, alreadySaved: false };
+    } catch (e) {
+      if (!(e instanceof MarketDbError) || e.code !== "23505") throw e;
+      // 主鍵已經有了:讀回來看是不是自家的(別家的 RLS 讀不到 → null)。不是就報錯,絕不拿這次的內容去覆寫。
+      const existing = unwrap(await marketDb<MarketProductRow>("market_products").select("*").eq("id", productId).maybeSingle());
+      if (existing && existing.supplier_id === supplierId) return { row: existing, alreadySaved: true };
+      throw new Error("這個商品編號已經被使用,請關閉視窗後重新新增");
+    }
   }
-  return unwrap(
+  // 沒有讀到的 updated_at 就沒辦法確認畫面上是不是最新的:不送
+  if (!expectedUpdatedAt) throw new StaleProductError();
+  const row = unwrap(
     await marketDb<MarketProductRow>("market_products")
       .update(submit ? { ...fields, review_status: "pending" } : fields)
       .eq("id", productId)
+      .eq("updated_at", expectedUpdatedAt)
       .select("*")
-      .single(),
+      .maybeSingle(),
   );
+  if (!row) throw new StaleProductError();
+  return { row, alreadySaved: false };
 };
 
 export interface ProductActions {

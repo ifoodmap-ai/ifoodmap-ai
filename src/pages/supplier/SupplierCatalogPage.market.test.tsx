@@ -15,6 +15,9 @@ const { db } = vi.hoisted(() => ({
     marketFails: false,
     marketHold: null as Promise<void> | null,
     saved: null as Record<string, unknown> | null,
+    // 店家零售有沒有被管理員停用;最後一次 update 帶的條件(看樂觀鎖有沒有比對 updated_at)
+    storeEnabled: true,
+    updateFilters: [] as Array<[string, unknown]>,
   },
 }));
 
@@ -29,18 +32,34 @@ vi.mock("@/integrations/supabase/client", () => ({
         if (table === "supplies") return { data: db.supplies, error: null };
         if (table === "market_products" && db.marketFails) return { data: null, error: { message: "TypeError: Failed to fetch", code: "", hint: "" } };
         if (table === "market_products") return { data: db.marketProducts, error: null };
-        if (table === "market_stores") return { data: db.hasStore ? { supplier_id: "a9200000-0000-4000-8000-00000000000a" } : null, error: null };
+        if (table === "market_stores") {
+          const store = { supplier_id: "a9200000-0000-4000-8000-00000000000a", is_enabled: db.storeEnabled, suppliers: { is_active: true } };
+          return { data: db.hasStore ? store : null, error: null };
+        }
         return { data: [], error: null };
       };
       const respond = () => (table === "market_products" && db.marketHold ? db.marketHold.then(result) : Promise.resolve(result()));
+      // insert / update 之後的 single / maybeSingle 回 db.saved(null = 沒有更新到任何一列)
+      let writing = false;
+      const filters: Array<[string, unknown]> = [];
       const b = {
         select: () => b,
-        eq: () => b,
+        eq: (column: string, value: unknown) => {
+          filters.push([column, value]);
+          return b;
+        },
         order: () => b,
-        insert: () => b,
-        update: () => b,
+        insert: () => {
+          writing = true;
+          return b;
+        },
+        update: () => {
+          writing = true;
+          db.updateFilters = filters;
+          return b;
+        },
         single: () => Promise.resolve({ data: db.saved, error: null }),
-        maybeSingle: () => Promise.resolve(result()),
+        maybeSingle: () => Promise.resolve(writing ? { data: db.saved, error: null } : result()),
         then: (ok: (v: unknown) => unknown, bad?: (e: unknown) => unknown) => respond().then(ok, bad),
       };
       return b;
@@ -78,6 +97,8 @@ beforeEach(() => {
   db.marketFails = false;
   db.marketHold = null;
   db.saved = null;
+  db.storeEnabled = true;
+  db.updateFilters = [];
 });
 afterEach(cleanup);
 
@@ -119,6 +140,8 @@ describe("SupplierCatalogPage — 零售市集", () => {
     expect(button).toBeDisabled();
   });
 });
+
+const STAMP = "2026-10-10T07:00:00.123456+00:00";
 
 // 讀取失敗 / 讀取中 / 存檔之後:「零售」欄不能拿舊的或空的資料讓人重複開放零售、或用舊內容蓋掉剛存的修改。
 describe("SupplierCatalogPage — 零售資料讀取失敗、讀取中、存檔後", () => {
@@ -167,7 +190,7 @@ describe("SupplierCatalogPage — 零售資料讀取失敗、讀取中、存檔�
   });
 
   it("存檔後清單立刻換成資料庫回傳的那一筆:重抓還沒回來,也不會留著舊價格讓人再編輯", async () => {
-    db.marketProducts = [{ ...CABBAGE, supply_id: "s-cabbage", review_status: "approved", price: 100 }];
+    db.marketProducts = [{ ...CABBAGE, supply_id: "s-cabbage", review_status: "approved", price: 100, updated_at: STAMP }];
     renderPage();
     await userEvent.click(screen.getByRole("tab", { name: "零售商品(給消費者)" }));
     await userEvent.click(await screen.findByRole("button", { name: "編輯 有機高麗菜" }));
@@ -180,7 +203,7 @@ describe("SupplierCatalogPage — 零售資料讀取失敗、讀取中、存檔�
     db.marketHold = new Promise<void>((r) => {
       release = r;
     });
-    db.saved = { ...CABBAGE, supply_id: "s-cabbage", review_status: "approved", price: 120 };
+    db.saved = { ...CABBAGE, supply_id: "s-cabbage", review_status: "approved", price: 120, updated_at: "2026-10-10T07:05:00.000001+00:00" };
     await userEvent.click(within(dialog).getByRole("button", { name: "儲存" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(screen.getByText(/NT\$ 120/)).toBeInTheDocument();
@@ -195,5 +218,36 @@ describe("SupplierCatalogPage — 零售資料讀取失敗、讀取中、存檔�
     renderPage();
     const cabbageRow = (await screen.findByText("高麗菜")).closest("tr") as HTMLElement;
     expect(await within(cabbageRow).findByRole("button", { name: "待審" })).toHaveClass("min-h-8");
+  });
+});
+
+// 樂觀鎖:別人(管理員、另一個分頁)先改過就不覆寫;狀態文字照消費者實際看到的寫。
+describe("SupplierCatalogPage — 樂觀鎖與狀態文字", () => {
+  it("別人先改過:儲存帶讀到的 updated_at,沒更新到就顯示原因;按「重新載入」關視窗、重新讀取後才看到新內容", async () => {
+    db.marketProducts = [{ ...CABBAGE, supply_id: "s-cabbage", review_status: "approved", price: 100, updated_at: STAMP }];
+    renderPage();
+    await userEvent.click(screen.getByRole("tab", { name: "零售商品(給消費者)" }));
+    await userEvent.click(await screen.findByRole("button", { name: "編輯 有機高麗菜" }));
+    const dialog = await screen.findByRole("dialog");
+    db.saved = null;
+    await userEvent.click(within(dialog).getByRole("button", { name: "儲存" }));
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("這個商品已被其他人更新,請重新載入後再改");
+    expect(db.updateFilters).toContainEqual(["updated_at", STAMP]);
+
+    db.marketProducts = [
+      { ...CABBAGE, supply_id: "s-cabbage", review_status: "approved", price: 150, updated_at: "2026-10-10T08:00:00.000001+00:00" },
+    ];
+    await userEvent.click(within(dialog).getByRole("button", { name: "重新載入" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(await screen.findByText(/NT\$ 150/)).toBeInTheDocument();
+  });
+
+  it("店家零售被停用:批發分頁的零售狀態寫「已核准・店家停用中(消費者看不到)」,不寫「已上架」", async () => {
+    db.marketProducts = [{ ...CABBAGE, supply_id: "s-cabbage", review_status: "approved" }];
+    db.storeEnabled = false;
+    renderPage();
+    const cabbageRow = (await screen.findByText("高麗菜")).closest("tr") as HTMLElement;
+    expect(await within(cabbageRow).findByRole("button", { name: "已核准・店家停用中(消費者看不到)" })).toBeInTheDocument();
+    expect(within(cabbageRow).queryByRole("button", { name: "已上架" })).toBeNull();
   });
 });

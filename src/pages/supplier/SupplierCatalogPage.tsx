@@ -278,7 +278,7 @@ export default function SupplierCatalogPage() {
                         className="inline-flex min-h-8 items-center px-1 text-xs text-emerald-800 underline underline-offset-2"
                         onClick={() => openRetail(retailItem)}
                       >
-                        {statusText(retailItem)}
+                        {statusText(retailItem, market.storeOpen)}
                       </button>
                     ) : (
                       <Button
@@ -320,6 +320,7 @@ export default function SupplierCatalogPage() {
               onCreate={() => openRetail(null)}
               onEdit={(p) => openRetail(p)}
               onRetry={market.retry}
+              storeOpen={market.storeOpen}
             />
           ) : (
             <div className="text-center py-20 text-gray-400">此帳號尚未綁定供應商</div>
@@ -337,6 +338,7 @@ export default function SupplierCatalogPage() {
           supplierId={supplierId}
           product={retail.product}
           fromSupply={retail.seed}
+          onStale={market.retry}
           onSaved={(row) => {
             // 先換上資料庫回傳的那一筆(重抓還沒回來或失敗,也不會留著舊內容讓人再編輯),再背景重抓
             market.applySaved(row);

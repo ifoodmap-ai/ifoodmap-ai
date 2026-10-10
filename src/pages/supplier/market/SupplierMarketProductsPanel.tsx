@@ -16,9 +16,25 @@ const STATUS_CLASS: Record<ReviewStatus, string> = {
   rejected: "border-red-300 bg-red-50 text-red-800",
 };
 
-/** 狀態徽章文字:已核准但上架開關關掉 → 「已核准・暫停販售」 */
-export const statusText = (p: Pick<MarketProductRow, "review_status" | "is_listed">): string =>
-  p.review_status === "approved" ? (p.is_listed ? "已上架" : "已核准・暫停販售") : REVIEW_STATUS_LABEL[p.review_status];
+type StatusInput = Pick<MarketProductRow, "review_status" | "is_listed"> & { stock?: number | null };
+
+/** 已核准但消費者現在買不到(店家停用、暫停販售、缺貨)—— 徽章不用綠色 */
+const NOT_BUYABLE_CLASS = "border-amber-300 bg-amber-50 text-amber-800";
+
+/**
+ * 狀態徽章文字,照消費者實際看到的寫(市集只顯示「已核准 + 上架中 + 店家開著」的商品,見 market_store_is_open):
+ * 店家零售被停用或供應商帳號停用 → 「已核准・店家停用中(消費者看不到)」;上架開關關掉 → 「已核准・暫停販售」;
+ * 庫存 0 → 「已上架・缺貨」(消費者看得到,標「已售完」、不能買)。storeOpen 沒給當作開著。
+ */
+export const statusText = (p: StatusInput, storeOpen = true): string => {
+  if (p.review_status !== "approved") return REVIEW_STATUS_LABEL[p.review_status];
+  if (!storeOpen) return "已核准・店家停用中(消費者看不到)";
+  if (!p.is_listed) return "已核准・暫停販售";
+  return p.stock === 0 ? "已上架・缺貨" : "已上架";
+};
+
+const statusClass = (p: StatusInput, storeOpen: boolean): string =>
+  p.review_status === "approved" && (!storeOpen || !p.is_listed || p.stock === 0) ? NOT_BUYABLE_CLASS : STATUS_CLASS[p.review_status];
 
 interface PanelProps {
   products: MarketProductRow[];
@@ -29,9 +45,20 @@ interface PanelProps {
   onEdit: (product: MarketProductRow) => void;
   /** 讀取失敗後按「重新載入」 */
   onRetry?: () => void;
+  /** 店家對消費者開著嗎(零售啟用 + 供應商帳號啟用);沒給當作開著 */
+  storeOpen?: boolean;
 }
 
-export default function SupplierMarketProductsPanel({ products, hasStore, loading, error, onCreate, onEdit, onRetry }: PanelProps) {
+export default function SupplierMarketProductsPanel({
+  products,
+  hasStore,
+  loading,
+  error,
+  onCreate,
+  onEdit,
+  onRetry,
+  storeOpen = true,
+}: PanelProps) {
   if (loading) {
     return (
       <div className="flex justify-center py-16">
@@ -83,7 +110,7 @@ export default function SupplierMarketProductsPanel({ products, hasStore, loadin
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
                   <p className="min-w-0 max-w-full truncate font-medium text-gray-800">{p.name}</p>
-                  <span className={`shrink-0 rounded-full border px-2 py-0.5 text-xs ${STATUS_CLASS[p.review_status]}`}>{statusText(p)}</span>
+                  <span className={`shrink-0 rounded-full border px-2 py-0.5 text-xs ${statusClass(p, storeOpen)}`}>{statusText(p, storeOpen)}</span>
                 </div>
                 <p className="text-xs text-gray-500">
                   {p.spec}・{formatTwd(p.price)}・{TEMPERATURES[p.temperature]}・庫存 {p.stock === null ? "不限" : p.stock}

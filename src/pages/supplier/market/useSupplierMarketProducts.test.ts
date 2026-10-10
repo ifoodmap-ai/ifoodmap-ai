@@ -128,3 +128,31 @@ describe("useSupplierMarketProducts", () => {
     expect(result.current.products[0]?.price).toBe(130);
   });
 });
+
+describe("useSupplierMarketProducts — 店家對消費者開著嗎", () => {
+  it("storeOpen:零售被管理員停用、或供應商帳號停用 → false(消費者看不到);都開著才 true", async () => {
+    const { result } = renderHook(() => useSupplierMarketProducts(SUPPLIER_A));
+    const first = takePair();
+    first.products.resolve({ data: [CABBAGE], error: null });
+    first.store.resolve({ data: { supplier_id: SUPPLIER_A, is_enabled: false, suppliers: { is_active: true } }, error: null });
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.hasStore).toBe(true);
+    expect(result.current.storeOpen).toBe(false);
+
+    act(() => {
+      void result.current.reload();
+    });
+    const second = takePair();
+    second.products.resolve({ data: [CABBAGE], error: null });
+    second.store.resolve({ data: { supplier_id: SUPPLIER_A, is_enabled: true, suppliers: { is_active: true } }, error: null });
+    await waitFor(() => expect(result.current.storeOpen).toBe(true));
+
+    act(() => {
+      void result.current.reload();
+    });
+    const third = takePair();
+    third.products.resolve({ data: [CABBAGE], error: null });
+    third.store.resolve({ data: { supplier_id: SUPPLIER_A, is_enabled: true, suppliers: { is_active: false } }, error: null });
+    await waitFor(() => expect(result.current.storeOpen).toBe(false));
+  });
+});

@@ -1,6 +1,8 @@
 // 零售商品的新增 / 編輯視窗(商品目錄頁的「零售商品」分頁與每列的「開放零售」共用)。
 // 父層每次打開都給新的 key:新商品的 id 在打開當下決定(照片要先上傳到 <supplier>/<商品 id>/)。
 // 照片上傳中不能儲存(存進去的會少那張);驗證沒過時焦點移到第一個出錯的欄位(視窗很長,錯誤可能在畫面外)。
+// 修改既有商品帶讀到的 updated_at(樂觀鎖):別人先改過就不覆寫,視窗留著(可以先抄下改過的內容)、不能再存,
+// 按「重新載入」才關視窗、請父層重新讀取。新商品重按時資料庫已經有自家的那一筆 → 當作已經存好,提示「已儲存」。
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -13,6 +15,7 @@ import {
   productActions,
   productFormFromRow,
   saveMarketProduct,
+  StaleProductError,
   validateProductForm,
   type ProductForm,
   type ProductFormErrors,
@@ -28,6 +31,8 @@ interface MarketProductDialogProps {
   product: MarketProductRow | null;
   fromSupply?: SupplySeed | null;
   onSaved: (row: MarketProductRow) => void;
+  /** 別人先改過、使用者按「重新載入」:父層重新讀取清單 */
+  onStale?: () => void;
   save?: typeof saveMarketProduct;
   upload?: (supplierId: string, folder: string, file: File) => Promise<string>;
 }
@@ -45,6 +50,7 @@ export default function MarketProductDialog({
   product,
   fromSupply,
   onSaved,
+  onStale,
   save = saveMarketProduct,
   upload,
 }: MarketProductDialogProps) {
@@ -53,6 +59,8 @@ export default function MarketProductDialog({
   const [errors, setErrors] = useState<ProductFormErrors>({});
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState(false);
+  /** 樂觀鎖擋下:畫面上的內容已經不是最新的,不能再存 */
+  const [stale, setStale] = useState(false);
   const focusAfterErrors = useRef<keyof ProductForm | null>(null);
   const actions = productActions(product?.review_status ?? null);
   const set = <K extends keyof ProductForm>(key: K, value: ProductForm[K]) => setForm((f) => ({ ...f, [key]: value }));
@@ -73,7 +81,7 @@ export default function MarketProductDialog({
   }, [errors]);
 
   const doSave = async (submit: boolean) => {
-    if (uploading) return;
+    if (uploading || stale) return;
     const e = validateProductForm(form);
     setErrors(e);
     if (Object.keys(e).length > 0) {
@@ -82,11 +90,19 @@ export default function MarketProductDialog({
     }
     setSaving(true);
     try {
-      const row = await save({ supplierId, productId, isNew: !product, form, submit });
-      toast.success(submit ? "已送出審核" : "已儲存");
+      const { row, alreadySaved } = await save({
+        supplierId,
+        productId,
+        isNew: !product,
+        form,
+        submit,
+        expectedUpdatedAt: product?.updated_at ?? null,
+      });
+      toast.success(submit && !alreadySaved ? "已送出審核" : "已儲存");
       onSaved(row);
       onOpenChange(false);
     } catch (error) {
+      if (error instanceof StaleProductError) setStale(true);
       toast.error("儲存失敗", { description: friendlyDbError(error) });
     } finally {
       setSaving(false);
@@ -231,6 +247,22 @@ export default function MarketProductDialog({
             </label>
           ) : null}
           {actions.notice ? <p className="rounded-md bg-amber-50 p-3 text-sm text-amber-900">{actions.notice}</p> : null}
+          {stale ? (
+            <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800">
+              <p>{new StaleProductError().message}</p>
+              <Button
+                type="button"
+                variant="outline"
+                className="min-h-11 bg-white"
+                onClick={() => {
+                  onStale?.();
+                  onOpenChange(false);
+                }}
+              >
+                重新載入
+              </Button>
+            </div>
+          ) : null}
         </div>
 
         <DialogFooter className="gap-2">
@@ -238,13 +270,13 @@ export default function MarketProductDialog({
             取消
           </Button>
           {actions.secondary ? (
-            <Button type="button" variant="outline" disabled={saving || uploading} onClick={() => doSave(false)} className="min-h-11">
+            <Button type="button" variant="outline" disabled={saving || uploading || stale} onClick={() => doSave(false)} className="min-h-11">
               {actions.secondary.label}
             </Button>
           ) : null}
           <Button
             type="button"
-            disabled={saving || uploading}
+            disabled={saving || uploading || stale}
             onClick={() => doSave(actions.primary.submit)}
             className="min-h-11 bg-emerald-700 text-white hover:bg-emerald-800"
           >

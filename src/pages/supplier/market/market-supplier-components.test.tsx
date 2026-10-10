@@ -10,6 +10,7 @@ vi.mock("@/integrations/supabase/client", () => ({ supabase: {} }));
 vi.mock("sonner", () => ({ toast: { success: toastSuccess, error: toastError } }));
 
 import { MarketDbError } from "@/lib/market/db";
+import { StaleProductError } from "@/lib/market/productForm";
 import { CABBAGE, SUPPLIER_A } from "@/lib/market/testFixtures";
 import type { MarketProductRow } from "@/lib/market/types";
 import MarketPhotoField from "./MarketPhotoField";
@@ -86,7 +87,7 @@ describe("MarketPhotoField", () => {
   });
 });
 
-const renderDialog = (product: MarketProductRow | null, save = vi.fn().mockResolvedValue({ ...CABBAGE })) => {
+const renderDialog = (product: MarketProductRow | null, save = vi.fn().mockResolvedValue({ row: { ...CABBAGE }, alreadySaved: false })) => {
   const onSaved = vi.fn();
   render(
     <MarketProductDialog open onOpenChange={vi.fn()} supplierId={SUPPLIER_A} product={product} onSaved={onSaved} save={save} upload={vi.fn()} />,
@@ -197,7 +198,7 @@ describe("MarketPhotoField — 上傳中與觸控大小", () => {
 describe("MarketProductDialog — 上傳中、出錯的焦點、版面", () => {
   it("照片還在上傳時不能儲存;上傳完成才放行,存進去的有那張照片", async () => {
     const { upload, finish } = pendingUpload();
-    const save = vi.fn().mockResolvedValue({ ...CABBAGE });
+    const save = vi.fn().mockResolvedValue({ row: { ...CABBAGE }, alreadySaved: false });
     render(
       <MarketProductDialog
         open
@@ -273,5 +274,91 @@ describe("SupplierMarketProductsPanel — 讀取失敗與版面", () => {
     );
     expect(screen.getByText("有機高麗菜").parentElement).toContainElement(screen.getByText("退回"));
     expect(screen.getByRole("button", { name: "新增零售商品" })).toHaveClass("min-h-11");
+  });
+});
+
+// 樂觀鎖(別人先改過就不覆寫)、新商品重送(回應遺失後重按)、狀態文字照消費者實際看到的寫。
+const STAMP = "2026-10-10T07:00:00.123456+00:00";
+
+describe("MarketProductDialog — 樂觀鎖與新商品重送", () => {
+  it("修改既有商品:把讀到的 updated_at 原字串交給儲存", async () => {
+    const { save } = renderDialog({ ...CABBAGE, review_status: "approved", updated_at: STAMP });
+    await userEvent.click(screen.getByRole("button", { name: "儲存" }));
+    await waitFor(() => expect(save).toHaveBeenCalledWith(expect.objectContaining({ isNew: false, expectedUpdatedAt: STAMP })));
+  });
+
+  it("別人先改過:顯示原因、視窗不關、不能再存;按「重新載入」才關視窗並請父層重新讀取", async () => {
+    const save = vi.fn().mockRejectedValue(new StaleProductError());
+    const onOpenChange = vi.fn();
+    const onStale = vi.fn();
+    const onSaved = vi.fn();
+    render(
+      <MarketProductDialog
+        open
+        onOpenChange={onOpenChange}
+        supplierId={SUPPLIER_A}
+        product={{ ...CABBAGE, review_status: "approved", updated_at: STAMP }}
+        onSaved={onSaved}
+        onStale={onStale}
+        save={save}
+        upload={vi.fn()}
+      />,
+    );
+    await userEvent.click(screen.getByRole("button", { name: "儲存" }));
+    await waitFor(() => expect(toastError).toHaveBeenCalledWith("儲存失敗", { description: "這個商品已被其他人更新,請重新載入後再改" }));
+    expect(within(screen.getByRole("dialog")).getByRole("alert")).toHaveTextContent("這個商品已被其他人更新,請重新載入後再改");
+    expect(screen.getByRole("button", { name: "儲存" })).toBeDisabled();
+    expect(onSaved).not.toHaveBeenCalled();
+    expect(onOpenChange).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: "重新載入" }));
+    expect(onStale).toHaveBeenCalledTimes(1);
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+
+  it("新商品重按時資料庫已經有自家的那一筆:當作已經存好,提示「已儲存」並交給父層換進清單", async () => {
+    const existing = { ...CABBAGE, review_status: "draft" as const };
+    const { onSaved } = renderDialog(null, vi.fn().mockResolvedValue({ row: existing, alreadySaved: true }));
+    await userEvent.type(screen.getByLabelText("品名 *"), "有機高麗菜");
+    await userEvent.selectOptions(screen.getByLabelText("分類 *"), "vegetable");
+    await userEvent.type(screen.getByLabelText("零售規格 *"), "1 顆");
+    await userEvent.type(screen.getByLabelText("零售價(元)*"), "120");
+    await userEvent.click(screen.getByRole("button", { name: "送出審核" }));
+    await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith("已儲存"));
+    expect(toastSuccess).not.toHaveBeenCalledWith("已送出審核");
+    expect(onSaved).toHaveBeenCalledWith(existing);
+  });
+});
+
+describe("statusText — 照消費者實際看到的寫", () => {
+  it("店家停用(零售被暫停或供應商帳號停用)、暫停販售、缺貨都不寫「已上架」", () => {
+    const approved = { review_status: "approved" as const, is_listed: true };
+    expect(statusText({ ...approved, stock: 5 })).toBe("已上架");
+    expect(statusText({ ...approved, stock: null })).toBe("已上架");
+    expect(statusText({ ...approved, stock: 0 })).toBe("已上架・缺貨");
+    expect(statusText({ ...approved, stock: 5 }, false)).toBe("已核准・店家停用中(消費者看不到)");
+    expect(statusText({ ...approved, is_listed: false, stock: 0 }, false)).toBe("已核准・店家停用中(消費者看不到)");
+    expect(statusText({ ...approved, is_listed: false, stock: 0 })).toBe("已核准・暫停販售");
+    expect(statusText({ review_status: "pending", is_listed: true, stock: 0 }, false)).toBe("待審");
+  });
+
+  it("清單:缺貨寫「已上架・缺貨」、店家停用時已核准的都寫「店家停用中」,而且不是綠色", () => {
+    const soldOut = { ...CABBAGE, id: "a9300000-0000-4000-8000-0000000000a9", name: "缺貨的高麗菜", review_status: "approved" as const, stock: 0 };
+    const listed = { ...CABBAGE, review_status: "approved" as const };
+    const props = { hasStore: true, loading: false, error: null, onCreate: vi.fn(), onEdit: vi.fn() };
+    const { rerender } = render(
+      <MemoryRouter>
+        <SupplierMarketProductsPanel {...props} products={[listed, soldOut]} />
+      </MemoryRouter>,
+    );
+    expect(screen.getByText("已上架")).toHaveClass("bg-emerald-50");
+    expect(screen.getByText("已上架・缺貨")).toHaveClass("bg-amber-50");
+    rerender(
+      <MemoryRouter>
+        <SupplierMarketProductsPanel {...props} products={[listed, soldOut]} storeOpen={false} />
+      </MemoryRouter>,
+    );
+    expect(screen.getAllByText("已核准・店家停用中(消費者看不到)")).toHaveLength(2);
+    expect(screen.queryByText("已上架")).toBeNull();
+    screen.getAllByText("已核准・店家停用中(消費者看不到)").forEach((badge) => expect(badge).toHaveClass("bg-amber-50"));
   });
 });
