@@ -9,8 +9,6 @@ SET LOCAL lock_timeout = '3s';
 
 DROP POLICY IF EXISTS "market images supplier select" ON storage.objects;
 DROP POLICY IF EXISTS "market images supplier insert" ON storage.objects;
-DROP POLICY IF EXISTS "market images supplier update" ON storage.objects;
-DROP POLICY IF EXISTS "market images supplier delete" ON storage.objects;
 DROP FUNCTION IF EXISTS public.market_image_object_ok(text);
 
 DELETE FROM supabase_migrations.schema_migrations WHERE version = '20261009120100';

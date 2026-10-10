@@ -5,9 +5,12 @@
 --   - 公開讀取(圖片網址 /storage/v1/object/public/market-images/<路徑>,不經過 RLS);沒有給 anon 的 SELECT policy → 不能列目錄
 --   - 每個檔案 ≤ 2 MB、只收 image/jpeg、image/png、image/webp(Storage 伺服器端檢查,前端繞不過)
 -- 路徑:<supplier_id>/<商品 id 或 store>/<uuid>[_t].<jpg|jpeg|png|webp>(_t = 列表用的 480px 縮圖)
--- 寫入(上傳、覆寫、刪除)只限路徑第一段 ∈ current_supplier_ids() 的登入者(該供應商的啟用中帳號)。
+-- 上傳只限路徑第一段 ∈ current_supplier_ids() 的登入者(該供應商的啟用中帳號)。
 --
--- 🔴 Storage 的 upsert(x-upsert: true)要 SELECT + INSERT + UPDATE 三條 policy 都過(PikTag 2026-06 踩過),SELECT 不能省。
+-- 🔴 物件只能寫一次:只有 SELECT + INSERT 兩條 policy,沒有 UPDATE / DELETE(2026-10-10 審查後拿掉)。
+--    有的話,已核准商品的照片可以用 x-upsert 覆寫、或刪掉再同名重傳 —— 內容換了,商品卻不會回到待審。
+--    前端一律 upsert:false、換照片不刪舊檔(src/lib/market/images.ts),不受影響;換掉的舊檔留在 bucket(孤兒檔)。
+--    違規圖:管理員也沒有 storage policy,要從 Supabase Dashboard → Storage 或用 service role 刪(runbook 在 docs/DEPLOY.md)。
 -- 🔴 storage.objects / storage.buckets 不能用 SQL 刪資料(protect_delete trigger 會擋,42501)。
 --    還原只拆 policy 與函式;bucket 本身要清空後用 Storage API 刪(見 supabase/rollbacks/20261009120100_market_images_storage.down.sql)。
 -- 測試:supabase/tests/database/market_images_storage.test.sql
@@ -51,13 +54,4 @@ CREATE POLICY "market images supplier insert" ON storage.objects
   FOR INSERT TO authenticated
   WITH CHECK (bucket_id = 'market-images' AND public.market_image_object_ok(name));
 
-DROP POLICY IF EXISTS "market images supplier update" ON storage.objects;
-CREATE POLICY "market images supplier update" ON storage.objects
-  FOR UPDATE TO authenticated
-  USING (bucket_id = 'market-images' AND public.market_image_object_ok(name))
-  WITH CHECK (bucket_id = 'market-images' AND public.market_image_object_ok(name));
-
-DROP POLICY IF EXISTS "market images supplier delete" ON storage.objects;
-CREATE POLICY "market images supplier delete" ON storage.objects
-  FOR DELETE TO authenticated
-  USING (bucket_id = 'market-images' AND public.market_image_object_ok(name));
+-- 刻意沒有 UPDATE / DELETE policy(見檔頭「物件只能寫一次」)。
