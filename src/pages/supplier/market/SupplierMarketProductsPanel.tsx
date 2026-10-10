@@ -33,6 +33,27 @@ export const statusText = (p: StatusInput, storeOpen = true): string => {
   return p.stock === 0 ? "已上架・缺貨" : "已上架";
 };
 
+/**
+ * 狀態徽章:最多跟資訊欄一樣寬、太長就換行(不 shrink-0 —— 390 寬時長的那句會壓到「編輯」鈕);
+ * 「(消費者看不到)」前面放 <wbr> 斷在那裡,其他地方不在中文字之間斷(break-keep),真的放不下才任意斷。
+ */
+const StatusBadge = ({ text, className }: { text: string; className: string }) => {
+  const paren = text.indexOf("(");
+  return (
+    <span className={`max-w-full break-keep rounded-xl border px-2 py-0.5 text-xs [overflow-wrap:anywhere] ${className}`}>
+      {paren > 0 ? (
+        <>
+          {text.slice(0, paren)}
+          <wbr />
+          {text.slice(paren)}
+        </>
+      ) : (
+        text
+      )}
+    </span>
+  );
+};
+
 const statusClass = (p: StatusInput, storeOpen: boolean): string =>
   p.review_status === "approved" && (!storeOpen || !p.is_listed || p.stock === 0) ? NOT_BUYABLE_CLASS : STATUS_CLASS[p.review_status];
 
@@ -110,7 +131,7 @@ export default function SupplierMarketProductsPanel({
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
                   <p className="min-w-0 max-w-full truncate font-medium text-gray-800">{p.name}</p>
-                  <span className={`shrink-0 rounded-full border px-2 py-0.5 text-xs ${statusClass(p, storeOpen)}`}>{statusText(p, storeOpen)}</span>
+                  <StatusBadge text={statusText(p, storeOpen)} className={statusClass(p, storeOpen)} />
                 </div>
                 <p className="text-xs text-gray-500">
                   {p.spec}・{formatTwd(p.price)}・{TEMPERATURES[p.temperature]}・庫存 {p.stock === null ? "不限" : p.stock}

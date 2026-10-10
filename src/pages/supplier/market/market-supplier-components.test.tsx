@@ -450,3 +450,29 @@ describe("MarketProductDialog — 儲存中鎖住欄位", () => {
     expect(screen.getByRole("button", { name: "移除第 1 張照片" })).toBeEnabled();
   });
 });
+
+// 審查實測:390 寬時「已核准・店家停用中(消費者看不到)」徽章 210px、資訊欄只有 181px,shrink-0 讓它壓到「編輯」鈕。
+// jsdom 量不到版面,這裡釘住寫法(實際版面用 headless Chrome 量):徽章最多跟資訊欄一樣寬、可以換行,
+// 「(消費者看不到)」前面放 <wbr> 斷在那裡,其他地方不在中文字之間斷(break-keep)。
+describe("SupplierMarketProductsPanel — 長的狀態徽章", () => {
+  it("徽章不 shrink-0、最多跟資訊欄一樣寬,括號前可以斷行", () => {
+    render(
+      <MemoryRouter>
+        <SupplierMarketProductsPanel
+          products={[{ ...CABBAGE, review_status: "approved" }]}
+          storeOpen={false}
+          hasStore
+          loading={false}
+          error={null}
+          onCreate={vi.fn()}
+          onEdit={vi.fn()}
+        />
+      </MemoryRouter>,
+    );
+    const badge = screen.getByText("已核准・店家停用中(消費者看不到)");
+    expect(badge).toHaveClass("max-w-full", "break-keep");
+    expect(badge).not.toHaveClass("shrink-0");
+    expect(badge.querySelector("wbr")).not.toBeNull();
+    expect(badge.firstChild?.textContent).toBe("已核准・店家停用中");
+  });
+});
