@@ -2,6 +2,8 @@
 // 最低訂購金額、出貨天數、接受的付款方式、轉帳資訊、退換貨說明。
 // 驗證規則在 src/lib/market/store.ts(跟資料庫 CHECK 同一套上限);資料庫的 guard 再擋一次(例如沒填轉帳資訊卻勾轉帳)。
 // 「零售啟用」只有管理員能改:被停用時這頁最上面顯示原因。
+// 讀取失敗 ≠ 還沒建店:讀取失敗只顯示錯誤與「重新載入」、不顯示表單 —— 顯示空白表單的話,
+// 供應商一儲存,upsert 就把原本的介紹、退換貨說明、logo、封面蓋掉。只有讀取成功、而且查無店家,才是新店家表單。
 import { useEffect, useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
 import { Loader2 } from "lucide-react";
@@ -37,6 +39,9 @@ export default function SupplierMarketStorePage() {
   const [form, setForm] = useState<StoreForm>(emptyStoreForm());
   const [errors, setErrors] = useState<StoreFormErrors>({});
   const [loading, setLoading] = useState(true);
+  /** 讀取失敗的原因;有值時不顯示表單 */
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -48,8 +53,9 @@ export default function SupplierMarketStorePage() {
         if (cancelled) return;
         setRow(store);
         setForm(store ? storeFormFromRow(store, transferInfo) : emptyStoreForm());
+        setLoadError(null);
       } catch (e) {
-        toast.error("讀取店家設定失敗", { description: friendlyDbError(e) });
+        if (!cancelled) setLoadError(friendlyDbError(e));
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -57,7 +63,13 @@ export default function SupplierMarketStorePage() {
     return () => {
       cancelled = true;
     };
-  }, [supplierId]);
+  }, [supplierId, reloadKey]);
+
+  const reload = () => {
+    setLoadError(null);
+    setLoading(true);
+    setReloadKey((k) => k + 1);
+  };
 
   const set = <K extends keyof StoreForm>(key: K, value: StoreForm[K]) => setForm((f) => ({ ...f, [key]: value }));
   const toggleCity = (city: TwCity) =>
@@ -65,7 +77,8 @@ export default function SupplierMarketStorePage() {
 
   const onSubmit = async (e: FormEvent) => {
     e.preventDefault();
-    if (!supplierId) return;
+    // 沒讀到原本的設定就不准存(表單本來就不會顯示,這裡再擋一次)
+    if (!supplierId || loading || loadError) return;
     const errs = validateStoreForm(form);
     setErrors(errs);
     if (Object.keys(errs).length > 0) {
@@ -91,6 +104,20 @@ export default function SupplierMarketStorePage() {
     );
   }
   if (!supplierId) return <p className="p-6 text-slate-600">{idError ?? "此帳號尚未綁定供應商"}</p>;
+  if (loadError) {
+    return (
+      <div className="mx-auto max-w-3xl space-y-4 p-6">
+        <h1 className="text-xl font-bold text-gray-900">店家設定</h1>
+        <div role="alert" className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-800">
+          <p className="font-medium">讀取店家設定失敗:{loadError}</p>
+          <p className="mt-1">讀到原本的設定之前不能編輯,以免儲存時蓋掉原本的介紹、退換貨說明、logo 與封面。</p>
+        </div>
+        <Button type="button" variant="outline" onClick={reload} className="min-h-11">
+          重新載入
+        </Button>
+      </div>
+    );
+  }
 
   const describe = (key: keyof StoreForm) => (errors[key] ? `store-${key}-error` : undefined);
 
