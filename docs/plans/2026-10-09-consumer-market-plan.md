@@ -17190,7 +17190,7 @@ Task 3–7 照本計畫做完、規格審查逐位元相同之後,品質審查�
 - 業主實測(Task 60)或用 Dashboard 手動放照片時:主圖和 `<uuid>_t.<副檔名>` 縮圖都要放,否則核准會被擋(前端上傳本來就兩張都傳)。
 - **追加(commit `bf1681a`)**:上面「還沒解決的落差」採第二種修法 —— 商品照片(`market_products.photos`)的路徑只收小寫 `.jpg`(`.png`、`.webp`、`.jpeg` 改成 22023 `invalid_photo_path`;`.JPG` 跟 120100 的路徑規則一樣本來就不收)。理由:前端把所有照片壓成 JPEG 上傳(主圖 `.jpg`、縮圖 `_t.jpg`),限定之後資料庫推出的縮圖 `<uuid>_t.<同副檔名>` 一定是 `_t.jpg`,跟前端 `thumbPathOf` 顯示的是同一張,前端不用改;店家 logo / 封面(`store` 資料夾,不在 photos 裡)不受影響,仍收 jpg / jpeg / png / webp。`market_catalog` 乾跑 97 → **99** 項(新增「副檔名」與「store 資料夾不受影響」2 項;上面要改成 97 的 Expected 一律改成 99)。
 
-### 2026-10-10:前端修正(Task 8–18 審查)(commit `9e5cf43`–`3ad3e02`,分支 `market`)
+### 2026-10-10:前端修正(Task 8–18 審查)(commit `9e5cf43`、`dd559ca`、`af1e450`、`cd05649`、`2d27fa9`、`1023c48`、`97af257`、`89abdf5`、`3ad3e02`,分支 `market`;中間穿插的 `242204c`、`d336b6d`、`bf1681a`、`2e521f1` 是上一節的 migration 修正,不屬於這一節)
 
 Task 8–13(`src/lib/market/`)的獨立審查(Important 1–4、Minor)與 Task 14–18 頁面的自查 / 複審找出的問題,已修正。**以 repo(`market` 分支)的 `src/lib/market/`、`src/components/market/`、`src/pages/market/` 為準,不要再照抄 Task 10–17 對應的程式碼區塊。** 沒有改任何 migration;每一項都是先寫測試、看到失敗才改。
 
