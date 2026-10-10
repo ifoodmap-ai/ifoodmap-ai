@@ -17320,3 +17320,7 @@ Task 23–25 先照計畫做完(三個 commit 跟計畫的程式碼區塊逐字�
    - 🔴 migration 120000 `market_stores_guard` 對**所有** UPDATE 檢查「付款方式含 `transfer` 就要有轉帳資訊」,管理員也不例外;供應商可以刪自己的 `market_store_transfer`(FOR ALL + DELETE),之後**管理員停用這家店會被 22023 `transfer_info_required` 擋下**(頁面只跳「接受銀行轉帳要先填寫轉帳資訊」,店照樣開著)。只有直接打 API 才會進到這個狀態(`store.ts` 只 upsert)。建議另開 migration:這項檢查只在 `payment_methods` 有變、或不是管理員時才做。靜態閱讀發現,未在資料庫實跑。
    - `fetchProductCounts` 一次撈整張 `market_products`,PostgREST 一次最多回 1000 列:超過時「上架 N・待審 M」少算且不報錯;清單的 `.limit(500)` 超過也不提示(同計畫「風險」第 7 點)。
    - `reviewProduct` 在 `updated_at` 缺值時不上鎖(目前呼叫端都有 `select *`);下架原因只貼零寬字元時前端放行、存成只有「(管理員下架)」;`busyId` 只有一個值,同時審兩筆時先回來的會讓另一筆的按鈕提早可按。
+
+### 2026-10-10:管理員停用店家不被 `transfer_info_required` 擋住(commit `ef1df39`,分支 `market`)
+
+`market_stores_guard` 原本對所有 INSERT / UPDATE 都檢查「接受轉帳要先有轉帳資訊」:供應商先建店勾轉帳、再自己刪掉轉帳資訊(轉帳資訊表開放供應商刪),之後管理員停用這家店就被 `transfer_info_required` 擋下、店照樣開著。改成只在**供應商建店、或供應商的更新動到付款方式**(去重排序後有變)而且新的付款方式含轉帳時才檢查;**管理員的更新一律不檢查**(停用、啟用、改停用原因;管理員建店也不檢查)。管理員重新啟用「付款方式含轉帳、轉帳資訊已刪」的店也不擋 —— 第 2 階段結帳本來就不能選轉帳(Task 37「轉帳資訊被刪掉的店不能選轉帳」,第 9929 行);供應商只改介紹等其他欄位、付款方式沒動,也不再被這項擋。供應商建店勾轉帳沒資訊、把付款方式改成含轉帳沒資訊,照樣擋。`market_catalog` 乾跑 105 → **112** 項(第 7 節新增 7 項;會暫停 guard 的 created_at 測試順延成第 8 節,仍在檔尾),前面要改成 105 的 Expected 一律改成 112。
