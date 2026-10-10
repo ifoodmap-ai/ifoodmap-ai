@@ -576,3 +576,30 @@ SELECT pg_temp.expect('正常品名不誤殺:中文、全形標點、emoji、ZWJ
                RETURNING id, name)
     SELECT bool_and(i.name = v.name)::text || '|' || count(*)::text FROM i JOIN v USING (id)$q$),
   'true|4');
+
+-- ---------------------------------------------------------------------
+-- 5. 商品照片只收 .jpg(2026-10-10,見計畫「勘誤」):前端一律壓成 JPEG,縮圖才會跟前端 thumbPathOf 顯示的是同一張
+-- ---------------------------------------------------------------------
+-- 用 A 的身分新增商品 a9300000-0000-4000-8000-0000000000NN,照片放在它自己的資料夾、只有副檔名不同,回 as_exec 的結果
+CREATE FUNCTION pg_temp.try_photo(p_n integer, p_ext text) RETURNS text LANGUAGE sql AS $f$
+  SELECT pg_temp.as_exec('authenticated', pg_temp.ua(), format(
+    $q$INSERT INTO public.market_products (id, supplier_id, name, category, spec, price, photos)
+       VALUES (%1$L, 'a9200000-0000-4000-8000-00000000000a', '副檔名測試', 'fruit', '1 盒', 100,
+               ARRAY['a9200000-0000-4000-8000-00000000000a/' || %1$L || '/a9900000-0000-4000-8000-0000000000' || %2$L || '.' || %3$L])$q$,
+    'a9300000-0000-4000-8000-0000000000' || lpad(p_n::text, 2, '0'), lpad(p_n::text, 2, '0'), p_ext))
+$f$;
+SELECT pg_temp.expect('商品照片只收小寫 .jpg:.png、.webp、.jpeg、.JPG 被擋,.jpg 可以',
+  concat_ws('|',
+    pg_temp.try_photo(25, 'png'),
+    pg_temp.try_photo(26, 'webp'),
+    pg_temp.try_photo(27, 'jpeg'),
+    pg_temp.try_photo(28, 'JPG'),
+    pg_temp.try_photo(29, 'jpg')),
+  'ERR 22023:invalid_photo_path|ERR 22023:invalid_photo_path|ERR 22023:invalid_photo_path|ERR 22023:invalid_photo_path|OK');
+SELECT pg_temp.expect('store 資料夾不受這個限制:店家 logo 用 .png、封面用 .webp 照常可以',
+  pg_temp.as_exec('authenticated', pg_temp.ua(), $q$
+    UPDATE public.market_stores
+       SET logo_path  = 'a9200000-0000-4000-8000-00000000000a/store/a9900000-0000-4000-8000-000000000041.png',
+           cover_path = 'a9200000-0000-4000-8000-00000000000a/store/a9900000-0000-4000-8000-000000000042.webp'
+     WHERE supplier_id = 'a9200000-0000-4000-8000-00000000000a'$q$),
+  'OK');

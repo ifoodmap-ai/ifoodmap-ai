@@ -25,7 +25,8 @@
 --   - 文字欄位去頭尾空白時連全形空白、零寬字元一起去(market_trim);去完看不到字(market_visible:只剩格式 /
 --     控制 / 看起來空白的字元)就當成空的 —— 品名、規格被 CHECK 擋,選填欄位當成沒填
 --
--- 圖片路徑(Storage bucket 在下一支 migration 20261009120100):<supplier_id>/<商品 id 或 store>/<uuid>.<jpg|jpeg|png|webp>
+-- 圖片路徑(Storage bucket 在下一支 migration 20261009120100):<supplier_id>/<商品 id 或 store>/<uuid>.<jpg|jpeg|png|webp>;
+-- 商品照片(photos)只收 .jpg(縮圖才會跟前端 thumbPathOf 的 _t.jpg 是同一張),store 資料夾的 logo / 封面不限
 --
 -- 前端 src/lib/market/constants.ts 由 vitest 解析本檔 @market-cities / @market-categories / @market-temperatures 標記之間的內容逐字比對。
 -- 還原:supabase/rollbacks/20261009120000_market_catalog.down.sql
@@ -406,11 +407,15 @@ BEGIN
   NEW.reject_reason  := CASE WHEN public.market_visible(NEW.reject_reason) THEN public.market_trim(NEW.reject_reason) END;
   NEW.photos         := COALESCE(NEW.photos, '{}'::text[]);
 
-  -- 照片一定在自己的資料夾:<supplier_id>/<商品 id>/<uuid>.<副檔名>
+  -- 照片一定在自己的資料夾:<supplier_id>/<商品 id>/<uuid>.jpg
+  -- 商品照片只收小寫 .jpg(.JPG 跟 120100 的路徑規則一樣不收):前端一律壓成 JPEG 上傳(主圖 .jpg、縮圖 _t.jpg),
+  -- 限定之後下面核准時推出的縮圖 <uuid>_t.<同副檔名> 一定是 _t.jpg,跟前端 thumbPathOf 顯示的是同一張。
+  -- 店家 logo / 封面(store 資料夾)不在 photos 裡,仍照 market_image_path_matches 收 jpg / jpeg / png / webp。
   -- (陣列裡的 NULL 也算錯:market_image_path_matches 對 NULL 回 false,COALESCE 讓 v_bad 不是 NULL 才擋得到)
   SELECT COALESCE(p, '(空值)') INTO v_bad
     FROM unnest(NEW.photos) AS p
    WHERE NOT public.market_image_path_matches(p, NEW.supplier_id, NEW.id::text)
+      OR p !~ '[.]jpg$'
    LIMIT 1;
   IF v_bad IS NOT NULL THEN
     RAISE EXCEPTION '商品照片的路徑不正確:%', v_bad USING ERRCODE = '22023', HINT = 'invalid_photo_path';
@@ -426,7 +431,8 @@ BEGIN
     IF NEW.review_status = 'rejected' AND NEW.reject_reason IS NULL THEN
       RAISE EXCEPTION '退回或下架要填寫原因(會顯示給供應商)' USING ERRCODE = '22023', HINT = 'reject_reason_required';
     END IF;
-    -- 核准前確認每張照片和它的縮圖(<uuid>_t.<副檔名>,照 120100 的路徑格式)都已經上傳到 market-images。
+    -- 核准前確認每張照片和它的縮圖(<uuid>_t.<副檔名>,照 120100 的路徑格式;商品照片只收 .jpg,所以就是 _t.jpg)
+    -- 都已經上傳到 market-images。
     -- Storage 的物件只能寫一次:核准時已經在的檔之後換不掉;還沒上傳的路徑若放行,核准後才第一次上傳就繞過了審核。
     -- 只在「變成已核准」與「已核准時改了照片」檢查:之後改價格、庫存(包括第 2 階段下單扣庫存)不受影響。
     IF NEW.review_status = 'approved'
