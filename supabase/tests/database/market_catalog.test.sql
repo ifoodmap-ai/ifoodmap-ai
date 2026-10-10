@@ -665,7 +665,55 @@ SELECT pg_temp.expect('缺檔的錯誤訊息帶真正缺的那張(P10 只缺縮�
   'true');
 
 -- ---------------------------------------------------------------------
--- 7. 最後才跑:會暫停 guard trigger 的 created_at 測試(放在檔尾,SHARE ROW EXCLUSIVE 鎖只持有到交易結束前一下下)
+-- 7. 管理員停用店家不能被供應商擋住(2026-10-10,見計畫「勘誤」):供應商自己刪掉轉帳資訊之後,管理員仍要
+--    停用 / 啟用得了;transfer_info_required 只在供應商建店、或供應商的更新動到付款方式時檢查
+-- ---------------------------------------------------------------------
+-- E 店:還沒建零售店家、也還沒有轉帳資訊
+INSERT INTO auth.users (id, instance_id, aud, role, email, encrypted_password, raw_app_meta_data, raw_user_meta_data, created_at, updated_at) VALUES
+  ('a9100000-0000-4000-8000-000000000006', '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated',
+   'store-e@market-test.invalid', '', '{"provider":"email","providers":["email"]}', '{}', now(), now());
+INSERT INTO public.suppliers (id, name, contact_email, is_active) VALUES
+  ('a9200000-0000-4000-8000-00000000000e', '市集測試 E 店', 'store-e@market-test.invalid', true);
+INSERT INTO public.supplier_accounts (user_id, supplier_id) VALUES
+  ('a9100000-0000-4000-8000-000000000006', 'a9200000-0000-4000-8000-00000000000e');
+CREATE FUNCTION pg_temp.ue() RETURNS text LANGUAGE sql AS $f$ SELECT pg_temp.jwt('a9100000-0000-4000-8000-000000000006') $f$;
+SELECT pg_temp.expect('E 建店時勾轉帳、還沒有轉帳資訊 → 擋',
+  pg_temp.as_exec('authenticated', pg_temp.ue(), $q$
+    INSERT INTO public.market_stores (supplier_id, delivery_cities, payment_methods)
+    VALUES ('a9200000-0000-4000-8000-00000000000e', ARRAY['臺北市'], ARRAY['cod', 'transfer'])$q$),
+  'ERR 22023:transfer_info_required');
+INSERT INTO public.market_store_transfer (supplier_id, transfer_info)
+VALUES ('a9200000-0000-4000-8000-00000000000e', '郵局(700) 帳號 0001234-5678901 戶名 市集測試 E');
+SELECT pg_temp.expect('E 填好轉帳資訊再建店(勾轉帳)',
+  pg_temp.as_exec('authenticated', pg_temp.ue(), $q$
+    INSERT INTO public.market_stores (supplier_id, delivery_cities, payment_methods)
+    VALUES ('a9200000-0000-4000-8000-00000000000e', ARRAY['臺北市'], ARRAY['cod', 'transfer'])$q$),
+  'OK');
+SELECT pg_temp.expect('E 自己刪掉轉帳資訊(轉帳資訊表開放供應商刪)',
+  pg_temp.as_val('authenticated', pg_temp.ue(), $q$
+    WITH d AS (DELETE FROM public.market_store_transfer WHERE supplier_id = 'a9200000-0000-4000-8000-00000000000e' RETURNING 1)
+    SELECT count(*)::text FROM d$q$),
+  '1');
+SELECT pg_temp.expect('管理員照樣停用得了 E(轉帳資訊被供應商刪掉也一樣)',
+  pg_temp.as_exec('authenticated', pg_temp.uadmin(), $q$
+    UPDATE public.market_stores SET is_enabled = false, disabled_reason = '測試停用'
+     WHERE supplier_id = 'a9200000-0000-4000-8000-00000000000e'$q$),
+  'OK');
+SELECT pg_temp.expect('管理員重新啟用也不擋(付款方式含轉帳、沒有轉帳資訊;第 2 階段結帳本來就不能選轉帳)',
+  pg_temp.as_exec('authenticated', pg_temp.uadmin(), $q$
+    UPDATE public.market_stores SET is_enabled = true WHERE supplier_id = 'a9200000-0000-4000-8000-00000000000e'$q$),
+  'OK');
+SELECT pg_temp.expect('E 把付款方式改成只收轉帳(動到付款方式、含轉帳、沒有資訊) → 擋',
+  pg_temp.as_exec('authenticated', pg_temp.ue(), $q$
+    UPDATE public.market_stores SET payment_methods = ARRAY['transfer'] WHERE supplier_id = 'a9200000-0000-4000-8000-00000000000e'$q$),
+  'ERR 22023:transfer_info_required');
+SELECT pg_temp.expect('E 只改介紹(付款方式沒動) → 不檢查轉帳資訊',
+  pg_temp.as_exec('authenticated', pg_temp.ue(), $q$
+    UPDATE public.market_stores SET intro = '新的介紹' WHERE supplier_id = 'a9200000-0000-4000-8000-00000000000e'$q$),
+  'OK');
+
+-- ---------------------------------------------------------------------
+-- 8. 最後才跑:會暫停 guard trigger 的 created_at 測試(放在檔尾,SHARE ROW EXCLUSIVE 鎖只持有到交易結束前一下下)
 -- ---------------------------------------------------------------------
 -- 同一個交易裡 now() 不會變:先把 A 店家的 created_at 改成過去的時間(要暫停 guard 才改得動),
 -- 才分得出「修改時保留原值」和「改成 now()」。DISABLE TRIGGER 拿 SHARE ROW EXCLUSIVE 鎖(擋寫不擋讀),交易結束就放。

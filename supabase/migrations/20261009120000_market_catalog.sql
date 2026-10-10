@@ -227,7 +227,12 @@ BEGIN
     RAISE EXCEPTION '店家封面的圖片路徑不正確' USING ERRCODE = '22023', HINT = 'invalid_image_path';
   END IF;
 
-  IF 'transfer' = ANY (NEW.payment_methods)
+  -- 接受轉帳要先有轉帳資訊:只在供應商建店、或供應商的更新動到付款方式時檢查(付款方式已在上面去重排序,
+  -- 順序不同不算有變)。管理員的更新(停用、啟用、改停用原因)一律不檢查 —— 供應商可以自己刪掉轉帳資訊,
+  -- 若每次更新都檢查,管理員就停用不了這家店;付款方式含轉帳、轉帳資訊卻沒了的店,第 2 階段結帳本來就不能選轉帳。
+  IF NOT v_admin
+     AND 'transfer' = ANY (NEW.payment_methods)
+     AND (TG_OP = 'INSERT' OR NEW.payment_methods IS DISTINCT FROM OLD.payment_methods)
      AND NOT EXISTS (SELECT 1 FROM public.market_store_transfer t WHERE t.supplier_id = NEW.supplier_id) THEN
     RAISE EXCEPTION '接受銀行轉帳要先填寫轉帳資訊' USING ERRCODE = '22023', HINT = 'transfer_info_required';
   END IF;
