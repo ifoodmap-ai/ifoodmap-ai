@@ -13,6 +13,10 @@ import { fetchMarketProduct } from "@/lib/market/catalog";
 import { CABBAGE, STORE_A } from "@/lib/market/testFixtures";
 import MarketProductPage from "./MarketProductPage";
 import { renderMarketRoute } from "./testUtils";
+// 檔尾「離線與背景重抓失敗」那組測試用。分開寫、不併進上面幾行:第 2 階段 Task 46 會在上面那幾行做「找到 → 換成」
+import { act } from "@testing-library/react";
+import { onlineManager } from "@tanstack/react-query";
+import { newTestQueryClient } from "./testUtils";
 
 const PHOTO = (n: number) =>
   `${STORE_A.supplier_id}/${CABBAGE.id}/a9900000-0000-4000-8000-00000000000${n}.jpg`;
@@ -84,5 +88,35 @@ describe("MarketProductPage", () => {
     cleanup();
     renderAt("not-a-uuid");
     expect(screen.getByRole("link", { name: "回市集首頁" })).toHaveAttribute("href", "/market");
+  });
+});
+
+describe("MarketProductPage:離線與背景重抓失敗", () => {
+  afterEach(() => onlineManager.setOnline(true));
+
+  it("離線時第一次載入:整頁離線提示(一個 h1),不說找不到;連線後自動載入", async () => {
+    onlineManager.setOnline(false);
+    vi.mocked(fetchMarketProduct).mockResolvedValue(CABBAGE);
+    renderAt(CABBAGE.id);
+    expect(await screen.findByRole("heading", { level: 1, name: "目前離線" })).toBeInTheDocument();
+    expect(screen.getByText("連線後會自動重新載入。")).toBeInTheDocument();
+    expect(screen.queryByText("找不到這個商品,可能已經下架了。")).toBeNull();
+    expect(document.title).toBe("目前離線｜iFoodmap 食材市集");
+    act(() => onlineManager.setOnline(true));
+    expect(await screen.findByRole("heading", { level: 1, name: "有機高麗菜" })).toBeInTheDocument();
+  });
+
+  it("背景重抓失敗但已經有這個商品:繼續顯示商品,加一行提示與重新載入", async () => {
+    const client = newTestQueryClient();
+    client.setQueryData(["market", "product", CABBAGE.id], CABBAGE);
+    vi.mocked(fetchMarketProduct).mockRejectedValueOnce(new Error("network")).mockResolvedValue({ ...CABBAGE, price: 120 });
+    renderMarketRoute(`/market/p/${CABBAGE.id}`, [{ path: "/market/p/:productId", element: <MarketProductPage /> }], client);
+    const notice = await screen.findByText(/更新失敗/);
+    expect(screen.getByRole("heading", { level: 1, name: "有機高麗菜" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "商品載入失敗" })).toBeNull();
+    expect(document.title).toBe("有機高麗菜｜iFoodmap 食材市集");
+    await userEvent.click(within(notice).getByRole("button", { name: "重新載入" }));
+    expect(await screen.findByText("NT$ 120")).toBeInTheDocument();
+    expect(screen.queryByText(/更新失敗/)).toBeNull();
   });
 });

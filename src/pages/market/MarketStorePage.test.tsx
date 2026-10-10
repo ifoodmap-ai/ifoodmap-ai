@@ -1,6 +1,7 @@
 // /market/s/:supplierId:店名、介紹、退換貨、配送條件、商品與分類篩選;停用的店與找不到的店。
-import { cleanup, screen, within } from "@testing-library/react";
+import { act, cleanup, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { onlineManager } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/integrations/supabase/client", () => ({ supabase: {} }));
@@ -13,7 +14,7 @@ vi.mock("@/lib/market/catalog", async (importOriginal) => ({
 import { fetchMarketStore, fetchStoreProducts } from "@/lib/market/catalog";
 import { BEEF, CABBAGE, STORE_A } from "@/lib/market/testFixtures";
 import MarketStorePage from "./MarketStorePage";
-import { renderMarketRoute } from "./testUtils";
+import { newTestQueryClient, renderMarketRoute } from "./testUtils";
 
 const renderAt = (id: string) => renderMarketRoute(`/market/s/${id}`, [{ path: "/market/s/:supplierId", element: <MarketStorePage /> }]);
 
@@ -92,5 +93,49 @@ describe("MarketStorePage", () => {
     cleanup();
     renderAt("abc");
     expect(screen.getByRole("heading", { name: "找不到這家店。" })).toBeInTheDocument();
+  });
+});
+
+describe("MarketStorePage:離線與背景重抓失敗", () => {
+  afterEach(() => onlineManager.setOnline(true));
+  const renderWith = (client: ReturnType<typeof newTestQueryClient>) =>
+    renderMarketRoute(`/market/s/${STORE_A.supplier_id}`, [{ path: "/market/s/:supplierId", element: <MarketStorePage /> }], client);
+
+  it("離線時第一次載入:整頁離線提示(一個 h1),不說沒開放;連線後自動載入", async () => {
+    onlineManager.setOnline(false);
+    vi.mocked(fetchMarketStore).mockResolvedValue(STORE_A);
+    vi.mocked(fetchStoreProducts).mockResolvedValue([CABBAGE]);
+    renderAt(STORE_A.supplier_id);
+    expect(await screen.findByRole("heading", { level: 1, name: "目前離線" })).toBeInTheDocument();
+    expect(screen.queryByText("這家店目前沒有開放零售。")).toBeNull();
+    expect(document.title).toBe("目前離線｜iFoodmap 食材市集");
+    act(() => onlineManager.setOnline(true));
+    expect(await screen.findByRole("heading", { level: 1, name: "市集測試 A 店" })).toBeInTheDocument();
+    expect(await screen.findByText("共 1 項")).toBeInTheDocument();
+  });
+
+  it("店家已經有資料、商品第一次載入遇到離線:商品區顯示離線提示,不說還沒有上架的商品", async () => {
+    onlineManager.setOnline(false);
+    const client = newTestQueryClient();
+    client.setQueryData(["market", "store", STORE_A.supplier_id], STORE_A);
+    renderWith(client);
+    expect(await screen.findByRole("heading", { level: 1, name: "市集測試 A 店" })).toBeInTheDocument();
+    expect(screen.getByText("目前離線,連線後會自動重新載入。")).toBeInTheDocument();
+    expect(screen.queryByText("這家店還沒有上架的商品。")).toBeNull();
+    expect(screen.queryByText(/共 \d+ 項/)).toBeNull();
+  });
+
+  it("背景重抓失敗但已有店家與商品:繼續顯示,只加一行提示(不整頁變錯誤)", async () => {
+    const client = newTestQueryClient();
+    client.setQueryData(["market", "store", STORE_A.supplier_id], STORE_A);
+    client.setQueryData(["market", "store-products", STORE_A.supplier_id], [CABBAGE, BEEF]);
+    vi.mocked(fetchMarketStore).mockRejectedValue(new Error("network"));
+    vi.mocked(fetchStoreProducts).mockRejectedValue(new Error("network"));
+    renderWith(client);
+    expect(await screen.findByText(/更新失敗/)).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1, name: "市集測試 A 店" })).toBeInTheDocument();
+    expect(screen.getByText("共 2 項")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByRole("heading", { name: "店家資料載入失敗" })).toBeNull();
   });
 });

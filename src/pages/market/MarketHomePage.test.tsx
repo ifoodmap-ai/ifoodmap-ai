@@ -1,6 +1,7 @@
 // /market 首頁:列商品與精選店家;分類、縣市、溫層、搜尋都會改網址並篩掉不符合的;空狀態與錯誤。
-import { cleanup, screen, within } from "@testing-library/react";
+import { act, cleanup, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { onlineManager } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/integrations/supabase/client", () => ({ supabase: {} }));
@@ -12,7 +13,7 @@ vi.mock("@/lib/market/catalog", async (importOriginal) => ({
 import { fetchListedProducts } from "@/lib/market/catalog";
 import { BEEF, CABBAGE, SALMON, STORE_A } from "@/lib/market/testFixtures";
 import MarketHomePage from "./MarketHomePage";
-import { renderMarketRoute } from "./testUtils";
+import { newTestQueryClient, renderMarketRoute } from "./testUtils";
 
 const renderHome = (path = "/market") => renderMarketRoute(path, [{ path: "/market", element: <MarketHomePage /> }]);
 const productNames = () =>
@@ -93,5 +94,35 @@ describe("MarketHomePage", () => {
     renderHome();
     await screen.findByRole("alert");
     expect(screen.queryByText(/共 \d+ 項/)).toBeNull();
+  });
+});
+
+describe("MarketHomePage:離線與背景重抓失敗", () => {
+  afterEach(() => onlineManager.setOnline(true));
+
+  it("離線時第一次載入(React Query 暫停):顯示離線提示,不顯示空狀態與件數;連線後自動載入", async () => {
+    onlineManager.setOnline(false);
+    renderHome();
+    expect(await screen.findByText("目前離線,連線後會自動重新載入。")).toBeInTheDocument();
+    expect(screen.queryByText("市集還沒有上架的商品,敬請期待。")).toBeNull();
+    expect(screen.queryByText(/共 \d+ 項/)).toBeNull();
+    expect(fetchListedProducts).not.toHaveBeenCalled();
+    act(() => onlineManager.setOnline(true));
+    expect(await screen.findByText("共 3 項")).toBeInTheDocument();
+    expect(screen.queryByText("目前離線,連線後會自動重新載入。")).toBeNull();
+  });
+
+  it("背景重抓失敗但手上有資料:繼續顯示,只加一行提示與重新載入(不整頁變錯誤)", async () => {
+    const client = newTestQueryClient();
+    client.setQueryData(["market", "products"], [CABBAGE]);
+    vi.mocked(fetchListedProducts).mockRejectedValueOnce(new Error("network")).mockResolvedValue([CABBAGE, BEEF]);
+    renderMarketRoute("/market", [{ path: "/market", element: <MarketHomePage /> }], client);
+    const notice = await screen.findByText(/更新失敗/);
+    expect(productNames()).toEqual(["有機高麗菜"]);
+    expect(screen.getByText("共 1 項")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).toBeNull();
+    await userEvent.click(within(notice).getByRole("button", { name: "重新載入" }));
+    expect(await screen.findByText("共 2 項")).toBeInTheDocument();
+    expect(screen.queryByText(/更新失敗/)).toBeNull();
   });
 });

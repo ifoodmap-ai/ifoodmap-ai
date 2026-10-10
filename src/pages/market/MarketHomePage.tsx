@@ -7,6 +7,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import CategoryChips from "@/components/market/CategoryChips";
 import MarketImage from "@/components/market/MarketImage";
 import { MARKET_FOCUS_RING, useMarketTitle } from "@/components/market/MarketLayout";
+import { MarketOfflineNotice, MarketStaleNotice } from "@/components/market/MarketNotices";
 import ProductCard from "@/components/market/ProductCard";
 import {
   featuredStores,
@@ -25,7 +26,14 @@ export default function MarketHomePage() {
   useMarketTitle(null);
   const [params, setParams] = useSearchParams();
   const filters = filtersFromParams(params);
-  const { data, isLoading, isError, refetch } = useQuery({ queryKey: ["market", "products"], queryFn: fetchListedProducts });
+  const { data, isPending, isPaused, isLoadingError, isRefetchError, refetch } = useQuery({
+    queryKey: ["market", "products"],
+    queryFn: fetchListedProducts,
+  });
+  // 還沒有資料時分三種:離線(React Query 暫停第一次載入,isLoading 是 false,不能當成「沒有商品」)、載入中、失敗。
+  // 有資料時背景重抓失敗(isRefetchError)照樣顯示舊資料,只加一行提示。
+  const offline = isPending && isPaused;
+  const loading = isPending && !isPaused;
   const products = useMemo(() => data ?? [], [data]);
   const visible = useMemo(
     () => filterProducts(products, filters),
@@ -137,11 +145,13 @@ export default function MarketHomePage() {
             商品
           </h2>
           <p aria-live="polite" className="text-sm text-slate-600">
-            {isLoading ? "載入中…" : isError ? "" : `共 ${visible.length} 項`}
+            {loading ? "載入中…" : offline || isLoadingError ? "" : `共 ${visible.length} 項`}
           </p>
         </div>
 
-        {isLoading ? (
+        {isRefetchError && <MarketStaleNotice onRetry={() => refetch()} />}
+
+        {loading ? (
           <ul className="grid grid-cols-2 gap-3 min-[881px]:grid-cols-4" aria-hidden="true">
             {Array.from({ length: 8 }).map((_, i) => (
               <li key={i}>
@@ -149,7 +159,9 @@ export default function MarketHomePage() {
               </li>
             ))}
           </ul>
-        ) : isError ? (
+        ) : offline ? (
+          <MarketOfflineNotice />
+        ) : isLoadingError ? (
           <div role="alert" className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800">
             商品載入失敗,請檢查網路後再試一次。
             <button type="button" onClick={() => refetch()} className={`ml-3 min-h-11 font-semibold underline ${MARKET_FOCUS_RING}`}>

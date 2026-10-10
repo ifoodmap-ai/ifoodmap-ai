@@ -7,6 +7,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Skeleton } from "@/components/ui/skeleton";
 import MarketImage from "@/components/market/MarketImage";
 import { MARKET_FOCUS_RING, useMarketTitle } from "@/components/market/MarketLayout";
+import { MarketStaleNotice } from "@/components/market/MarketNotices";
 import StoreInfoList from "@/components/market/StoreInfoList";
 import { fetchMarketProduct, isPubliclyVisible } from "@/lib/market/catalog";
 import { CATEGORY_LABEL, REVIEW_STATUS_LABEL, TEMPERATURES } from "@/lib/market/constants";
@@ -14,22 +15,27 @@ import { isUuid } from "@/lib/market/db";
 import { formatTwd, stockLabel } from "@/lib/market/format";
 import MarketLoadError from "./MarketLoadError";
 import MarketNotFound from "./MarketNotFound";
+import MarketOffline from "./MarketOffline";
 
 export default function MarketProductPage() {
   const { productId = "" } = useParams();
   const valid = isUuid(productId);
-  const { data: product, isLoading, isError, refetch } = useQuery({
+  const { data: product, isPending, isPaused, isLoadingError, isRefetchError, refetch } = useQuery({
     queryKey: ["market", "product", productId],
     queryFn: () => fetchMarketProduct(productId),
     enabled: valid,
   });
   const [photoIndex, setPhotoIndex] = useState(0);
-  const notFound = !valid || (!isLoading && !isError && !product);
+  // 還沒有資料時:離線(第一次載入被暫停)、載入中、失敗;查過了而且是 null 才是「找不到」。
+  // 已經有這個商品時,背景重抓失敗(isRefetchError)照樣顯示,只加一行提示。
+  const offline = valid && isPending && isPaused;
+  const notFound = !valid || (!isPending && !isLoadingError && !product);
   // 分頁標題跟畫面一致(MarketNotFound 會設同一個字):子元件的 effect 先跑、父元件後跑,字不一樣的話會被這裡蓋掉
-  useMarketTitle(notFound ? "找不到商品" : isError ? "商品載入失敗" : product?.name ?? null);
+  useMarketTitle(notFound ? "找不到商品" : offline ? "目前離線" : isLoadingError ? "商品載入失敗" : product?.name ?? null);
 
   if (notFound) return <MarketNotFound message="找不到這個商品,可能已經下架了。" title="找不到商品" />;
-  if (isLoading) {
+  if (offline) return <MarketOffline />;
+  if (isPending) {
     return (
       <div className="mx-auto grid max-w-6xl gap-6 px-4 py-6 min-[881px]:grid-cols-2" aria-busy="true">
         <Skeleton className="aspect-square w-full rounded-xl" />
@@ -37,7 +43,7 @@ export default function MarketProductPage() {
       </div>
     );
   }
-  if (isError || !product) return <MarketLoadError title="商品載入失敗" onRetry={() => refetch()} />;
+  if (isLoadingError || !product) return <MarketLoadError title="商品載入失敗" onRetry={() => refetch()} />;
 
   const store = product.market_stores;
   const preview = !isPubliclyVisible(product);
@@ -68,6 +74,12 @@ export default function MarketProductPage() {
           </li>
         </ol>
       </nav>
+
+      {isRefetchError && (
+        <div className="mb-4">
+          <MarketStaleNotice onRetry={() => refetch()} />
+        </div>
+      )}
 
       {preview && (
         <p role="status" className="mb-4 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">

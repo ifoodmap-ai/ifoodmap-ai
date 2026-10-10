@@ -11,9 +11,16 @@ const LocationProbe = () => {
   return <span data-testid="location">{`${location.pathname}${location.search}`}</span>;
 };
 
-export const renderMarketRoute = (path: string, routes: Array<{ path: string; element: ReactElement }>) =>
+/** 不重試的 QueryClient。要先放快取(測「背景重抓失敗」「離線」)時自己建一個、setQueryData 之後傳給 renderMarketRoute */
+export const newTestQueryClient = () => new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+export const renderMarketRoute = (
+  path: string,
+  routes: Array<{ path: string; element: ReactElement }>,
+  client: QueryClient = newTestQueryClient(),
+) =>
   render(
-    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+    <QueryClientProvider client={client}>
       <MemoryRouter initialEntries={[path]}>
         <Routes>
           {routes.map((r) => (
