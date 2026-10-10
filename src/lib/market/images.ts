@@ -5,7 +5,9 @@
 //   fileToCompressedDataUrl,但存成檔案(Blob)不存 base64,而且先鋪白底(PNG 透明處才不會變黑)。
 // - bucket 本身也限制 2 MB 與三種格式(migration 20261009120100),前端繞不過。
 // - 路徑 <supplier_id>/<商品 id 或 store>/<uuid>.jpg —— storage.objects 的 policy 只讓該供應商寫自己的資料夾。
-// - 換照片時「不刪」舊檔:舊檔可能還被已儲存的商品引用;孤兒檔無害(公開 bucket 但網址是猜不到的 uuid)。
+// - 物件只能寫一次:migration 120100 只有 SELECT / INSERT 兩條 policy(沒有 UPDATE、DELETE),上傳一律 upsert: false,
+//   前端不能覆寫也不能刪檔。換掉的舊照片留在 bucket 當孤兒檔(公開 bucket,但網址是猜不到的 uuid);
+//   違規圖片只能由管理員從 Supabase Dashboard 或用 service role 的 Storage API 刪(SQL 刪不了)。
 import { MARKET_IMAGE_BUCKET, PHOTO_RULES } from "./constants";
 import { marketStorage, newUuid, type StorageBucket } from "./db";
 
@@ -52,23 +54,32 @@ export const compressToJpeg = (file: Blob, maxSide: number, quality: number): Pr
     };
     img.onload = () => {
       URL.revokeObjectURL(url);
-      const { width, height } = fitWithin(img.naturalWidth || img.width, img.naturalHeight || img.height, maxSide);
-      const canvas = document.createElement("canvas");
-      canvas.width = width;
-      canvas.height = height;
-      const ctx = canvas.getContext("2d");
-      if (!ctx) {
-        reject(new MarketImageError("這個瀏覽器無法處理照片"));
-        return;
+      // 事件處理裡的例外不會變成 reject(瀏覽器只會印到 console),Promise 會永遠卡住 → 一律接住轉成 reject。
+      // 例如照片尺寸超過瀏覽器的 canvas 上限(iOS Safari 特別小)時 drawImage / toBlob 會丟錯。
+      try {
+        const { width, height } = fitWithin(img.naturalWidth || img.width, img.naturalHeight || img.height, maxSide);
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) {
+          reject(new MarketImageError("這個瀏覽器無法處理照片"));
+          return;
+        }
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(0, 0, width, height);
+        // 大幅縮小(4000px → 480px 縮圖)用預設的 low 會有鋸齒、摩爾紋
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = "high";
+        ctx.drawImage(img, 0, 0, width, height);
+        canvas.toBlob(
+          (blob) => (blob ? resolve(blob) : reject(new MarketImageError("照片壓縮失敗,請換一張"))),
+          "image/jpeg",
+          quality,
+        );
+      } catch {
+        reject(new MarketImageError("這張照片無法處理,請換一張(或先縮小再上傳)"));
       }
-      ctx.fillStyle = "#ffffff";
-      ctx.fillRect(0, 0, width, height);
-      ctx.drawImage(img, 0, 0, width, height);
-      canvas.toBlob(
-        (blob) => (blob ? resolve(blob) : reject(new MarketImageError("照片壓縮失敗,請換一張"))),
-        "image/jpeg",
-        quality,
-      );
     };
     img.src = url;
   });

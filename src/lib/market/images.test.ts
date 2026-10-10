@@ -1,11 +1,12 @@
 // images.ts:格式與大小檢查、縮放計算、路徑、公開網址、壓縮重試、上傳(壓縮與 Storage 都用假的;jsdom 沒有 canvas)。
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 // images.ts 會 import db.ts → 真的 supabase client;換成空殼,不讓 GoTrue 在測試裡啟動(Node 25 的 localStorage 是空殼)
 vi.mock("@/integrations/supabase/client", () => ({ supabase: {} }));
 
 import {
   compressForUpload,
+  compressToJpeg,
   fitWithin,
   imagePath,
   MarketImageError,
@@ -58,6 +59,101 @@ describe("路徑與網址", () => {
     expect(publicImageUrl(`${SUP}/store/${IMG}.jpg`, "https://x.supabase.co/")).toBe(
       `https://x.supabase.co/storage/v1/object/public/market-images/${SUP}/store/${IMG}.jpg`,
     );
+  });
+});
+
+describe("compressToJpeg(Image 與 canvas 換成假的)", () => {
+  const originalCreateObjectURL = URL.createObjectURL;
+  const originalRevokeObjectURL = URL.revokeObjectURL;
+
+  /** 假圖片 4000×3000;onload 裡丟的例外像瀏覽器一樣被事件迴圈吞掉(記在 swallowed),不會冒到測試 */
+  const setup = () => {
+    const swallowed: unknown[] = [];
+    class FakeImage {
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      naturalWidth = 4000;
+      naturalHeight = 3000;
+      width = 4000;
+      height = 3000;
+      set src(_value: string) {
+        queueMicrotask(() => {
+          try {
+            this.onload?.();
+          } catch (e) {
+            swallowed.push(e);
+          }
+        });
+      }
+    }
+    const ctx = {
+      fillStyle: "",
+      imageSmoothingEnabled: false,
+      imageSmoothingQuality: "low",
+      fillRect: vi.fn(),
+      drawImage: vi.fn(),
+    };
+    const canvas = {
+      width: 0,
+      height: 0,
+      getContext: () => ctx,
+      toBlob: (done: (blob: Blob | null) => void) => done(new Blob(["jpeg"], { type: "image/jpeg" })),
+    };
+    vi.stubGlobal("Image", FakeImage);
+    const realCreateElement = document.createElement.bind(document);
+    vi.spyOn(document, "createElement").mockImplementation(((tag: string) =>
+      tag === "canvas" ? canvas : realCreateElement(tag)) as unknown as typeof document.createElement);
+    URL.createObjectURL = vi.fn(() => "blob:fake");
+    URL.revokeObjectURL = vi.fn();
+    return { ctx, canvas, swallowed };
+  };
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    URL.createObjectURL = originalCreateObjectURL;
+    URL.revokeObjectURL = originalRevokeObjectURL;
+  });
+
+  /** 100ms 內沒有結果就當成「永遠卡住」 */
+  const settle = (p: Promise<Blob>) =>
+    Promise.race([
+      p.then(
+        (blob) => ({ state: "resolved" as const, value: blob as unknown }),
+        (error: unknown) => ({ state: "rejected" as const, value: error }),
+      ),
+      new Promise<{ state: "pending"; value: null }>((r) => setTimeout(() => r({ state: "pending", value: null }), 100)),
+    ]);
+
+  it("等比縮到長邊、鋪白底、輸出 JPEG", async () => {
+    const { ctx, canvas } = setup();
+    const result = await settle(compressToJpeg(new Blob(["x"]), 1600, 0.82));
+    expect(result.state).toBe("resolved");
+    expect([canvas.width, canvas.height]).toEqual([1600, 1200]);
+    expect(ctx.fillStyle).toBe("#ffffff");
+    expect(ctx.drawImage).toHaveBeenCalledWith(expect.anything(), 0, 0, 1600, 1200);
+  });
+
+  it("縮圖用高品質縮放:drawImage 之前 imageSmoothingQuality 已經是 high", async () => {
+    const { ctx } = setup();
+    let qualityWhenDrawn: unknown = null;
+    ctx.drawImage.mockImplementation(() => {
+      qualityWhenDrawn = ctx.imageSmoothingEnabled ? ctx.imageSmoothingQuality : "disabled";
+    });
+    await settle(compressToJpeg(new Blob(["x"]), 480, 0.8));
+    expect(qualityWhenDrawn).toBe("high");
+  });
+
+  it("onload 裡出例外(例如超過瀏覽器的 canvas 尺寸上限)要 reject,不能讓 Promise 永遠卡住", async () => {
+    const { ctx, swallowed } = setup();
+    ctx.drawImage.mockImplementation(() => {
+      throw new Error("InvalidStateError: canvas is too large");
+    });
+    const result = await settle(compressToJpeg(new Blob(["x"]), 1600, 0.82));
+    expect(swallowed).toEqual([]);
+    expect(result.state).toBe("rejected");
+    expect(result.value).toBeInstanceOf(MarketImageError);
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:fake");
   });
 });
 
