@@ -25,6 +25,8 @@ import type { MarketStoreRow } from "@/lib/market/types";
 import MarketImageField from "./market/MarketImageField";
 
 const INPUT = "min-h-11 w-full rounded-md border border-slate-300 bg-white px-3 text-base focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-700";
+/** shrink-0:文字換行時(390 寬的「銀行轉帳」)勾選框才不會被 flex 壓小 */
+const CHECKBOX = "h-5 w-5 shrink-0";
 
 const FieldError = ({ id, message }: { id: string; message?: string }) =>
   message ? (
@@ -184,7 +186,7 @@ export default function SupplierMarketStorePage() {
           <div className="grid grid-cols-2 gap-1 min-[640px]:grid-cols-4">
             {TW_CITIES.map((c) => (
               <label key={c} className="flex min-h-11 items-center gap-2 text-sm">
-                <input type="checkbox" checked={form.deliveryCities.includes(c)} onChange={() => toggleCity(c)} className="h-5 w-5" />
+                <input type="checkbox" checked={form.deliveryCities.includes(c)} onChange={() => toggleCity(c)} className={CHECKBOX} />
                 {c}
               </label>
             ))}
@@ -229,11 +231,11 @@ export default function SupplierMarketStorePage() {
         <fieldset aria-describedby={describe("acceptCod")}>
           <legend className="sr-only">接受的付款方式</legend>
           <label className="flex min-h-11 items-center gap-2 text-sm">
-            <input type="checkbox" checked={form.acceptCod} onChange={(e) => set("acceptCod", e.target.checked)} className="h-5 w-5" />
+            <input type="checkbox" checked={form.acceptCod} onChange={(e) => set("acceptCod", e.target.checked)} className={CHECKBOX} />
             貨到付款
           </label>
           <label className="flex min-h-11 items-center gap-2 text-sm">
-            <input type="checkbox" checked={form.acceptTransfer} onChange={(e) => set("acceptTransfer", e.target.checked)} className="h-5 w-5" />
+            <input type="checkbox" checked={form.acceptTransfer} onChange={(e) => set("acceptTransfer", e.target.checked)} className={CHECKBOX} />
             銀行轉帳(接單後,消費者會在訂單查詢頁看到下面的轉帳資訊)
           </label>
           <FieldError id="store-acceptCod-error" message={errors.acceptCod} />

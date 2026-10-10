@@ -124,3 +124,13 @@ describe("SupplierMarketStorePage — 讀取狀態", () => {
     expect(screen.getByLabelText("店家介紹")).toHaveValue("");
   });
 });
+
+describe("SupplierMarketStorePage — 版面", () => {
+  it("勾選框不會被換行的長文字壓小(390 寬時「銀行轉帳」那行會換行):每個勾選框都 shrink-0", async () => {
+    renderPage();
+    expect(await screen.findByLabelText(/銀行轉帳/)).toHaveClass("shrink-0");
+    const boxes = screen.getAllByRole("checkbox");
+    expect(boxes).toHaveLength(24); // 22 縣市 + 貨到付款 + 銀行轉帳
+    boxes.forEach((box) => expect(box).toHaveClass("h-5", "w-5", "shrink-0"));
+  });
+});
