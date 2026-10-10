@@ -102,7 +102,9 @@ export default function MarketProductDialog({
         submit,
         expectedUpdatedAt: product?.updated_at ?? null,
       });
-      toast.success(submit ? "已送出審核" : "已儲存");
+      // 已核准的商品改了品名、說明、照片等內容,資料庫會改回待審:講清楚消費者暫時看不到(只改價格、庫存、上架開關不會)
+      const reReview = product?.review_status === "approved" && row.review_status === "pending";
+      toast.success(reReview ? "已重新送審,通過前消費者看不到" : submit ? "已送出審核" : "已儲存");
       onSaved(row);
       onOpenChange(false);
     } catch (error) {

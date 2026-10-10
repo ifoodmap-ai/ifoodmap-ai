@@ -411,3 +411,19 @@ describe("錯誤訊息一律中文", () => {
     await waitFor(() => expect(toastError).toHaveBeenCalledWith("儲存失敗", { description: "請稍後再試" }));
   });
 });
+
+// 已核准的商品改了品名、說明或照片,資料庫會改回待審(market_products_guard):提示要講清楚消費者暫時看不到。
+describe("MarketProductDialog — 改回待審的提示", () => {
+  it("已核准的商品存完變成待審:提示「已重新送審,通過前消費者看不到」;只改價格(仍是已核准)才說「已儲存」", async () => {
+    const save = vi
+      .fn()
+      .mockResolvedValueOnce({ row: { ...CABBAGE, review_status: "pending" }, alreadySaved: false })
+      .mockResolvedValueOnce({ row: { ...CABBAGE, review_status: "approved" }, alreadySaved: false });
+    renderDialog({ ...CABBAGE, review_status: "approved", updated_at: STAMP }, save);
+    await userEvent.click(screen.getByRole("button", { name: "儲存" }));
+    await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith("已重新送審,通過前消費者看不到"));
+    expect(toastSuccess).not.toHaveBeenCalledWith("已儲存");
+    await userEvent.click(screen.getByRole("button", { name: "儲存" }));
+    await waitFor(() => expect(toastSuccess).toHaveBeenLastCalledWith("已儲存"));
+  });
+});
