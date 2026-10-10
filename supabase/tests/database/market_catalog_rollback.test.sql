@@ -6,7 +6,7 @@ SELECT pg_temp.expect('還原後三張表都不在',
 SELECT pg_temp.expect('還原後函式都不在',
   (SELECT count(*)::text FROM pg_proc
     WHERE pronamespace = 'public'::regnamespace
-      AND proname IN ('market_tw_cities', 'market_image_path_matches', 'market_trim', 'market_store_is_open',
+      AND proname IN ('market_tw_cities', 'market_image_path_matches', 'market_trim', 'market_visible', 'market_store_is_open',
                       'market_stores_guard', 'market_products_guard', 'market_store_transfer_touch')),
   '0');
 SELECT pg_temp.expect('ledger 沒有這支 migration',

@@ -20,7 +20,10 @@
 --     改價格、庫存、上架開關(is_listed)、對應的 B2B 商品不用重審
 --   - 退回一定要填原因(會顯示給供應商);核准時清掉原因;reviewed_by / reviewed_at / submitted_at 由伺服器填
 --   - created_at 一律由伺服器填(新增 = now()、修改保留原值):首頁照 created_at 排序,自己帶未來時間就能永遠置頂
---   - 文字欄位去頭尾空白時連全形空白、零寬字元一起去(market_trim);品名、規格去完是空的 → CHECK 擋
+--   - 管理員核准(含直接建成已核准)前,photos 每張照片與它的 _t 縮圖都要已經在 Storage(market-images),
+--     缺檔 → 22023 photos_not_uploaded(Storage 物件只能寫一次,核准後才第一次上傳就會繞過審核)
+--   - 文字欄位去頭尾空白時連全形空白、零寬字元一起去(market_trim);去完看不到字(market_visible:只剩格式 /
+--     控制 / 看起來空白的字元)就當成空的 —— 品名、規格被 CHECK 擋,選填欄位當成沒填
 --
 -- 圖片路徑(Storage bucket 在下一支 migration 20261009120100):<supplier_id>/<商品 id 或 store>/<uuid>.<jpg|jpeg|png|webp>
 --
@@ -76,6 +79,22 @@ SET search_path = ''
 AS $$
   SELECT regexp_replace(p_text, '^' || v.c || '+|' || v.c || '+$', '', 'g')
     FROM (VALUES ('[\s\u0085\u00a0\u1680\u180e\u2000-\u200d\u2028\u2029\u202f\u205f\u2060\u3000\ufeff]')) AS v(c)
+$$;
+
+-- 「看得到的字」至少一個:去掉空白、控制字元(Cc)、格式字元(Cf:零寬、方向標記、軟連字號、標籤字元…),
+-- 與看起來空白的字元(韓文填充字 U+115F、U+1160、U+3164、U+FFA0,點字空白 U+2800,異體字選擇符 U+FE00–U+FE0F、
+-- U+E0100–U+E01EF,組合字形連接符 U+034F,高棉文 U+17B4、U+17B5,蒙古文 U+180B–U+180F)之後,還剩下字。
+-- 只用來判斷「是不是空的」,不改內容:emoji 的 U+FE0F、ZWJ 組合都原樣保留。
+-- (U+FE0F 不能放進 market_trim:emoji 常以 U+FE0F 結尾,trim 掉會截斷品名。)
+CREATE OR REPLACE FUNCTION public.market_visible(p_text text)
+RETURNS boolean
+LANGUAGE sql
+IMMUTABLE
+SET search_path = ''
+AS $$
+  SELECT COALESCE(char_length(regexp_replace(p_text,
+    '[\s\u0001-\u001f\u007f-\u00a0\u00ad\u034f\u0600-\u0605\u061c\u06dd\u070f\u0890\u0891\u08e2\u115f\u1160\u1680\u17b4\u17b5\u180b-\u180f\u2000-\u200f\u2028-\u202f\u205f-\u2064\u2066-\u206f\u2800\u3000\u3164\ufe00-\ufe0f\ufeff\uffa0\ufff9-\ufffb\U000110bd\U000110cd\U00013430-\U0001343f\U0001bca0-\U0001bca3\U0001d173-\U0001d17a\U000e0001\U000e0020-\U000e007f\U000e0100-\U000e01ef]',
+    '', 'g')) > 0, false)
 $$;
 
 -- ---------------------------------------------------------------------
@@ -160,8 +179,10 @@ BEGIN
   -- 先確認是自家的店。這支 SECURITY DEFINER 的 guard 比 RLS 的 WITH CHECK 先跑:不先擋,替別家建店時
   -- 下面查轉帳資訊(繞過 RLS)回 22023、RLS 回 42501,就能判斷別家有沒有存轉帳資訊。錯誤碼跟 RLS 一樣是 42501。
   -- 只有 INSERT 要擋:UPDATE 時 RLS 的 USING 已經只留自家的列,supplier_id 又改不了。
-  -- auth.uid() 是 NULL = 資料庫擁有者 / service_role 直接寫(本來就不受 RLS 管),不擋。
-  IF TG_OP = 'INSERT' AND NOT v_admin AND auth.uid() IS NOT NULL
+  -- 例外只看 auth.role():NULL(資料庫擁有者直接寫,沒有 JWT)與 service_role 本來就不受 RLS 管,不擋;
+  -- 其他身分一律檢查 —— 用 auth.uid() 判斷的話,沒有 sub 的 authenticated JWT 會被當成擁有者放過。
+  IF TG_OP = 'INSERT' AND NOT v_admin
+     AND auth.role() IS NOT NULL AND auth.role() <> 'service_role'
      AND NOT EXISTS (SELECT 1 FROM public.current_supplier_ids() AS c(id) WHERE c.id = NEW.supplier_id) THEN
     RAISE EXCEPTION '只能設定自家的零售店家' USING ERRCODE = '42501';
   END IF;
@@ -295,6 +316,7 @@ REVOKE ALL ON FUNCTION public.market_stores_guard() FROM PUBLIC, anon, authentic
 REVOKE ALL ON FUNCTION public.market_store_transfer_touch() FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION public.market_image_path_matches(text, uuid, text) FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION public.market_trim(text) FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.market_visible(text) FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION public.market_store_is_open(uuid) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.market_store_is_open(uuid) TO anon, authenticated, service_role;
 
@@ -366,20 +388,22 @@ DECLARE
   v_admin   boolean := public.is_admin();
   v_content boolean;
   v_bad     text;
+  v_missing text;
 BEGIN
   IF TG_OP = 'UPDATE' AND (NEW.supplier_id IS DISTINCT FROM OLD.supplier_id OR NEW.id IS DISTINCT FROM OLD.id) THEN
     RAISE EXCEPTION '不能更改商品所屬的店家' USING ERRCODE = '42501', HINT = 'supplier_immutable';
   END IF;
 
-  -- 文字欄位去頭尾空白(連全形空白、零寬字元一起去,見 market_trim),空字串當成沒填;
-  -- 品名、規格去完是空的 → market_products_text_lengths 擋(23514)
-  NEW.name           := public.market_trim(COALESCE(NEW.name, ''));
-  NEW.spec           := public.market_trim(COALESCE(NEW.spec, ''));
-  NEW.origin         := NULLIF(public.market_trim(COALESCE(NEW.origin, '')), '');
-  NEW.storage_method := NULLIF(public.market_trim(COALESCE(NEW.storage_method, '')), '');
-  NEW.shelf_life     := NULLIF(public.market_trim(COALESCE(NEW.shelf_life, '')), '');
-  NEW.description    := NULLIF(public.market_trim(COALESCE(NEW.description, '')), '');
-  NEW.reject_reason  := NULLIF(public.market_trim(COALESCE(NEW.reject_reason, '')), '');
+  -- 文字欄位:去頭尾空白(連全形空白、零寬字元一起去,見 market_trim);去完看不到任何字
+  -- (只剩空白 / 格式 / 控制 / 看起來空白的字元,見 market_visible)就當成空的 ——
+  -- 品名、規格變成空字串、被 market_products_text_lengths 擋(23514),選填欄位當成沒填(NULL)。
+  NEW.name           := CASE WHEN public.market_visible(NEW.name) THEN public.market_trim(NEW.name) ELSE '' END;
+  NEW.spec           := CASE WHEN public.market_visible(NEW.spec) THEN public.market_trim(NEW.spec) ELSE '' END;
+  NEW.origin         := CASE WHEN public.market_visible(NEW.origin) THEN public.market_trim(NEW.origin) END;
+  NEW.storage_method := CASE WHEN public.market_visible(NEW.storage_method) THEN public.market_trim(NEW.storage_method) END;
+  NEW.shelf_life     := CASE WHEN public.market_visible(NEW.shelf_life) THEN public.market_trim(NEW.shelf_life) END;
+  NEW.description    := CASE WHEN public.market_visible(NEW.description) THEN public.market_trim(NEW.description) END;
+  NEW.reject_reason  := CASE WHEN public.market_visible(NEW.reject_reason) THEN public.market_trim(NEW.reject_reason) END;
   NEW.photos         := COALESCE(NEW.photos, '{}'::text[]);
 
   -- 照片一定在自己的資料夾:<supplier_id>/<商品 id>/<uuid>.<副檔名>
@@ -401,6 +425,23 @@ BEGIN
   IF v_admin THEN
     IF NEW.review_status = 'rejected' AND NEW.reject_reason IS NULL THEN
       RAISE EXCEPTION '退回或下架要填寫原因(會顯示給供應商)' USING ERRCODE = '22023', HINT = 'reject_reason_required';
+    END IF;
+    -- 核准前確認每張照片和它的縮圖(<uuid>_t.<副檔名>,照 120100 的路徑格式)都已經上傳到 market-images。
+    -- Storage 的物件只能寫一次:核准時已經在的檔之後換不掉;還沒上傳的路徑若放行,核准後才第一次上傳就繞過了審核。
+    -- 只在「變成已核准」與「已核准時改了照片」檢查:之後改價格、庫存(包括第 2 階段下單扣庫存)不受影響。
+    IF NEW.review_status = 'approved'
+       AND (TG_OP = 'INSERT' OR OLD.review_status IS DISTINCT FROM 'approved' OR NEW.photos IS DISTINCT FROM OLD.photos) THEN
+      SELECT p INTO v_missing
+        FROM unnest(NEW.photos) AS p
+       WHERE NOT EXISTS (SELECT 1 FROM storage.objects o WHERE o.bucket_id = 'market-images' AND o.name = p)
+          OR NOT EXISTS (SELECT 1 FROM storage.objects o
+                          WHERE o.bucket_id = 'market-images'
+                            AND o.name = regexp_replace(p, '[.][a-z]+$', '') || '_t.' || substring(p FROM '[.]([a-z]+)$'))
+       LIMIT 1;
+      IF v_missing IS NOT NULL THEN
+        RAISE EXCEPTION '照片還沒上傳完成(主圖或縮圖缺檔),不能核准:%', v_missing
+          USING ERRCODE = '22023', HINT = 'photos_not_uploaded';
+      END IF;
     END IF;
     IF NEW.review_status IN ('approved', 'rejected')
        AND (TG_OP = 'INSERT' OR NEW.review_status IS DISTINCT FROM OLD.review_status) THEN
