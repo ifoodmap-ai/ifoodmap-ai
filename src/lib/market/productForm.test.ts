@@ -53,6 +53,7 @@ vi.mock("@/integrations/supabase/client", () => ({
 
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { friendlyDbError } from "./db";
 import { CABBAGE } from "./testFixtures";
 import {
   emptyProductForm,
@@ -61,8 +62,9 @@ import {
   productActions,
   productFormFromRow,
   productPayload,
+  MarketProductIdTakenError,
+  MarketStaleProductError,
   saveMarketProduct,
-  StaleProductError,
   validateProductForm,
   type ProductForm,
 } from "./productForm";
@@ -194,16 +196,16 @@ describe("樂觀鎖與新商品重送", () => {
     expect(result).toEqual({ row: { id: "p1" }, alreadySaved: false });
   });
 
-  it("修改:沒有更新到任何一列(別人或另一個分頁先改過)→ StaleProductError,不覆寫", async () => {
+  it("修改:沒有更新到任何一列(別人或另一個分頁先改過)→ MarketStaleProductError,不覆寫", async () => {
     replies.push({ rows: [] });
     const save = saveMarketProduct({ supplierId: "sup", productId: "p1", isNew: false, form: valid(), submit: false, expectedUpdatedAt: STAMP });
-    await expect(save).rejects.toBeInstanceOf(StaleProductError);
-    expect(new StaleProductError().message).toBe("這個商品已被其他人更新,請重新載入後再改");
+    await expect(save).rejects.toBeInstanceOf(MarketStaleProductError);
+    expect(new MarketStaleProductError().message).toBe("這個商品已被其他人更新,請重新載入後再改");
   });
 
   it("修改:沒有讀到的 updated_at 就不送出(沒辦法確認畫面上是不是最新的)", async () => {
     await expect(saveMarketProduct({ supplierId: "sup", productId: "p1", isNew: false, form: valid(), submit: false })).rejects.toBeInstanceOf(
-      StaleProductError,
+      MarketStaleProductError,
     );
     expect(calls).toHaveLength(0);
   });
@@ -220,6 +222,8 @@ describe("樂觀鎖與新商品重送", () => {
   it("新商品撞主鍵,但讀不到那一筆或不是自家的:中文錯誤,不覆寫", async () => {
     const input = { supplierId: "sup", productId: "p1", isNew: true, form: valid(), submit: false };
     replies.push({ error: { message: "duplicate key", code: "23505" } }, { rows: [] });
+    await expect(saveMarketProduct(input)).rejects.toBeInstanceOf(MarketProductIdTakenError);
+    replies.push({ error: { message: "duplicate key", code: "23505" } }, { rows: [] });
     await expect(saveMarketProduct(input)).rejects.toThrow("這個商品編號已經被使用,請關閉視窗後重新新增");
     replies.push({ error: { message: "duplicate key", code: "23505" } }, { rows: [{ id: "p1", supplier_id: "other" }] });
     await expect(saveMarketProduct(input)).rejects.toThrow("這個商品編號已經被使用,請關閉視窗後重新新增");
@@ -232,5 +236,14 @@ describe("樂觀鎖與新商品重送", () => {
       code: "23503",
     });
     expect(calls).toHaveLength(1);
+  });
+});
+
+// 畫面呼叫 friendlyDbError 時會給中文備援(認不得的錯誤不顯示英文原文);
+// 備援只換掉「認不得的」:市集自己丟的錯名稱一律 Market 開頭,原本的中文訊息照樣顯示。
+describe("自己丟的錯加了中文備援也照原訊息", () => {
+  it("MarketStaleProductError、MarketProductIdTakenError 不被備援蓋掉", () => {
+    expect(friendlyDbError(new MarketStaleProductError(), "請稍後再試")).toBe("這個商品已被其他人更新,請重新載入後再改");
+    expect(friendlyDbError(new MarketProductIdTakenError(), "請稍後再試")).toBe("這個商品編號已經被使用,請關閉視窗後重新新增");
   });
 });

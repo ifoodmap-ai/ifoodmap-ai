@@ -10,7 +10,8 @@ vi.mock("@/integrations/supabase/client", () => ({ supabase: {} }));
 vi.mock("sonner", () => ({ toast: { success: toastSuccess, error: toastError } }));
 
 import { MarketDbError } from "@/lib/market/db";
-import { StaleProductError } from "@/lib/market/productForm";
+import { MarketImageError } from "@/lib/market/images";
+import { MarketStaleProductError } from "@/lib/market/productForm";
 import { CABBAGE, SUPPLIER_A } from "@/lib/market/testFixtures";
 import type { MarketProductRow } from "@/lib/market/types";
 import MarketPhotoField from "./MarketPhotoField";
@@ -80,7 +81,7 @@ describe("MarketPhotoField", () => {
   });
 
   it("上傳失敗顯示原因", async () => {
-    const upload = vi.fn().mockRejectedValue(new Error("只收 JPG、PNG、WebP 照片"));
+    const upload = vi.fn().mockRejectedValue(new MarketImageError("只收 JPG、PNG、WebP 照片"));
     render(<PhotoHarness initial={[]} upload={upload} />);
     await userEvent.upload(screen.getByLabelText("新增照片"), [file()]);
     expect(await screen.findByText("只收 JPG、PNG、WebP 照片")).toBeInTheDocument();
@@ -289,7 +290,7 @@ describe("MarketProductDialog — 樂觀鎖與新商品重送", () => {
   });
 
   it("別人先改過:顯示原因、視窗不關、不能再存;按「重新載入」才關視窗並請父層重新讀取", async () => {
-    const save = vi.fn().mockRejectedValue(new StaleProductError());
+    const save = vi.fn().mockRejectedValue(new MarketStaleProductError());
     const onOpenChange = vi.fn();
     const onStale = vi.fn();
     const onSaved = vi.fn();
@@ -361,5 +362,28 @@ describe("statusText — 照消費者實際看到的寫", () => {
     expect(screen.getAllByText("已核准・店家停用中(消費者看不到)")).toHaveLength(2);
     expect(screen.queryByText("已上架")).toBeNull();
     screen.getAllByText("已核准・店家停用中(消費者看不到)").forEach((badge) => expect(badge).toHaveClass("bg-amber-50"));
+  });
+});
+
+// 認不得的錯誤不顯示英文原文(比照店家設定):資料庫錯誤附錯誤代碼,其他例外只給中文備援。
+describe("錯誤訊息一律中文", () => {
+  it("照片上傳遇到認不得的錯誤:顯示「上傳失敗,請再試一次」,不顯示英文原文", async () => {
+    const upload = vi.fn().mockRejectedValue(new TypeError("Cannot read properties of undefined (reading 'upload')"));
+    render(<PhotoHarness initial={[]} upload={upload} />);
+    await userEvent.upload(screen.getByLabelText("新增照片"), [file()]);
+    expect(await screen.findByText("上傳失敗,請再試一次")).toBeInTheDocument();
+    expect(screen.queryByText(/Cannot read properties/)).toBeNull();
+  });
+
+  it("儲存遇到認不得的錯誤:資料庫錯誤附錯誤代碼,其他例外只說請稍後再試", async () => {
+    const save = vi
+      .fn()
+      .mockRejectedValueOnce(new MarketDbError({ message: "unexpected internal error", code: "XX000" }))
+      .mockRejectedValueOnce(new Error("boom"));
+    renderDialog({ ...CABBAGE, review_status: "draft" }, save);
+    await userEvent.click(screen.getByRole("button", { name: "儲存草稿" }));
+    await waitFor(() => expect(toastError).toHaveBeenCalledWith("儲存失敗", { description: "請稍後再試(錯誤代碼 XX000)" }));
+    await userEvent.click(screen.getByRole("button", { name: "儲存草稿" }));
+    await waitFor(() => expect(toastError).toHaveBeenCalledWith("儲存失敗", { description: "請稍後再試" }));
   });
 });

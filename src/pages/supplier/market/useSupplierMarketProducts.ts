@@ -54,7 +54,7 @@ export const useSupplierMarketProducts = (supplierId: string | null): SupplierMa
       setError(null);
     } catch (e) {
       if (mine !== seq.current) return;
-      setError(friendlyDbError(e));
+      setError(friendlyDbError(e, "請稍後再試"));
     } finally {
       if (mine === seq.current) setLoading(false);
     }

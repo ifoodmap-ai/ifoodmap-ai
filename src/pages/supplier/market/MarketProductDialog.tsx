@@ -14,8 +14,8 @@ import {
   emptyProductForm,
   productActions,
   productFormFromRow,
+  MarketStaleProductError,
   saveMarketProduct,
-  StaleProductError,
   validateProductForm,
   type ProductForm,
   type ProductFormErrors,
@@ -102,8 +102,9 @@ export default function MarketProductDialog({
       onSaved(row);
       onOpenChange(false);
     } catch (error) {
-      if (error instanceof StaleProductError) setStale(true);
-      toast.error("儲存失敗", { description: friendlyDbError(error) });
+      if (error instanceof MarketStaleProductError) setStale(true);
+      // 認不得的錯誤不顯示英文原文(資料庫錯誤附錯誤代碼);市集自己丟的錯照原訊息
+      toast.error("儲存失敗", { description: friendlyDbError(error, "請稍後再試") });
     } finally {
       setSaving(false);
     }
@@ -249,7 +250,7 @@ export default function MarketProductDialog({
           {actions.notice ? <p className="rounded-md bg-amber-50 p-3 text-sm text-amber-900">{actions.notice}</p> : null}
           {stale ? (
             <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800">
-              <p>{new StaleProductError().message}</p>
+              <p>{new MarketStaleProductError().message}</p>
               <Button
                 type="button"
                 variant="outline"

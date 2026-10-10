@@ -156,3 +156,14 @@ describe("useSupplierMarketProducts — 店家對消費者開著嗎", () => {
     await waitFor(() => expect(result.current.storeOpen).toBe(false));
   });
 });
+
+describe("useSupplierMarketProducts — 錯誤訊息一律中文", () => {
+  it("認不得的資料庫錯誤:不顯示英文原文,改成「請稍後再試」加錯誤代碼", async () => {
+    const { result } = renderHook(() => useSupplierMarketProducts(SUPPLIER_A));
+    const first = takePair();
+    first.products.resolve({ data: null, error: { message: "unexpected internal error", code: "XX000" } });
+    first.store.resolve(HAS_STORE);
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.error).toBe("請稍後再試(錯誤代碼 XX000)");
+  });
+});

@@ -4,7 +4,7 @@
 // 一般儲存不送 review_status —— 已核准的商品改了內容,資料庫會自己改回 pending。
 //
 // 修改既有商品用樂觀鎖:多比對畫面讀到的 updated_at(原字串,不經過 Date —— JavaScript 的 Date 只到毫秒,
-// 資料庫是微秒,轉過就永遠比不到);沒有更新到任何一列 = 別人(管理員、另一個分頁)先改過 → StaleProductError,不覆寫。
+// 資料庫是微秒,轉過就永遠比不到);沒有更新到任何一列 = 別人(管理員、另一個分頁)先改過 → MarketStaleProductError,不覆寫。
 // 新商品重送:第一次其實存好了、只是回應在路上遺失,再按一次會撞主鍵 23505 → 讀回那一筆,是自家的就當作已經存好。
 import {
   CATEGORY_LABEL,
@@ -163,11 +163,20 @@ export interface SaveProductResult {
   alreadySaved: boolean;
 }
 
+// 這裡丟的錯名稱一律 Market 開頭:friendlyDbError 給了中文備援時,只有認不得的錯誤才換成備援,這兩個照原訊息。
 /** 修改時沒有更新到任何一列:畫面上那一筆已經不是最新的 */
-export class StaleProductError extends Error {
+export class MarketStaleProductError extends Error {
   constructor() {
     super("這個商品已被其他人更新,請重新載入後再改");
-    this.name = "StaleProductError";
+    this.name = "MarketStaleProductError";
+  }
+}
+
+/** 新商品撞主鍵,但那一筆不是自家的(或讀不到) */
+export class MarketProductIdTakenError extends Error {
+  constructor() {
+    super("這個商品編號已經被使用,請關閉視窗後重新新增");
+    this.name = "MarketProductIdTakenError";
   }
 }
 
@@ -194,11 +203,11 @@ export const saveMarketProduct = async ({
       // 主鍵已經有了:讀回來看是不是自家的(別家的 RLS 讀不到 → null)。不是就報錯,絕不拿這次的內容去覆寫。
       const existing = unwrap(await marketDb<MarketProductRow>("market_products").select("*").eq("id", productId).maybeSingle());
       if (existing && existing.supplier_id === supplierId) return { row: existing, alreadySaved: true };
-      throw new Error("這個商品編號已經被使用,請關閉視窗後重新新增");
+      throw new MarketProductIdTakenError();
     }
   }
   // 沒有讀到的 updated_at 就沒辦法確認畫面上是不是最新的:不送
-  if (!expectedUpdatedAt) throw new StaleProductError();
+  if (!expectedUpdatedAt) throw new MarketStaleProductError();
   const row = unwrap(
     await marketDb<MarketProductRow>("market_products")
       .update(submit ? { ...fields, review_status: "pending" } : fields)
@@ -207,7 +216,7 @@ export const saveMarketProduct = async ({
       .select("*")
       .maybeSingle(),
   );
-  if (!row) throw new StaleProductError();
+  if (!row) throw new MarketStaleProductError();
   return { row, alreadySaved: false };
 };
 

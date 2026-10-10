@@ -6,6 +6,7 @@ import { useId, useState } from "react";
 import { Loader2, Star, X } from "lucide-react";
 import type { MarketCategoryKey } from "@/lib/market/constants";
 import { PHOTO_RULES } from "@/lib/market/constants";
+import { friendlyDbError } from "@/lib/market/db";
 import { uploadMarketImage } from "@/lib/market/images";
 import MarketImage from "@/components/market/MarketImage";
 
@@ -43,7 +44,8 @@ export default function MarketPhotoField({
     try {
       for (const f of files.slice(0, left)) added.push(await upload(supplierId, productId, f));
     } catch (e) {
-      setMessage(e instanceof Error ? e.message : String(e));
+      // 認不得的錯誤不顯示英文原文(同店家設定的 MarketImageField);MarketImageError 的中文照原訊息
+      setMessage(friendlyDbError(e, "上傳失敗,請再試一次"));
     } finally {
       setBusy(false);
       onBusyChange?.(false);
