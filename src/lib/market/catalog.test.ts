@@ -54,6 +54,7 @@ import {
   PRODUCT_PUBLIC_COLUMNS,
   STORE_PUBLIC_COLUMNS,
 } from "./catalog";
+import type { MarketCategoryKey } from "./constants";
 import { MarketDbError } from "./db";
 import { BEEF, CABBAGE, SALMON, STORE_A, STORE_B, SUPPLIER_A, SUPPLIER_B, makeProduct } from "./testFixtures";
 
@@ -190,6 +191,12 @@ describe("首頁篩選", () => {
 
   it("配送縣市:只留配送到那裡的店家的商品", () => {
     expect(filterProducts(all, { ...base, city: "新北市" }).map((p) => p.name)).toEqual(["有機高麗菜", "牛肉片"]);
+  });
+
+  it("搜尋:資料裡有前端不認得的分類(資料庫先加了新分類)也不會整頁壞掉", () => {
+    const odd = makeProduct({ name: "神秘食材", category: "mystery" as unknown as MarketCategoryKey });
+    expect(filterProducts([odd, CABBAGE], { ...base, q: "神秘" }).map((p) => p.name)).toEqual(["神秘食材"]);
+    expect(filterProducts([odd, CABBAGE], { ...base, q: "高麗" }).map((p) => p.name)).toEqual(["有機高麗菜"]);
   });
 
   it("搜尋:不分大小寫、忽略空白,也搜規格、產地、分類、店名", () => {

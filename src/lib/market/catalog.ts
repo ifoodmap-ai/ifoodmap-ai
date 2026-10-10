@@ -106,7 +106,8 @@ const normalize = (s: string) => s.toLowerCase().replace(/\s+/g, "");
 const matchesQuery = (p: MarketProductRow, q: string): boolean => {
   const needle = normalize(q);
   if (!needle) return true;
-  return [p.name, p.spec, p.description ?? "", p.origin ?? "", CATEGORY_LABEL[p.category], p.market_stores?.suppliers?.name ?? ""]
+  // 分類用 ?? "":資料庫先加了新分類、前端還沒更新時,CATEGORY_LABEL 會是 undefined,normalize 會丟例外讓首頁整個白屏
+  return [p.name, p.spec, p.description ?? "", p.origin ?? "", CATEGORY_LABEL[p.category] ?? "", p.market_stores?.suppliers?.name ?? ""]
     .some((text) => normalize(text).includes(needle));
 };
 
