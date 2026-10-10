@@ -29,6 +29,8 @@ SELECT pg_temp.expect('bucket:公開、2 MB、三種圖片格式',
   (SELECT public::text || '|' || file_size_limit::text || '|' || array_to_string(allowed_mime_types, ',')
      FROM storage.buckets WHERE id = 'market-images'),
   'true|2097152|image/jpeg,image/png,image/webp');
+SELECT pg_temp.expect('bucket 不開版本(versioning_status = DISABLED):「照片只能寫一次」的前提',
+  (SELECT versioning_status FROM storage.buckets WHERE id = 'market-images'), 'DISABLED');
 SELECT pg_temp.expect('只有 SELECT、INSERT 兩條 policy(沒有 UPDATE / DELETE:物件只能寫一次)',
   (SELECT string_agg(policyname || ':' || cmd, ',' ORDER BY policyname)
      FROM pg_policies WHERE schemaname = 'storage' AND policyname LIKE 'market images%'),

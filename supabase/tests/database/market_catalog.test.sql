@@ -397,18 +397,6 @@ SELECT pg_temp.expect('D 建自己的店家(自己帶 created_at = 2099)',
   'OK');
 SELECT pg_temp.expect('建店時自己帶的 created_at 被改成現在',
   (SELECT (created_at = now())::text FROM public.market_stores WHERE supplier_id = 'a9200000-0000-4000-8000-00000000000d'), 'true');
--- 同一個交易裡 now() 不會變:先把 A 店家的 created_at 改成過去的時間(要暫停 guard 才改得動),
--- 才分得出「修改時保留原值」和「改成 now()」。DISABLE TRIGGER 拿 SHARE ROW EXCLUSIVE 鎖(擋寫不擋讀),交易結束就放。
-ALTER TABLE public.market_stores DISABLE TRIGGER trg_market_stores_guard;
-UPDATE public.market_stores SET created_at = '2020-01-01 00:00+08' WHERE supplier_id = 'a9200000-0000-4000-8000-00000000000a';
-ALTER TABLE public.market_stores ENABLE TRIGGER trg_market_stores_guard;
-SELECT pg_temp.expect('A 改店家的 created_at 沒有作用(保留原值,不是改成現在)',
-  pg_temp.as_val('authenticated', pg_temp.ua(), $q$
-    WITH u AS (UPDATE public.market_stores SET created_at = '2099-01-01 00:00+08'
-                WHERE supplier_id = 'a9200000-0000-4000-8000-00000000000a'
-                RETURNING (created_at = '2020-01-01 00:00+08'::timestamptz)::text AS v)
-    SELECT v FROM u$q$),
-  'true');
 SELECT pg_temp.expect('管理員停用 D 的零售(填原因)',
   pg_temp.as_exec('authenticated', pg_temp.uadmin(), $q$
     UPDATE public.market_stores SET is_enabled = false, disabled_reason = '測試停用'
@@ -449,17 +437,6 @@ SELECT pg_temp.expect('新增商品自己帶的 created_at 被改成現在',
   (SELECT (created_at = now())::text FROM public.market_products WHERE id = 'a9300000-0000-4000-8000-000000000004'), 'true');
 SELECT pg_temp.expect('新增草稿自己帶的 submitted_at 被清掉',
   (SELECT (submitted_at IS NULL)::text FROM public.market_products WHERE id = 'a9300000-0000-4000-8000-000000000004'), 'true');
--- 同上:先把 P4 的 created_at 改成過去的時間(暫停 guard),再驗證修改時保留原值
-ALTER TABLE public.market_products DISABLE TRIGGER trg_market_products_guard;
-UPDATE public.market_products SET created_at = '2020-01-01 00:00+08' WHERE id = 'a9300000-0000-4000-8000-000000000004';
-ALTER TABLE public.market_products ENABLE TRIGGER trg_market_products_guard;
-SELECT pg_temp.expect('A 改商品的 created_at 沒有作用(保留原值,不是改成現在)',
-  pg_temp.as_val('authenticated', pg_temp.ua(), $q$
-    WITH u AS (UPDATE public.market_products SET created_at = '2099-01-01 00:00+08'
-                WHERE id = 'a9300000-0000-4000-8000-000000000004'
-                RETURNING (created_at = '2020-01-01 00:00+08'::timestamptz)::text AS v)
-    SELECT v FROM u$q$),
-  'true');
 SELECT pg_temp.expect('品名只有全形空白、或只有零寬字元被擋',
   pg_temp.as_exec('authenticated', pg_temp.ua(), $q$
     INSERT INTO public.market_products (id, supplier_id, name, category, spec, price)
@@ -603,3 +580,113 @@ SELECT pg_temp.expect('store 資料夾不受這個限制:店家 logo 用 .png、
            cover_path = 'a9200000-0000-4000-8000-00000000000a/store/a9900000-0000-4000-8000-000000000042.webp'
      WHERE supplier_id = 'a9200000-0000-4000-8000-00000000000a'$q$),
   'OK');
+
+-- ---------------------------------------------------------------------
+-- 6. 第 3 輪複審(2026-10-10,見計畫「勘誤」):market_visible 的缺口、guard 先擋擁有權與長度、
+--    管理員改已核准商品的照片、只認 market-images bucket、缺檔訊息帶真正缺的那張
+-- ---------------------------------------------------------------------
+SELECT pg_temp.expect('Default_Ignorable 的保留碼位當品名也被擋:U+2065、U+FFF0、U+FFF8、U+E0000、U+E0002、U+E001F、U+E0080、U+E00FF、U+E01F0、U+E0FFF',
+  concat_ws('|',
+    pg_temp.try_name(50, chr(8293)), pg_temp.try_name(51, chr(65520)), pg_temp.try_name(52, chr(65528)),
+    pg_temp.try_name(53, chr(917504)), pg_temp.try_name(54, chr(917506)), pg_temp.try_name(55, chr(917535)),
+    pg_temp.try_name(56, chr(917632)), pg_temp.try_name(57, chr(917759)), pg_temp.try_name(58, chr(918000)),
+    pg_temp.try_name(59, chr(921599))),
+  'ERR 23514|ERR 23514|ERR 23514|ERR 23514|ERR 23514|ERR 23514|ERR 23514|ERR 23514|ERR 23514|ERR 23514');
+-- 換成某個身分執行,回「as_exec 的結果|有沒有在 1 秒內」(1 秒是寬鬆上限:修正前要 5 秒,修正後幾十毫秒)
+CREATE FUNCTION pg_temp.within_1s(p_claims text, p_sql text) RETURNS text LANGUAGE plpgsql AS $f$
+DECLARE
+  v_t0 timestamptz := clock_timestamp();
+  v_r  text;
+BEGIN
+  v_r := pg_temp.as_exec('authenticated', p_claims, p_sql);
+  RETURN v_r || '|' || (clock_timestamp() - v_t0 < interval '1 second')::text;
+END
+$f$;
+SELECT pg_temp.expect('不是供應商的登入者替別家塞 6 個各 1e6 字的欄位:1 秒內回 42501(擁有權在正規化之前)',
+  pg_temp.within_1s(pg_temp.ushop(), $q$
+    INSERT INTO public.market_products (supplier_id, name, category, spec, price, origin, storage_method, shelf_life, description)
+    SELECT 'a9200000-0000-4000-8000-00000000000a', s, 'fruit', s, 100, s, s, s, s
+      FROM (SELECT repeat(chr(8203), 1000000) || 'x' AS s) AS v$q$),
+  'ERR 42501|true');
+SELECT pg_temp.expect('A 自己的商品塞 6 個各 1e6 字的欄位:1 秒內回 23514(粗擋長度在正規化之前)',
+  pg_temp.within_1s(pg_temp.ua(), $q$
+    INSERT INTO public.market_products (supplier_id, name, category, spec, price, origin, storage_method, shelf_life, description)
+    SELECT 'a9200000-0000-4000-8000-00000000000a', s, 'fruit', s, 100, s, s, s, s
+      FROM (SELECT repeat(chr(8203), 1000000) || 'x' AS s) AS v$q$),
+  'ERR 23514|true');
+SELECT pg_temp.expect('管理員改已核准商品的 photos,照片也要都已上傳',
+  pg_temp.as_exec('authenticated', pg_temp.uadmin(), $q$
+    UPDATE public.market_products
+       SET photos = ARRAY['a9200000-0000-4000-8000-00000000000a/a9300000-0000-4000-8000-000000000001/a9900000-0000-4000-8000-000000000005.jpg']
+     WHERE id = 'a9300000-0000-4000-8000-000000000001'$q$),
+  'ERR 22023:photos_not_uploaded');
+-- 同名檔放在別的 bucket:P30 的主圖、P31 的縮圖只在 market-test-other(另一張都在 market-images)
+INSERT INTO storage.buckets (id, name) VALUES ('market-test-other', 'market-test-other') ON CONFLICT (id) DO NOTHING;
+SELECT pg_temp.exec_with_claims(pg_temp.ua(), $q$
+  INSERT INTO public.market_products (id, supplier_id, name, category, spec, price, photos, review_status) VALUES
+    ('a9300000-0000-4000-8000-000000000030', 'a9200000-0000-4000-8000-00000000000a', '主圖在別的 bucket', 'fruit', '1 盒', 100,
+     ARRAY['a9200000-0000-4000-8000-00000000000a/a9300000-0000-4000-8000-000000000030/a9900000-0000-4000-8000-000000000051.jpg'], 'pending'),
+    ('a9300000-0000-4000-8000-000000000031', 'a9200000-0000-4000-8000-00000000000a', '縮圖在別的 bucket', 'fruit', '1 盒', 100,
+     ARRAY['a9200000-0000-4000-8000-00000000000a/a9300000-0000-4000-8000-000000000031/a9900000-0000-4000-8000-000000000052.jpg'], 'pending')$q$);
+INSERT INTO storage.objects (bucket_id, name) VALUES
+  ('market-test-other', 'a9200000-0000-4000-8000-00000000000a/a9300000-0000-4000-8000-000000000030/a9900000-0000-4000-8000-000000000051.jpg'),
+  ('market-images',     'a9200000-0000-4000-8000-00000000000a/a9300000-0000-4000-8000-000000000030/a9900000-0000-4000-8000-000000000051_t.jpg'),
+  ('market-images',     'a9200000-0000-4000-8000-00000000000a/a9300000-0000-4000-8000-000000000031/a9900000-0000-4000-8000-000000000052.jpg'),
+  ('market-test-other', 'a9200000-0000-4000-8000-00000000000a/a9300000-0000-4000-8000-000000000031/a9900000-0000-4000-8000-000000000052_t.jpg');
+SELECT pg_temp.expect('只認 market-images bucket:同名檔放在別的 bucket 不算(缺主圖、缺縮圖各一)',
+  pg_temp.as_exec('authenticated', pg_temp.uadmin(), $q$
+    UPDATE public.market_products SET review_status = 'approved' WHERE id = 'a9300000-0000-4000-8000-000000000030'$q$)
+  || '|' ||
+  pg_temp.as_exec('authenticated', pg_temp.uadmin(), $q$
+    UPDATE public.market_products SET review_status = 'approved' WHERE id = 'a9300000-0000-4000-8000-000000000031'$q$),
+  'ERR 22023:photos_not_uploaded|ERR 22023:photos_not_uploaded');
+-- 換成某個身分執行,回錯誤訊息本文(沒出錯回 NULL)
+CREATE FUNCTION pg_temp.err_message(p_claims text, p_sql text) RETURNS text LANGUAGE plpgsql AS $f$
+DECLARE
+  v_msg text;
+BEGIN
+  PERFORM set_config('request.jwt.claims', COALESCE(p_claims, ''), true);
+  PERFORM set_config('role', 'authenticated', true);
+  BEGIN
+    EXECUTE p_sql;
+  EXCEPTION WHEN OTHERS THEN
+    GET STACKED DIAGNOSTICS v_msg = MESSAGE_TEXT;
+  END;
+  PERFORM set_config('role', 'none', true);
+  PERFORM set_config('request.jwt.claims', '', true);
+  RETURN v_msg;
+END
+$f$;
+SELECT pg_temp.expect('缺檔的錯誤訊息帶真正缺的那張(P10 只缺縮圖 → 訊息結尾是縮圖路徑)',
+  (SELECT (right(x.m, length(x.t)) = x.t)::text
+     FROM (SELECT pg_temp.err_message(pg_temp.uadmin(), $q$
+                    UPDATE public.market_products SET review_status = 'approved' WHERE id = 'a9300000-0000-4000-8000-000000000010'$q$) AS m,
+                  'a9200000-0000-4000-8000-00000000000a/a9300000-0000-4000-8000-000000000010/a9900000-0000-4000-8000-000000000032_t.jpg' AS t) AS x),
+  'true');
+
+-- ---------------------------------------------------------------------
+-- 7. 最後才跑:會暫停 guard trigger 的 created_at 測試(放在檔尾,SHARE ROW EXCLUSIVE 鎖只持有到交易結束前一下下)
+-- ---------------------------------------------------------------------
+-- 同一個交易裡 now() 不會變:先把 A 店家的 created_at 改成過去的時間(要暫停 guard 才改得動),
+-- 才分得出「修改時保留原值」和「改成 now()」。DISABLE TRIGGER 拿 SHARE ROW EXCLUSIVE 鎖(擋寫不擋讀),交易結束就放。
+ALTER TABLE public.market_stores DISABLE TRIGGER trg_market_stores_guard;
+UPDATE public.market_stores SET created_at = '2020-01-01 00:00+08' WHERE supplier_id = 'a9200000-0000-4000-8000-00000000000a';
+ALTER TABLE public.market_stores ENABLE TRIGGER trg_market_stores_guard;
+SELECT pg_temp.expect('A 改店家的 created_at 沒有作用(保留原值,不是改成現在)',
+  pg_temp.as_val('authenticated', pg_temp.ua(), $q$
+    WITH u AS (UPDATE public.market_stores SET created_at = '2099-01-01 00:00+08'
+                WHERE supplier_id = 'a9200000-0000-4000-8000-00000000000a'
+                RETURNING (created_at = '2020-01-01 00:00+08'::timestamptz)::text AS v)
+    SELECT v FROM u$q$),
+  'true');
+-- 同上:先把 P4 的 created_at 改成過去的時間(暫停 guard),再驗證修改時保留原值
+ALTER TABLE public.market_products DISABLE TRIGGER trg_market_products_guard;
+UPDATE public.market_products SET created_at = '2020-01-01 00:00+08' WHERE id = 'a9300000-0000-4000-8000-000000000004';
+ALTER TABLE public.market_products ENABLE TRIGGER trg_market_products_guard;
+SELECT pg_temp.expect('A 改商品的 created_at 沒有作用(保留原值,不是改成現在)',
+  pg_temp.as_val('authenticated', pg_temp.ua(), $q$
+    WITH u AS (UPDATE public.market_products SET created_at = '2099-01-01 00:00+08'
+                WHERE id = 'a9300000-0000-4000-8000-000000000004'
+                RETURNING (created_at = '2020-01-01 00:00+08'::timestamptz)::text AS v)
+    SELECT v FROM u$q$),
+  'true');

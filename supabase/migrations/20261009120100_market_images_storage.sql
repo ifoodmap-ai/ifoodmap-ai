@@ -25,6 +25,12 @@ ON CONFLICT (id) DO UPDATE
        file_size_limit = EXCLUDED.file_size_limit,
        allowed_mime_types = EXCLUDED.allowed_mime_types;
 
+-- 版本功能明寫關閉:「物件只能寫一次」的前提是 bucket 不開版本(開了,同名檔可以留下新版本,這個保證就不成立)。
+-- 正式庫的欄位是 text NOT NULL DEFAULT 'DISABLED'(可填 DISABLED / ENABLED / SUSPENDED);目前還有 Supabase 的
+-- dark-launch CHECK(buckets_versioning_dark_check)強制 DISABLED,之後開放了也不要替這個 bucket 打開。
+-- 另寫一句、不塞進上面的 INSERT:前端 src/lib/market/constants.test.ts 逐字比對那句 INSERT 的欄位。
+UPDATE storage.buckets SET versioning_status = 'DISABLED' WHERE id = 'market-images';
+
 -- 物件路徑合不合規、是不是自家的資料夾(CASE 保證格式不對時不會去轉 uuid)
 CREATE OR REPLACE FUNCTION public.market_image_object_ok(p_name text)
 RETURNS boolean
