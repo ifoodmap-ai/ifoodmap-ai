@@ -17283,3 +17283,26 @@ B. 頁面
    - 零售店家:供應商帳號停用(`suppliers.is_active = false`)時加一行「供應商帳號已停用,消費者看不到這家店」(零售開著也看不到,`market_store_is_open`);停用視窗的標題沒有店名時用 supplier_id。
 4. **測試數字**:`admin.test.ts` 6 → **7**、`AdminMarketPages.test.tsx` 6 → **19**;Task 28 的 `AdminLayout` 28 + `AdminRoutes` 34 = 62 跟計畫一樣。第 1 階段完成(上一節 1397)再多 14 項:97 檔 / **1411** 項(`9b0f0e4` 實測全過);第 2、3 階段 111 檔 / **1528** 項。tsc 72、eslint 10 不變,兩種 build 都過(管理員站 build 才有這兩頁,前台站 build 裡沒有)。
 5. 第 8176 行之後對 `src/App.tsx`、`AdminLayout.tsx`、`AdminLayout.test.tsx`、`AdminRoutes.test.tsx` 的「找到 → 換成」(Task 52、54、55 共 14 組)依序模擬套到現在的 repo,全部剛好命中一次。
+
+### 2026-10-10:Task 23–25 零售商品表單、編輯視窗、商品目錄分頁(commit `3653d17`、`0e86a99`、`a353152`;自查修正 `bb6d801`、`55144b9`、`610f9e3`、`ac2529d`、`933ef3f`,分支 `market`)
+
+Task 23–25 先照計畫做完(三個 commit 跟計畫的程式碼區塊逐字相同,Task 25 的 8 組「找到 → 換成」都剛好命中一次,測試 10 / 10 / 4 項先紅後綠),再做自查修正。**以 repo 的 `src/lib/market/productForm.ts`、`src/pages/supplier/market/`(`MarketPhotoField`、`MarketProductDialog`、`useSupplierMarketProducts`、`SupplierMarketProductsPanel`)、`src/pages/supplier/SupplierCatalogPage.tsx` 與測試為準,不要再照抄 Task 23–25 的程式碼區塊。** 沒有改任何 migration;每一項都先寫測試、看到失敗才改。
+
+1. **讀取中 / 讀取失敗不能拿舊的或空的資料編輯**(跟 Task 21 店家設定頁同一類問題):編輯視窗的表單直接用清單那一列、沒有另外讀取,所以沒有「讀取失敗 → 空白表單 → 儲存蓋掉」;但清單本身有洞:
+   - 第一次讀取失敗(或還在讀)時 `hasStore` 是 false、`products` 是空的,批發分頁每一列都顯示停用的「開放零售」,提示卻寫「請先完成店家設定」。
+   - 存檔成功、背景重抓失敗或還沒回來時,清單留著存檔前的內容而且按鈕能按:再打開同一筆會帶出舊價格,一存就把剛存的修改蓋回去;剛「開放零售」的那一列還是「開放零售」,再按會建出第二筆重複的零售商品。
+   - 修法:`useSupplierMarketProducts` 新增 `retry()`(先回到讀取中)、`applySaved(row)`(存檔成功先把資料庫回傳的那一筆放到清單最前面,跟重抓的 `updated_at` 新到舊一致,再背景重抓)與序號(重抓的回應比後來送出的那次晚到就丟掉,晚到的失敗也不顯示)。讀取中「零售」欄空著;讀取失敗時「零售」欄只有「—」(螢幕報讀「零售資料讀取失敗」),批發分頁上方與零售分頁都顯示原因與「重新載入」,零售分頁不顯示清單與新增鈕。
+   - 還沒建零售店家:批發分頁上方直接顯示「零售市集 › 店家設定」的連結(停用按鈕的 `title` 手機看不到)。
+   - 「—」裡的 `sr-only` 是 absolute:沒有定位的祖先時會跑出表格的橫向捲動容器,390 寬整頁被撐到 646px(headless Chrome 實測)→ 外層加 `relative`。
+2. **照片上傳中**:`MarketPhotoField` 上傳完才 `onChange([...上傳前的清單, ...新照片])`,上傳期間的「設封面 / 移除」會被蓋回去;視窗也能在上傳中按儲存,存進去的少了那張照片(視窗關掉,照片變孤兒檔)。上傳中「設封面 / 移除」停用,用新的 `onBusyChange` 通知視窗,視窗的儲存 / 送審停用到上傳完成。
+3. **驗證沒過時焦點移到第一個出錯的欄位**:390 寬時視窗要捲(內容 1300–1600px、可視 758px),按鈕在最下面,原本錯誤訊息在畫面外、按了像沒反應。等錯誤訊息畫出來(`aria-describedby` 接上)才移焦點。
+4. **觸控大小**(Task 24 的說明寫「44px 的按鈕」,程式碼卻是 `h-9` = 36px):設封面 / 移除 `h-11 w-11`、選檔欄位 `min-h-11` + `file:min-h-11`(同 `MarketImageField`,原本 26px 高)、視窗底部按鈕、新增零售商品、重新載入 `min-h-11`;批發表格的零售狀態按鈕原本 16px 高,改 `min-h-8`(跟同一列的「開放零售」、編輯、刪除一樣 32px)。勾「不限」時庫存欄加停用底色。
+5. **零售清單 390 寬**:狀態徽章與編輯鈕原本並排在右邊,資訊欄被擠窄(「動物性鮮奶油」截成「動物…」、規格價格拆成 5 行)→ 徽章放到品名旁邊(放不下就換行),編輯鈕固定在右邊。
+6. **只有看不見字元的品名 / 規格**:資料庫當成空字串、被 CHECK 擋成 23514,畫面只顯示通用的「有欄位超過長度上限或格式不對」→ `productForm.ts` 新增 `INVISIBLE_CHARS` / `hasVisibleText`,品名、規格看不到字就顯示「請填品名」「請填零售規格…」。`INVISIBLE_CHARS` 由 vitest 逐字比對 migration 120000 的 `market_visible`(兩邊都換成 `\u{十六進位}` 再比;突變驗證:拿掉 U+2800 兩項都紅)。字元類刻意逐一列出組合字元與異體字選擇符,`no-misleading-character-class` 在這裡是誤判,加 `eslint-disable-next-line` 並寫明原因(不加的話 eslint 錯誤 10 → 11)。測試字串一律寫成 `\u{…}`:上面注意事項第 4 點的工具問題這次又發生(反斜線 + u + 四位十六進位被換成看不見的字元本身,`\u{…}` 不會)。
+7. **測試數字**:`productForm.test.ts` 10 → **12**、`market-supplier-components.test.tsx` 10 → **17**、`SupplierCatalogPage.market.test.tsx` 4 → **10**,新增 `src/pages/supplier/market/useSupplierMarketProducts.test.ts` **3** 項(共多 1 檔 / 18 項)。第 1 階段完成(上一節 97 檔 / 1411 項)改成 **98 檔 / 1429 項**(`933ef3f` 實測全過);第 2、3 階段 **112 檔 / 1546 項**。tsc 72、eslint 錯誤 10 不變,兩種 build 都過。
+8. 計畫第 7163 行之後沒有任何 Task 引用這幾個檔案,之後的「找到 → 換成」不受影響。
+9. **沒有處理(留給審查決定)**:
+   - 供應商端沒有樂觀鎖:管理員或另一個分頁在視窗打開後改了同一筆,儲存會用視窗裡的內容覆蓋價格、庫存、文字(審核狀態仍由 guard 決定,繞不過)。
+   - 「已上架」只看 `review_status` 與 `is_listed`:店家被管理員停用、或庫存 0 時一樣寫「已上架」。
+   - 新商品存檔時回應遺失(資料庫其實寫入了)再按一次會撞主鍵 23505,`friendlyDbError` 只顯示英文原文。
+   - shadcn `DialogContent` 右上角的關閉鈕 16×16(共用元件,不在這次範圍;底部有 44px 的「取消」)。
