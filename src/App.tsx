@@ -77,6 +77,7 @@ import SupplierPricingPage from "./pages/supplier/SupplierPricingPage";
 import SupplierForecastPage from "./pages/supplier/SupplierForecastPage";
 import SupplierCustomersPage from "./pages/supplier/SupplierCustomersPage";
 import SupplierReviewsPage from "./pages/supplier/SupplierReviewsPage";
+import SupplierMarketStorePage from "./pages/supplier/SupplierMarketStorePage";
 
 // 餐廳後台(僅前台站)
 import RestaurantRoute from "./components/RestaurantRoute";
@@ -190,6 +191,8 @@ const MainRoutes = () => (
       <Route path="logistics" element={<Navigate to="/supplier/orders?stage=shipped" replace />} />
       <Route path="shipments" element={<Navigate to="/supplier/orders?stage=shipped" replace />} />
       <Route path="reviews" element={<SupplierReviewsPage />} />
+      {/* 零售市集(B2C) */}
+      <Route path="market/store" element={<SupplierMarketStorePage />} />
     </Route>
 
     {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
