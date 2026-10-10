@@ -17260,3 +17260,7 @@ B. 頁面
 
 - 前面各節要改成 99 的 Expected 一律改成 **105**,`market_images_storage` 的 18 一律改成 **19**(F 節第 116 行、Task 6 第 1790 行、Task 31 第 8291 / 8341 / 8387 行)。
 - 「1 秒內」那兩項是寬鬆的時間上限(修正前約 5 秒、修正後幾十毫秒);正式庫很忙時萬一超過,先重跑一次再判斷。
+
+### 2026-10-10:前端修正第 2 輪(commit `20a0db2`、`4e7e146`,分支 `market`)
+
+離線時第一次載入被 React Query 暫停(`isPending` + `isPaused`)改顯示「目前離線,連線後會自動重新載入」(首頁與店家頁商品區 `MarketOfflineNotice`、商品頁與店家頁整頁 `MarketOffline`),只有 `isLoadingError`(失敗而且沒有資料)才顯示錯誤、`isRefetchError`(背景重抓失敗)保留舊資料並加一行 `MarketStaleNotice`,分類列與縮圖列加 padding / `scroll-px-*` 且按鈕聚焦時 `scrollIntoView({ block: "nearest", inline: "nearest" })`(`src/components/market/focus.ts`;Chrome 用 Tab 不會捲露出一半的按鈕)—— vitest 多 11 項(`MarketHomePage` 8 → 10、`MarketProductPage` 6 → 10、`MarketStorePage` 6 → 9、`market-components` 12 → 14),第 1 階段完成改成 97 檔 / **1387** 項、第 2、3 階段 111 檔 / **1504** 項,Task 46 Step 2 是 3 failed / 24 passed、Step 4 改成 **`Tests  27 passed (27)`(15 + 12)**,第 4611 行之後的「找到 → 換成」沒有新增對不上的。
