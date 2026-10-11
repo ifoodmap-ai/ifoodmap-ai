@@ -140,6 +140,7 @@ const itemsText = (o: MailOrder) =>
 /** 72 小時自動取消:下單確認、新訂單信多的那一句 */
 const PLACED_DEADLINE = `店家會在 ${MARKET_AUTO_CANCEL_HOURS} 小時內確認訂單;超過時間沒有接單,訂單會自動取消。`;
 const ACCEPT_DEADLINE = `請在 ${MARKET_AUTO_CANCEL_HOURS} 小時內接單,超過時間系統會自動取消這張訂單。`;
+const STOCK_RESTORED = "訂單裡的商品庫存已經自動補回(只限有設定庫存的商品)。";
 /** 待匯款信的期限那一句(期限算不出來就寫「72 小時內」) */
 const payByText = (createdAt: string) => {
   const deadline = paymentDeadline(createdAt);
@@ -292,6 +293,18 @@ const eventMail = (kind: EventMailKind, c: EventContext): Mail => {
       return { subject, html, text };
     }
     case "consumer_cancelled": {
+      if (c.autoExpire) {
+        // 72 小時自動取消:寫明是系統因逾時取消(不是店家取消);待接單、待匯款一定還沒收款,不放退款的句子
+        const what =
+          c.autoExpire === "pending"
+            ? `店家超過 ${MARKET_AUTO_CANCEL_HOURS} 小時沒有接單,訂單已自動取消。`
+            : `因為超過 ${MARKET_AUTO_CANCEL_HOURS} 小時沒有完成匯款,訂單已自動取消。`;
+        const after = c.autoExpire === "pending" ? "這張訂單不會成立,您不需要付款。" : "這張訂單不會成立,不需要再匯款;如果您已經匯款,請直接聯絡店家。";
+        const subject = `訂單已自動取消(${c.autoExpire === "pending" ? "店家逾時未接單" : "逾時未完成匯款"})— ${label}`;
+        const html = shell("訂單已自動取消", p(`您的訂單 ${esc(label)}(「${esc(o.storeName)}」):${esc(what)}`) + p(esc(after)) + phoneHtml(o));
+        const text = [`您的訂單 ${label}(「${o.storeName}」):${what}`, after, phoneText(o)].filter(Boolean).join("\n");
+        return { subject, html, text };
+      }
       const subject = `訂單已取消 — ${label}`;
       // 已收款的單被取消(paid → cancelled):退款由店家處理、平台不經手款項,電話寫在同一句裡
       const refund = c.paid
@@ -306,6 +319,22 @@ const eventMail = (kind: EventMailKind, c: EventContext): Mail => {
       return { subject, html, text };
     }
     case "supplier_cancelled_by_platform": {
+      if (c.autoExpire) {
+        // 72 小時自動取消:寫明是系統因逾時自動取消、庫存已經補回(130000 的 apply trigger 取消時把有設定庫存的商品加回去)
+        const why =
+          c.autoExpire === "pending"
+            ? `這張訂單超過 ${MARKET_AUTO_CANCEL_HOURS} 小時沒有接單`
+            : `消費者超過 ${MARKET_AUTO_CANCEL_HOURS} 小時沒有完成匯款`;
+        const subject = `零售訂單 ${formatOrderNo(o.id)} 已逾時自動取消 — 請不要出貨`;
+        const html = shell(
+          "系統已自動取消這張零售訂單",
+          p(`訂單 ${esc(label)}(消費者 ${esc(c.buyerName)}):${esc(why)},系統因逾時自動取消。<strong>請不要出貨</strong>。`) +
+            p(esc(STOCK_RESTORED)) +
+            button(c.supplierOrdersUrl, "到後台查看"),
+        );
+        const text = [`訂單 ${label}(消費者 ${c.buyerName}):${why},系統因逾時自動取消。請不要出貨。`, STOCK_RESTORED, c.supplierOrdersUrl].join("\n");
+        return { subject, html, text };
+      }
       const subject = `平台已取消零售訂單 ${formatOrderNo(o.id)} — 請不要出貨`;
       const html = shell("平台已取消這張零售訂單", p(`iFoodmap 平台已取消訂單 ${esc(label)}(消費者 ${esc(c.buyerName)})。<strong>請不要出貨</strong>。`) + box("原因", c.reason || "(沒有填寫)") + button(c.supplierOrdersUrl, "到後台查看"));
       return { subject, html, text: `iFoodmap 平台已取消訂單 ${label}(消費者 ${c.buyerName}),請不要出貨。\n原因:${c.reason || "(沒有填寫)"}\n${c.supplierOrdersUrl}` };

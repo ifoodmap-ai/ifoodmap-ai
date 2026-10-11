@@ -625,6 +625,59 @@ describe("market-notify:狀態紀錄", () => {
     expect(paid.html).toMatch(/iFoodmap 平台不經手款項/);
   });
 
+  // 2026-10-12 業主決定:72 小時自動取消(migration 20261012100000 的 market_expire_orders 由系統寫取消紀錄,payload 帶 auto_expire)
+  it("72 小時自動取消:消費者與店家都收到寫明「自動取消」的信;沒有標記(或標記不認得)的系統取消照舊", async () => {
+    const s = setup({ live: true });
+    s.db.tables.suppliers[1].contact_email = "store-b@example.com";
+    const sysCancel = (id: string, orderId: string, from: string, note: string, payload: Row) => ({
+      id,
+      order_id: orderId,
+      from_status: from,
+      to_status: "cancelled",
+      actor_role: "system",
+      note,
+      payload,
+    });
+    s.db.tables.market_order_events.push(
+      sysCancel(EV(31), ORDER_A, "pending", "店家超過 72 小時沒有接單,系統自動取消", { auto_expire: "pending" }),
+      sysCancel(EV(32), ORDER_B, "awaiting_payment", "超過 72 小時沒有完成匯款,系統自動取消", { auto_expire: "awaiting_payment" }),
+      sysCancel(EV(33), ORDER_A, "pending", "系統取消", {}),
+      sysCancel(EV(34), ORDER_A, "pending", "系統取消", { auto_expire: "shipped" }),
+    );
+    const mailsOf = async (id: string) => {
+      const before = s.send.mock.calls.length;
+      const r = await s.call({ kind: "event", event_id: id });
+      return { data: r.body.data, msgs: s.send.mock.calls.slice(before).map((c) => c[0]) };
+    };
+    const p = await mailsOf(EV(31));
+    expect(p.data).toMatchObject({ kinds: ["consumer_cancelled", "supplier_cancelled_by_platform"], sent: 2 });
+    expect(p.msgs.map((m) => m.to[0])).toEqual(["buyer@example.com", "store-a@example.com"]);
+    expect(p.msgs[0].subject).toBe(`訂單已自動取消(店家逾時未接單)— 零售訂單 ${formatOrderNo(ORDER_A)}`);
+    expect(p.msgs[1].subject).toBe(`零售訂單 ${formatOrderNo(ORDER_A)} 已逾時自動取消 — 請不要出貨`);
+    for (const body of [p.msgs[0].html, p.msgs[0].text]) expect(body).toContain("店家超過 72 小時沒有接單,訂單已自動取消。");
+    for (const body of [p.msgs[1].html, p.msgs[1].text]) expect(body).toContain("這張訂單超過 72 小時沒有接單,系統因逾時自動取消。");
+    const a = await mailsOf(EV(32));
+    expect(a.msgs.map((m) => m.to[0])).toEqual(["buyer@example.com", "store-b@example.com"]);
+    expect(a.msgs[0].subject).toBe(`訂單已自動取消(逾時未完成匯款)— 零售訂單 ${formatOrderNo(ORDER_B)}`);
+    for (const body of [a.msgs[0].html, a.msgs[0].text]) expect(body).toContain("因為超過 72 小時沒有完成匯款,訂單已自動取消。");
+    for (const body of [a.msgs[1].html, a.msgs[1].text]) expect(body).toContain("消費者超過 72 小時沒有完成匯款,系統因逾時自動取消。");
+    for (const m of [...p.msgs, ...a.msgs]) {
+      const all = `${m.subject}\n${m.html}\n${m.text}`;
+      expect(all, m.subject).not.toContain("店家取消");
+      expect(all, m.subject).not.toMatch(/退款|已確認收款|不經手款項/); // 待匯款被取消的單一定還沒收款(paid_at: null、from_status 不是 paid)
+    }
+    for (const m of [...p.msgs, ...a.msgs].filter((x) => x.subject.startsWith("零售訂單"))) expect(m.text).toContain("庫存已經自動補回");
+    for (const m of [p.msgs[0], a.msgs[0]]) {
+      for (const storeEmail of ["store-a@example.com", "store-b@example.com"]) expect(`${m.html}${m.text}`).not.toContain(storeEmail);
+      expect(m.replyTo).toBe("ifoodmaptw@gmail.com");
+    }
+    // 沒有標記、或標記不是 pending / awaiting_payment:照一般的平台取消
+    for (const id of [EV(33), EV(34)]) {
+      const n = await mailsOf(id);
+      expect(n.msgs.map((m) => m.subject)).toEqual([`訂單已取消 — 零售訂單 ${formatOrderNo(ORDER_A)}`, `平台已取消零售訂單 ${formatOrderNo(ORDER_A)} — 請不要出貨`]);
+    }
+  });
+
   it("讀資料庫失敗 500(不洩漏細節)", async () => {
     const s = setup({ fail: (table) => (table === "market_orders" ? { message: "boom" } : undefined) });
     const r = await s.call({ kind: "event", event_id: EV(1) });
@@ -682,7 +735,11 @@ const setupEnv = (env: Record<string, string | undefined>) => {
     { id: EV(9), order_id: ORDER_A, from_status: "pending", to_status: "rejected", actor_role: "supplier", note: "缺貨", payload: {} },
     { id: EV(10), order_id: ORDER_A, from_status: "confirmed", to_status: "cancelled", actor_role: "supplier", note: "無法出貨", payload: {} },
     { id: EV(11), order_id: ORDER_B, from_status: "paid", to_status: "cancelled", actor_role: "supplier", note: "缺貨", payload: {} },
+    // 72 小時自動取消(系統、payload.auto_expire)
+    { id: EV(12), order_id: ORDER_A, from_status: "pending", to_status: "cancelled", actor_role: "system", note: "店家超過 72 小時沒有接單,系統自動取消", payload: { auto_expire: "pending" } },
+    { id: EV(13), order_id: ORDER_B, from_status: "awaiting_payment", to_status: "cancelled", actor_role: "system", note: "超過 72 小時沒有完成匯款,系統自動取消", payload: { auto_expire: "awaiting_payment" } },
   );
+  db.tables.suppliers[1].contact_email = "store-b@example.com";
   const send = vi.fn<MarketSendMail>(async () => ({ ok: true, id: "re_1", error: null }));
   const handler = createMarketNotifyHandler({
     db: selecting(db),
@@ -708,7 +765,7 @@ const setupEnv = (env: Record<string, string | undefined>) => {
 
 describe("market-notify:MARKET_NOTIFY_LIVE 不是剛好字串 true,就不會寄給真實的消費者或供應商", () => {
   const NOT_LIVE: (string | undefined)[] = [undefined, "", "TRUE", "True", "1", " true", "true ", "\ttrue", "true\n", "yes", "false"];
-  const REAL = ["buyer@example.com", "store-a@example.com"];
+  const REAL = ["buyer@example.com", "store-a@example.com", "store-b@example.com"];
 
   it("每一種值:下單確認與每一種狀態信全部轉寄 ifoodmaptw@gmail.com,主旨加 [測試轉寄]、回信也是平台信箱", async () => {
     for (const v of NOT_LIVE) {
@@ -721,7 +778,7 @@ describe("market-notify:MARKET_NOTIFY_LIVE 不是剛好字串 true,就不會寄�
       expect((await s.call({ kind: "placed", checkout_id: CHECKOUT, token: TOKEN })).body.data, label).toMatchObject({ live: false, sent: 1 });
       // 新訂單(→ 供應商)、貨到付款接單、待匯款(→ 消費者)、平台取消(→ 消費者 + 供應商)、出貨、拒單、供應商取消(→ 消費者)
       const kinds: string[] = [];
-      for (const id of [EV(1), EV(2), EV(4), EV(5), EV(6), EV(9), EV(10), EV(11)]) {
+      for (const id of [EV(1), EV(2), EV(4), EV(5), EV(6), EV(9), EV(10), EV(11), EV(12), EV(13)]) {
         const data = (await s.call({ kind: "event", event_id: id })).body.data;
         expect(data, `${label} ${id}`).toMatchObject({ live: false });
         kinds.push(...data.kinds);
@@ -738,7 +795,9 @@ describe("market-notify:MARKET_NOTIFY_LIVE 不是剛好字串 true,就不會寄�
         ]),
       );
       const msgs = s.send.mock.calls.map((c) => c[0]);
-      expect(msgs, label).toHaveLength(10);
+      expect(msgs, label).toHaveLength(14);
+      // 72 小時自動取消:消費者與店家各兩封,一樣只寄測試信箱
+      expect(msgs.filter((m) => m.subject.includes("自動取消")), `${label} 自動取消`).toHaveLength(4);
       expect(msgs.filter((m) => m.text.includes("退款由店家處理")), `${label} 已收款取消`).toHaveLength(1);
       expect(msgs.filter((m) => m.text.includes("店家尚未提供")), `${label} 沒填匯款資訊`).toHaveLength(1);
       for (const m of msgs) {
@@ -752,7 +811,7 @@ describe("market-notify:MARKET_NOTIFY_LIVE 不是剛好字串 true,就不會寄�
       // 原收件人只列在轉寄說明裡
       expect(msgs[0].html, label).toContain("原本的收件人(消費者):buyer@example.com");
       expect(msgs[1].html, label).toContain("原本的收件人(供應商):store-a@example.com");
-      expect(s.db.tables.notifications.map((n) => n.recipient), label).toEqual(Array(10).fill("ifoodmaptw@gmail.com"));
+      expect(s.db.tables.notifications.map((n) => n.recipient), label).toEqual(Array(14).fill("ifoodmaptw@gmail.com"));
     }
   });
 

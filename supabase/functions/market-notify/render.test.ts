@@ -380,11 +380,11 @@ describe("72 小時自動取消:時限只有一個常數,跟 migration 的標記
     .flatMap((f) => [...readFileSync(resolve(dir, f), "utf8").matchAll(/--\s*@market-auto-cancel-hours\s+(\d+)\b/g)].map((m) => ({ file: f, hours: Number(m[1]) })));
   const hasHardening = existsSync(resolve(dir, HARDENING));
 
-  // 資料庫那支 migration commit 之前先跳過;檔案(或標記)一出現就自動打開
-  it.skipIf(!hasHardening && marks.length === 0)("MARKET_AUTO_CANCEL_HOURS = migration 的 -- @market-auto-cancel-hours", () => {
-    expect(marks.length, "migration 裡要有一行 -- @market-auto-cancel-hours <小時>").toBeGreaterThan(0);
-    if (hasHardening) expect(marks.filter((m) => m.file === HARDENING), HARDENING).toHaveLength(1);
-    for (const m of marks) expect(m.hours, m.file).toBe(MARKET_AUTO_CANCEL_HOURS);
+  // 標記已經 commit(fc25de1),這項不再跳過:檔案不見、標記不只一處、或數字不同都要紅
+  it("MARKET_AUTO_CANCEL_HOURS = migration 20261012100000 的 -- @market-auto-cancel-hours(全部 migration 只有這一處)", () => {
+    expect(hasHardening, HARDENING).toBe(true);
+    expect(marks.map((m) => m.file)).toEqual([HARDENING]);
+    expect(marks[0].hours).toBe(MARKET_AUTO_CANCEL_HOURS);
   });
 
   it("業主定的是 72 小時", () => {
@@ -454,6 +454,80 @@ describe("72 小時自動取消:信裡新增的句子(html 與 text)", () => {
   it("其他信不多這些句子", () => {
     for (const k of ["consumer_confirmed", "consumer_rejected", "consumer_shipped", "consumer_cancelled", "supplier_cancelled_by_platform"] as const) {
       expect(renderEventMail(k, CTX).text, k).not.toMatch(/72 小時/);
+    }
+  });
+});
+
+describe("72 小時自動取消的信(紀錄的 payload.auto_expire 有值)", () => {
+  const AUTO_P: EventContext = { ...CTX, autoExpire: "pending", reason: "店家超過 72 小時沒有接單,系統自動取消" };
+  const AUTO_A: EventContext = { ...CTX, autoExpire: "awaiting_payment", reason: "超過 72 小時沒有完成匯款,系統自動取消" };
+  const REFUND = /退款|已確認收款|不經手款項/;
+
+  it("消費者:pending → 店家超過 72 小時沒有接單,訂單已自動取消(不需要付款)", () => {
+    const m = renderEventMail("consumer_cancelled", AUTO_P);
+    expect(m.subject).toBe(`訂單已自動取消(店家逾時未接單)— 零售訂單 ${formatOrderNo(ORDER.id)}`);
+    for (const body of [m.html, m.text]) {
+      expect(body).toContain("店家超過 72 小時沒有接單,訂單已自動取消。");
+      expect(body).toContain("這張訂單不會成立,您不需要付款。");
+      expect(body).toContain("店家電話:02-2345-6789");
+    }
+  });
+
+  it("消費者:awaiting_payment → 因為超過 72 小時沒有完成匯款,訂單已自動取消", () => {
+    const m = renderEventMail("consumer_cancelled", AUTO_A);
+    expect(m.subject).toBe(`訂單已自動取消(逾時未完成匯款)— 零售訂單 ${formatOrderNo(ORDER.id)}`);
+    for (const body of [m.html, m.text]) {
+      expect(body).toContain("因為超過 72 小時沒有完成匯款,訂單已自動取消。");
+      expect(body).toContain("這張訂單不會成立,不需要再匯款;如果您已經匯款,請直接聯絡店家。");
+    }
+  });
+
+  it("消費者的自動取消信:不寫成店家取消、沒有退款句(就算資料說已收款也一樣)", () => {
+    for (const c of [AUTO_P, AUTO_A, { ...AUTO_A, paid: true }]) {
+      const m = renderEventMail("consumer_cancelled", c);
+      const all = `${m.subject}\n${m.html}\n${m.text}`;
+      expect(all, `${c.autoExpire} paid=${c.paid}`).not.toContain("店家取消");
+      expect(all, `${c.autoExpire} paid=${c.paid}`).not.toMatch(REFUND);
+    }
+  });
+
+  it("店家:寫明系統因逾時自動取消、庫存已經自動補回、請不要出貨", () => {
+    const p = renderEventMail("supplier_cancelled_by_platform", AUTO_P);
+    const a = renderEventMail("supplier_cancelled_by_platform", AUTO_A);
+    for (const m of [p, a]) {
+      expect(m.subject).toBe(`零售訂單 ${formatOrderNo(ORDER.id)} 已逾時自動取消 — 請不要出貨`);
+      for (const body of [m.html, m.text]) {
+        expect(body).toContain("系統因逾時自動取消");
+        expect(body).toContain("訂單裡的商品庫存已經自動補回(只限有設定庫存的商品)。");
+        expect(body).toContain("請不要出貨");
+        expect(body).not.toMatch(REFUND);
+      }
+    }
+    for (const body of [p.html, p.text]) expect(body).toContain("這張訂單超過 72 小時沒有接單");
+    for (const body of [a.html, a.text]) expect(body).toContain("消費者超過 72 小時沒有完成匯款");
+  });
+
+  it("主旨分得出是自動取消;一般取消的主旨與內容不變", () => {
+    for (const k of ["consumer_cancelled", "supplier_cancelled_by_platform"] as const) {
+      const normal = renderEventMail(k, CTX);
+      expect(`${normal.subject}\n${normal.text}`, k).not.toContain("自動取消");
+      for (const c of [AUTO_P, AUTO_A]) expect(renderEventMail(k, c).subject, `${k} ${c.autoExpire}`).toContain("自動取消");
+    }
+    expect(renderEventMail("consumer_cancelled", CTX).subject).toBe(`訂單已取消 — 零售訂單 ${formatOrderNo(ORDER.id)}`);
+    expect(renderEventMail("supplier_cancelled_by_platform", CTX).subject).toBe(`平台已取消零售訂單 ${formatOrderNo(ORDER.id)} — 請不要出貨`);
+  });
+
+  it("自動取消信也把店名、店家電話、買家姓名跳脫", () => {
+    for (const autoExpire of ["pending", "awaiting_payment"] as const) {
+      const consumer = renderEventMail("consumer_cancelled", { ...EVIL_CTX, autoExpire });
+      const supplier = renderEventMail("supplier_cancelled_by_platform", { ...EVIL_CTX, autoExpire });
+      for (const m of [consumer, supplier]) {
+        expect(m.html, autoExpire).not.toContain('<a href="https://evil');
+        expect(m.html, autoExpire).not.toContain("<img");
+      }
+      expect(consumer.html).toContain(htmlEscaped(evil("S-NAME")));
+      expect(consumer.html).toContain(htmlEscaped(evil("S-PHONE")));
+      expect(supplier.html).toContain(htmlEscaped(evil("B-NAME")));
     }
   });
 });
