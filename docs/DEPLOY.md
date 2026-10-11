@@ -798,7 +798,8 @@ where jobid = (select jobid from cron.job where jobname = 'ifoodmap-ai-guard-cle
   🔴 storage 的檔案**不能用 SQL 刪**(`storage.protect_objects_delete`),要刪檔、刪 bucket 用 Storage API 或 Dashboard(見最後的「違規圖片怎麼刪」)。
 - **測試**:`supabase/tests/database/market_*.test.sql`,用 `scripts/supabase-sql.mjs dry` 在正式庫 BEGIN…ROLLBACK 乾跑
   (用法見檔案開頭;共用工具 `_market_helpers.sql`;漏網的 COMMIT 另有伺服器端保險擋),**每次**乾跑之後都跑 `market_residue.sql`(唯讀)確認沒有殘留,五個數字都要是 0。
-  項數:`market_harness` 5、`market_catalog` 112、`market_catalog_rollback` 3、`market_images_storage` 19、`market_images_storage_rollback` 3。
+  項數:`market_harness` 5、`market_catalog` 112、`market_catalog_rollback` 3、`market_images_storage` 20、`market_images_storage_rollback` 3
+  (`market_images_storage` 上線時是 19 項;2026-10-10 Supabase 自動更新 Storage schema 之後測試改寫、多一項,commit `c261a85`)。
   2026-10-10 上線前實測(`market` 分支 `440ac4b`):五支乾跑全過、每次殘留都是 0;vitest 連跑 3 次都是 99 檔 / 1544 項全過;
   tsc 錯誤 72、eslint 錯誤 10(跟開工前的基準一樣);兩種 build 都過;形象站 `npm test` 211 項全過(這個階段沒改 `landing/`)。
 
@@ -835,7 +836,7 @@ where jobid = (select jobid from cron.job where jobname = 'ifoodmap-ai-guard-cle
    node scripts/supabase-sql.mjs dry supabase/tests/database/market_images_storage_rollback.test.sql --with-migration $C --with-migration $S --with-rollback supabase/rollbacks/20261009120100_market_images_storage.down.sql
    node scripts/supabase-sql.mjs ro supabase/tests/database/market_residue.sql
    ```
-   Expected:依序 `共 5 項` / `共 112 項` / `共 3 項` / `共 19 項` / `共 3 項`,全部 `失敗 0 項`;每次殘留的 `fixture_users`、`fixture_suppliers`、`fixture_objects`、
+   Expected:依序 `共 5 項` / `共 112 項` / `共 3 項` / `共 20 項` / `共 3 項`,全部 `失敗 0 項`;每次殘留的 `fixture_users`、`fixture_suppliers`、`fixture_objects`、
    `test_queue_rows`、`test_config_rows` 都是 `0`。(`market_catalog` 有兩項是寬鬆的「1 秒內被擋」,正式庫很忙時萬一超過,先重跑一次再判斷。)
 3. **套 migration**(先 120000 再 120100;一行一支,前一支成功才跑下一支):
    ```bash
@@ -906,7 +907,7 @@ where jobid = (select jobid from cron.job where jobname = 'ifoodmap-ai-guard-cle
    node scripts/supabase-sql.mjs dry supabase/tests/database/market_catalog_rollback.test.sql --with-rollback $RS --with-rollback $RC
    node scripts/supabase-sql.mjs ro supabase/tests/database/market_residue.sql
    ```
-   Expected:依序 `共 112 項` / `共 19 項` / `共 3 項` / `共 3 項`,全部 `失敗 0 項`;每次殘留五個 `0`。
+   Expected:依序 `共 112 項` / `共 20 項` / `共 3 項` / `共 3 項`,全部 `失敗 0 項`;每次殘留五個 `0`。
    (還原的乾跑會拿三張表的 ACCESS EXCLUSIVE 鎖直到 ROLLBACK,一兩秒;這一步在推前端之前做,還沒有人在用。)
 6. **合併 `market` 到 `main`、push**(前端一定在 migration 之後):
    ```bash
@@ -977,7 +978,7 @@ where jobid = (select jobid from cron.job where jobname = 'ifoodmap-ai-guard-cle
       分類圖示、「市集還沒有上架的商品,敬請期待。」;`/market/nope` 是「找不到這個頁面。」與「回市集首頁」。
    4. 管理員站:`curl -s -o /dev/null -w '%{http_code}\n' https://ifoodmap-admin.vercel.app/admin/market/products` → `200`(內容要登入,留給業主在第 3 階段實測)。
    5. 派一個沒參與實作的 agent 獨立驗收(fresh context;只准讀、乾跑、唯讀查詢,不准改檔、不准 apply、不准輸入任何密碼),清單見實作計畫 Task 31 Step 8,
-      數字以本節為準(`market_catalog` 112、`market_images_storage` 19、`image_policies` 2、`image_bucket_versioning` DISABLED)。
+      數字以本節為準(`market_catalog` 112、`market_images_storage` 20、`image_policies` 2、`image_bucket_versioning` DISABLED)。
       有任何一項不過:照下面「還原(第 1 階段)」判斷要不要退版,回報派工者,不要直接進第 2 階段。
 
 ### 還原(第 1 階段)
@@ -1074,3 +1075,465 @@ where jobid = (select jobid from cron.job where jobname = 'ifoodmap-ai-guard-cle
    `curl -s -o /dev/null -w '%{http_code}\n' https://cwvpehqcvbfuynabpqop.supabase.co/storage/v1/object/public/market-images/<路徑>`。
    ⚠️ 上傳時帶一年的 `cacheControl`:刪檔之後,CDN 與看過的瀏覽器可能還會顯示快取一段時間(多久沒有實測過)。
 4. 商品的 `photos` 還指著刪掉的檔:供應商換掉那張(或補傳)之前,這個商品核准不了(`photos_not_uploaded`),審核畫面那一格也會顯示「讀不到」。
+
+### 第 2 階段:購物車、免註冊下單、訂單通知(migration 20261009130000 / 130100 / 130200、Edge Function `market-notify`)
+
+消費者把商品放進購物車(只存在瀏覽器的 localStorage,價格、庫存每次重新跟資料庫拿)、免登入結帳,一次可以結好幾家店:每家店一張單,
+付款方式是貨到付款或銀行轉帳,**錢由店家自己收,平台不經手**。下單後拿到查詢連結 `/market/orders/<查詢 token>`;店家在後台接單、出貨;
+通知信由 Edge Function `market-notify` 寄(哪一步寄給誰見下面的表)。
+🔴 第 2 階段上線之後,**一般消費者仍然下不了單、真實的消費者與店家也收不到信**:下單開關 `market_checkout_open` 關著(只有平台管理員能下單,給業主實測),
+寄信閘門 `MARKET_NOTIFY_LIVE` 也沒開(所有信只寄內部信箱)。兩個都待業主核准,見最後的「對外開放前待辦」。
+
+| 誰 | 在哪裡 |
+|---|---|
+| 消費者(免登入) | 產品站 `/market/cart`(購物車)、`/market/checkout`(結帳)、`/market/orders/<token>`(查單)、`/market/terms`、`/market/privacy`(服務條款、隱私權政策,目前是草稿) |
+| 供應商 | 產品站「零售市集 › 零售訂單」`/supplier/market/orders`:接單、拒單、出貨、確認已收款、標記完成、取消訂單(新訂單通知信的「到後台處理」連到這裡) |
+| 管理員 | 管理員站「零售市集 › 零售訂單」`/admin/market/orders`:**唯讀總覽**,沒有任何改訂單的按鈕(要取消請店家在供應商後台做);只在管理員站的 build 裡 |
+
+- **130000 market_orders**
+  - `market_orders`(每家店一張;同一次結帳的單共用 `checkout_id` 與同一組查詢 token):收件資料、小計 / 運費 / 總額、付款方式(`cod` / `transfer`)、
+    查詢 token 的 sha256 hex(`lookup_token_hash`)、同意的條款版本;`payment_status` / `payment_ref` 預留給之後的線上付款(目前不用)。
+    - 請求指紋 `request_fingerprint`(64 位 hex):正規化後的商品、付款方式、收件資料的 sha256,同一次結帳的每張單都一樣 —— 用來判斷同一個 token 的重送是不是同一份內容。
+    - `UNIQUE (lookup_token_hash, supplier_id)`:同一個 token(= 同一次結帳)每家店最多一張,是下單 RPC 之外的第二道防重複;它的索引也拿來用 token 查單。
+    - 金額 CHECK(`market_orders_money`):商品小計 `subtotal` 1–1,000,000(不含運費)、運費 `shipping_fee` 0–10,000(跟店家設定的上限一樣)、
+      `total = subtotal + shipping_fee`(總額可以超過 1,000,000:一件百萬元的商品加運費也買得到)。
+  - `market_order_items`:下單當下的品名、規格、溫層、單價快照(之後改價不影響舊單)。
+    `stock_deducted` = 下單時真的從庫存扣掉的數量(商品有設庫存 = 數量,不限量 = 0);拒單 / 取消**只補這個數**,而且商品現在是不限量就不動 ——
+    下單時不限量、之後店家改成有庫存,取消也不會憑空多出庫存。
+  - `market_order_events`:狀態紀錄,只能新增(UPDATE / DELETE 一律擋,所以訂單也刪不掉);同一個 INSERT 同一張單只能一筆。狀態只經這張表改變:
+    ```
+    貨到付款:pending → confirmed → shipped → completed
+    銀行轉帳:pending → confirmed →(自動)awaiting_payment → paid → shipped → completed
+    pending → rejected(拒單,要原因)
+    pending / confirmed / awaiting_payment / paid → cancelled(取消,要原因;店家或平台都能取消)
+    ```
+    - guard(BEFORE):鎖訂單列;身分由伺服器決定(這家店的啟用中帳號 = supplier、`is_admin()` = admin、service_role / 資料庫直連 = system,前端送的 `actor_role` 不算);
+      前端以為的狀態跟資料庫不一樣 → P0001 `stale_order_status`(畫面過期);(身分, 目前狀態, 目標狀態, 付款方式) 要在轉移表 `market_transition_rules()` 裡
+      (前端 `src/lib/market/orders.ts` 的 `MARKET_TRANSITIONS` 由 vitest 逐條比對);拒單 / 取消原因、出貨的物流去掉頭尾空白(連全形空白、零寬字元)後
+      看不到字就當沒填 → `reason_required` / `carrier_required`。
+    - 🔴 **已收款(paid)的轉帳單也能取消**:店家收了錢卻出不了貨時,單才不會卡死。**退款由店家自行處理**,平台不經手款項 ——
+      消費者的取消信會這樣寫並附店家電話;供應商後台取消已收款的單時也會提醒「取消後要由你自行退款」。
+    - apply(AFTER):改訂單狀態與各階段時間;拒單 / 取消補庫存(只補 `stock_deducted`;先依商品 id 鎖商品,跟下單同一個鎖順序);
+      轉帳單接單後在同一個交易自動補一筆「待匯款」(身分一律記 system)。
+    - **紀錄時間由伺服器決定**:`created_at` 一律改寫成 `clock_timestamp()`,而且同一張單**嚴格遞增**(至少比上一筆多 1 微秒)——
+      `now()` 是交易開始的時間,轉帳單的「已接單」與自動補的「待匯款」在同一個交易,會一模一樣、排不出先後。前端、API、system 送的時間都不算。
+  - 權限:anon 對三張表完全沒有權限(消費者只能經 `market_get_orders(token)` 看自己那次結帳);供應商讀自家、管理員全部;
+    只有 `market_order_events` 開放登入者 INSERT(guard 再擋)。資料表權限先 `REVOKE ALL`(含 TRUNCATE、MAINTAIN)再給。
+- **130100 market_notify**:每筆狀態紀錄 → pg_net → `market-notify`(`{kind:'event', event_id}`);下單成功時 `market_place_order` 另外排一封下單確認
+  (`{kind:'placed', checkout_id, token}`;token 只在這個請求裡,pg_net 送出後佇列列就刪掉)。非同步:寄信失敗不會讓訂單 rollback;網址或密鑰沒設定就安靜跳過。
+  網址在 `app_config.market_notify_function_url`;🔴 **共用既有的 `app_config.notify_service_key`(= secret `NOTIFY_SECRET`,餐廳訂單 notify 同一把),不新增 secret**
+  (不用 `supabase secrets set`,其他 function 不會因此全部重新部署)。
+- **130200 market_checkout**
+  - `market_place_order(p_checkout)`(SECURITY DEFINER,anon / 登入者都能叫):伺服器重查一切,不相信瀏覽器送來的任何金額 —— 商品是否已核准上架、
+    店家與供應商是否啟用、價格、庫存、配送縣市、最低訂購金額(比小計)、付款方式(轉帳要店家已填轉帳資訊);算運費(小計 ≥ 免運門檻就 0)、
+    扣庫存、每家店建一張單 + 明細 + 第一筆紀錄。商業上的錯誤一律回 `{ok:false, code, …}`、不 raise。檢查順序見下面的表。
+    - **查詢 token 由瀏覽器產生**:`crypto.getRandomValues` 32 bytes → base64url、不帶「=」→ 43 字(`^[A-Za-z0-9_-]{43}$`,不合格 → `INVALID_INPUT` `token`);
+      一次結帳一個,資料庫只存 sha256 hex。token 只出現在下單的請求與回應、下單確認信的連結。
+    - **冪等**:同一個 token 的請求用 advisory lock 排隊,再查這個 token 有沒有建過單 ——
+      同 token、同內容重送(比請求指紋,不含 `expected_totals` 與條款版本;Email 大小寫、電話的 -、同一商品拆兩行都算同內容)→ 回第一次的結果再加 `duplicate:true`:
+      **不建單、不扣限流額度、不動庫存、不再寄確認信**,開關後來關了也照樣回;同 token、不同內容 → `TOKEN_REUSED`,什麼都不寫。
+    - 前端(`src/lib/market/checkout.ts` 的 `checkoutTokenStore`):同一次結帳一直沿用同一個 token(斷線、逾時、缺貨、價格變了之後的重送都一樣),
+      存在 sessionStorage(同一個分頁重新整理還在);這個 token 已經成單、內容又改過再送 → `TOKEN_REUSED`,結帳頁說「你剛才送出的訂單已經成立」
+      並給「查看訂單」連結(還沒成單過的 token,內容改了伺服器照常建單)。成功(含 `duplicate`)或 `TOKEN_REUSED` 之後才換新 token。
+      斷線時請買家再按一次「送出訂單」(同一個 token,不會重複下單)。
+    - **`ORDER_TOO_LARGE`**:任一家店的商品小計(不含運費)> 1,000,000 → 不建單、庫存不變,回 `stores: [{supplier_id, subtotal}]`(用 bigint 算,不會丟例外)。
+  - `market_get_orders(p_token)`(anon 可叫):用 token 查那次結帳的訂單;token 格式不對、找不到都回 `NOT_FOUND`(不區分);電話、Email 遮罩;
+    店家只給店名、電話、出貨天數、退換貨說明 —— 🔴 **不給店家的 `contact_email`**(那是收新訂單通知的信箱);轉帳資訊只在「待匯款」時給。
+  - `market_checkout_status()`:`{open, can_order}`,前端用來決定要不要讓人進結帳;真正的關卡是 `market_place_order` 第 4 步。
+  - **下單開關** `app_config.market_checkout_open`(migration 預設 `'false'`):關著的時候只有平台管理員能下單(業主實測用),其他人拿到 `MARKET_CLOSED`,
+    而且不寫任何限流計數。🔴 改成 `'true'` = 對外開放,**待業主核准**。
+
+**下單的檢查順序**(`market_place_order`;步驟編號照 130200 裡的註解,有一步不過就回傳,後面都不做):
+
+| 步驟 | 檢查 | 不過時回 |
+|---|---|---|
+| 第 1–2 步 | 形狀、收件資料(姓名、電話、Email、縣市、地址、備註、條款版本)、token、購物車格式(最多 50 行;每行 uuid、1–99 的整數),同一商品合併 | `INVALID_INPUT`(帶 `field`)、`TOO_MANY_ITEMS` |
+| 第 3 步 | 冪等(同一個 token 建過單沒有) | `duplicate:true`(當成功)/ `TOKEN_REUSED` |
+| 第 4 步 | 下單開關(平台管理員不受限) | `MARKET_CLOSED` |
+| 第 5 步 | 限流 A 段 | `RATE_LIMITED` |
+| 第 6 步 | 空購物車;依 id 鎖商品;下架或店家、供應商停用;庫存 | `EMPTY_CART`、`PRODUCT_UNAVAILABLE`、`OUT_OF_STOCK` |
+| 第 7 步 | 每家店:超過 10 家、商品小計 > 1,000,000、配送縣市、最低訂購金額、付款方式、`expected_totals` 跟伺服器算的不一樣 | `TOO_MANY_STORES`、`ORDER_TOO_LARGE`、`NOT_DELIVERABLE`、`BELOW_MINIMUM`、`PAYMENT_NOT_ACCEPTED`、`PRICE_CHANGED` |
+| 第 8 步 | 限流 B 段 | `RATE_LIMITED`、`DAILY_CAP` |
+| 第 9 步 | 建單、明細、第一筆紀錄、扣庫存、排下單確認信 | (成功)`{ok:true, token, checkout_id, orders}` |
+
+第 1–3 步就回傳的請求(格式錯、重送)不算進限流;第 4 步擋下的不寫任何計數。鎖的順序固定:token 的 advisory lock → A 段計數列 → 商品 → B 段計數列。
+
+**防灌單**(`market_rate_take`,新寫的,不沿用 AI 的 `ai_rate_take`):固定窗格(整點、台北日);同一段裡任何一條超過就整段退回(被擋的那次不吃那一段的額度)。
+IP / Email / 電話只以「加鹽 sha256 前 16 hex」落地(鹽在 `app_config.market_rate_salt`,migration 隨機產生、不印出來)。**開關關著時不寫任何計數;平台管理員不限流。**
+
+| 段 | 什麼時候算 | 規則(bucket 種類) | 額度 |
+|---|---|---|---|
+| A 段:只防灌爆 | 開關之後、查商品之前;每一次嘗試都算(**失敗的也算**) | `ip`:IPv4 完整位址、IPv6 取 /64 | 每小時 30(不設每天:手機業者的 IPv4 常是一大群人共用一個) |
+| | | `ip48`:IPv6 的 /48 | 每小時 200 |
+| | | `noip`:拿不到 IP 時全站共用一格 | 每小時 60、每天 300 |
+| B 段:只算真的成單 | 所有檢查都過、準備建單時才扣;一次結帳不論幾家店都算 1 | `email`(去 +tag、gmail 去點) | 每小時 3、每天 10 |
+| | | `phone` | 每天 10 |
+| | | `ipo`:同一個 IPv4 | 每天 20 |
+| | | `ip48o`:同一個 IPv6 /48 | 每天 20 |
+| | | `global`:全站 | 每天 500(回 `DAILY_CAP`) |
+
+- `noip` 只是保險:正常情況一定拿得到 IP;被觸發代表 IP 取得壞了(所有拿不到 IP 的請求共用這一格,正常買家也會被擋),要去查。
+- B 段被擋 → 不建單、不動庫存,A 段已扣的照算;缺貨、價格變了、超過金額上限、配送不到、未達最低金額都不吃 B 段。
+- IP 取自 `market_client_ip()`:`cf-connecting-ip` → `x-real-ip` → `x-forwarded-for` 第一段。🔴 實際用到的是不是偽造不了的那一個,要在打開開關時驗
+  (見「對外開放前待辦」第 6 條)。
+- 計數表 `market_rate_counters`;**擋下次數** `market_rate_blocks_daily`(`day` 台北日、`rule` 規則種類 = bucket 冒號前的前綴、`hits`,主鍵 `(day, rule)`):
+  被擋時把擋下的那種規則 +1,同一次請求被同一種的兩條擋下(例如 Email 每小時與每天)只算 1;沒被擋時不寫;只記次數、不記是誰。兩張表 anon / 登入者都碰不到。
+- 清理:pg_cron `ifoodmap-market-rate-cleanup` 每天 19:50 UTC(台北 03:50)刪 2 天前的計數、**90 天前**的擋下紀錄。
+- 量變大時怎麼調:另開一支 migration,用 `CREATE OR REPLACE FUNCTION public.market_place_order` 改 A / B 段的數字(計數表與 `market_rate_take` 不用動);
+  要加新的規則,種類取新名字、不要跟另一段重疊。
+
+**Edge Function `market-notify`**(`supabase/functions/market-notify/`;邏輯在 `handler.ts`、`render.ts`,vitest 測):
+
+| 時機 | 寄給誰 |
+|---|---|
+| 下單成功 | 消費者:下單確認(含查詢連結 —— **只有這一封有 token**;一次結帳一封,列出每家店) |
+| 新訂單(待接單) | 店家(`suppliers.contact_email`):「到後台處理」連到 `/supplier/market/orders` |
+| 接單(貨到付款)、待匯款(轉帳,含匯款資訊)、拒單、出貨、取消 | 消費者 |
+| 平台或系統取消 | 消費者 + 店家(「請不要出貨」) |
+| 轉帳單的「已接單」(緊接著寄待匯款)、確認已收款、標記完成 | 不寄 |
+
+- 每封信的 reply_to 都是**平台信箱**(`SUPPLIER_MAIL_REPLY_TO`,沒設用 `LEAD_NOTIFY_TO` 的第一個);給消費者的信附**店家電話**(`suppliers.phone`,沒填就不寫)。
+  🔴 **信裡、reply_to 都不出現店家的 `contact_email`**。
+- 已收款的單被取消:消費者的取消信寫「這張訂單店家已確認收款,退款由店家處理,請直接聯絡店家(店家電話:…)。iFoodmap 平台不經手款項。」
+- 寄信帶 Resend 的 `Idempotency-Key`(狀態信 `market-notify:<event_id>:<consumer|supplier>`、下單確認 `market-notify:placed:<checkout_id>`):
+  pg_net 重送、或有人重放同一個 event,24 小時內只寄一次;同一個 key 內容不同時 Resend 回 409,記成 failed。
+- 共享密鑰用常數時間比對(兩邊先 sha256 再逐字比):不對回 401、`NOTIFY_SECRET` 沒設回 503。下單確認先比對 sha256(token) 跟訂單上的雜湊,對不上回 403、不寄
+  (拿到密鑰的人也偽造不了查詢連結)。
+- 主旨一律壓成單行(控制字元、換行換成空白,看不見的格式字元例如反向字元直接拿掉;店名裡有換行也不會斷行);內文裡使用者填的字一律 HTML 跳脫。
+- 收件 Email 格式不合格(買家 Email、或店家沒填 / 填錯聯絡信箱):不寄,`notifications` 記一筆 `status = failed`,`message` 結尾寫「(沒寄:原因)」。
+- 每封都記一筆 `notifications`(管理後台「通知紀錄」看得到;零售的 `message` 都以「零售」開頭)。token 不會出現在回應、log、`notifications`(log 連 8 字以上的 token 片段都遮)。
+- 🔴 **寄信閘門 `MARKET_NOTIFY_LIVE`**(跟餐廳訂單的 `NOTIFY_LIVE` 分開,那支開了零售照樣關著):不是剛好字串 `true` 時,**所有信只寄 `ifoodmaptw@gmail.com`**、
+  主旨加「[測試轉寄]」、內文最前面列出原收件人(每次請求重讀)。寄給真實消費者與店家**待業主核准** —— 不要自己設定這個 secret。
+- 讀的 secret 全部是既有的:`NOTIFY_SECRET`、`RESEND_API_KEY`、`NOTIFY_FROM`、`SITE_URL`、`SUPPLIER_MAIL_REPLY_TO` / `LEAD_NOTIFY_TO`
+  (`SUPABASE_URL`、`SUPABASE_SERVICE_ROLE_KEY` 平台自動提供)。🔴 部署一定要帶 `--no-verify-jwt --use-api`(見下面「部署」第 6 步)。
+
+**測試**:`supabase/tests/database/` 的 `market_orders`、`market_notify`、`market_checkout`、`market_phase2_rollback`(`.test.sql`),在正式庫 BEGIN…ROLLBACK 乾跑;
+🔴 不再帶 120000 / 120100(第 1 階段已上線),依序跑、不要並行,每次之後跑 `market_residue.sql`。項數 67 / 9 / 93 / 4
+(2026-10-11 在 `7234d55` 實測全過,見計畫勘誤「審查修正補充(四)」;之後有變以勘誤最新一節為準)。
+2026-10-11 上線前實測(`market` 分支 `abe2f2c`):vitest 115 檔 / 1800 項全過;tsc 錯誤 72、eslint 錯誤 10(跟開工前的基準一樣);兩種 build 都過。
+
+### 部署(第 2 階段)
+
+🔴 會改正式庫、部署 Edge Function、部署兩個網站。照順序做,任何一步的 Expected 對不上就停下來回報(附上指令與完整輸出),不要自己想辦法繞過。
+🔴 **不准**設定 `MARKET_NOTIFY_LIVE`、不准改 `market_checkout_open`(兩個都待業主核准)。
+**順序:migration → `market-notify` → 前端**:新前端會呼叫下單 / 查單 RPC;舊前端完全不碰訂單,先套 migration 不影響線上(開關關著,只有平台管理員叫得動下單)。
+在 repo 根目錄跑、各自 export token、查詢寫進暫存檔再交給 `ro`,都跟第 1 階段一樣。
+
+1. **確認本機乾淨、跟 origin 同步**:同第 1 階段第 1 步(`status` 沒有輸出、兩個 `rev-list` 都是 `0`;不是就停下來回報)。
+2. **上線前最後一次乾跑**(第 2 階段全部;每支之後都跑殘留檢查)。🔴 不要再帶 120000 / 120100:第 1 階段已上線,重帶會在線上的 `market_stores` / `market_products`
+   拿 ACCESS EXCLUSIVE 鎖到 ROLLBACK,乾跑期間市集讀不到。依序跑、不要並行(fixture 共用同一組 id,同時送會互等到逾時):
+   ```bash
+   cd /Users/aimand/.gemini/File/ifoodmap && export SUPABASE_ACCESS_TOKEN="$(cat <token 檔>)"
+   O=supabase/migrations/20261009130000_market_orders.sql
+   N=supabase/migrations/20261009130100_market_notify.sql
+   K=supabase/migrations/20261009130200_market_checkout.sql
+   RK=supabase/rollbacks/20261009130200_market_checkout.down.sql
+   RN=supabase/rollbacks/20261009130100_market_notify.down.sql
+   RO=supabase/rollbacks/20261009130000_market_orders.down.sql
+   node scripts/supabase-sql.mjs dry supabase/tests/database/market_orders.test.sql --with-migration $O
+   node scripts/supabase-sql.mjs ro supabase/tests/database/market_residue.sql
+   node scripts/supabase-sql.mjs dry supabase/tests/database/market_notify.test.sql --with-migration $O --with-migration $N
+   node scripts/supabase-sql.mjs ro supabase/tests/database/market_residue.sql
+   node scripts/supabase-sql.mjs dry supabase/tests/database/market_checkout.test.sql --with-migration $O --with-migration $N --with-migration $K
+   node scripts/supabase-sql.mjs ro supabase/tests/database/market_residue.sql
+   node scripts/supabase-sql.mjs dry supabase/tests/database/market_phase2_rollback.test.sql --with-migration $O --with-migration $N --with-migration $K --with-rollback $RK --with-rollback $RN --with-rollback $RO
+   node scripts/supabase-sql.mjs ro supabase/tests/database/market_residue.sql
+   ```
+   Expected:依序 `共 67 項` / `共 9 項` / `共 93 項` / `共 4 項`(項數以計畫檔尾勘誤最新一節為準),全部 `失敗 0 項`;每次殘留的五個數字都是 `0`。
+   (測試在交易裡把通知網址換成 `http://127.0.0.1:9/…`、把開關切成 `'true'` 測開放後的行為,都跟著 ROLLBACK 消失。)
+3. **套 migration**(130000 → 130100 → 130200;一行一支,前一支成功才跑下一支):
+   ```bash
+   cd /Users/aimand/.gemini/File/ifoodmap && export SUPABASE_ACCESS_TOKEN="$(cat <token 檔>)"
+   node scripts/supabase-sql.mjs apply supabase/migrations/20261009130000_market_orders.sql
+   node scripts/supabase-sql.mjs apply supabase/migrations/20261009130100_market_notify.sql
+   node scripts/supabase-sql.mjs apply supabase/migrations/20261009130200_market_checkout.sql
+   ```
+   Expected(各一行):
+   ```
+   已套用 20261009130000_market_orders.sql;ledger:[{"version":"20261009130000","name":"market_orders"}]
+   已套用 20261009130100_market_notify.sql;ledger:[{"version":"20261009130100","name":"market_notify"}]
+   已套用 20261009130200_market_checkout.sql;ledger:[{"version":"20261009130200","name":"market_checkout"}]
+   ```
+   出錯時的判斷同第 1 階段第 3 步(等鎖逾時就重跑同一行;`拒送:ledger 已經有版本 …` 直接做第 4 步確認;`套用後讀回的 ledger 不符` 停下來回報、不要重跑)。
+   前面的成功、後面的失敗:已套的不用還原(前端還沒推、開關關著,沒有人用得到),查明原因再套;三支都成功之前不要部署 `market-notify`、不要推前端。
+4. **確認線上 schema**:
+   ```bash
+   cd /Users/aimand/.gemini/File/ifoodmap && export SUPABASE_ACCESS_TOKEN="$(cat <token 檔>)" && Q=$(mktemp) && printf '%s\n' "
+   SELECT json_build_object(
+     'ledger', (SELECT json_agg(m.version ORDER BY m.version) FROM supabase_migrations.schema_migrations m
+                 WHERE m.version IN ('20261009130000', '20261009130100', '20261009130200')),
+     'event_triggers', (SELECT json_agg(t.tgname ORDER BY t.tgname) FROM pg_trigger t
+                         WHERE t.tgrelid = 'public.market_order_events'::regclass AND NOT t.tgisinternal),
+     'anon_can_read_orders', has_table_privilege('anon', 'public.market_orders', 'SELECT'),
+     'anon_can_insert_events', has_table_privilege('anon', 'public.market_order_events', 'INSERT'),
+     'api_can_touch_rate_tables', (SELECT bool_or(has_table_privilege(r, t, 'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER,MAINTAIN'))
+                                    FROM unnest(ARRAY['anon', 'authenticated']) r,
+                                         unnest(ARRAY['public.market_rate_counters', 'public.market_rate_blocks_daily']) t),
+     'anon_rpc', json_build_object(
+       'place_order', has_function_privilege('anon', 'public.market_place_order(jsonb)', 'EXECUTE'),
+       'get_orders', has_function_privilege('anon', 'public.market_get_orders(text)', 'EXECUTE'),
+       'checkout_status', has_function_privilege('anon', 'public.market_checkout_status()', 'EXECUTE'),
+       'rate_take', has_function_privilege('anon', 'public.market_rate_take(jsonb)', 'EXECUTE')),
+     'checkout_open', (SELECT c.value FROM public.app_config c WHERE c.key = 'market_checkout_open'),
+     'notify_url_ok', (SELECT c.value = 'https://cwvpehqcvbfuynabpqop.supabase.co/functions/v1/market-notify'
+                         FROM public.app_config c WHERE c.key = 'market_notify_function_url'),
+     'notify_key_set', (SELECT count(*) = 1 FROM public.app_config c WHERE c.key = 'notify_service_key' AND c.value <> ''),
+     'rate_salt_set', (SELECT count(*) = 1 FROM public.app_config c WHERE c.key = 'market_rate_salt' AND c.value ~ '^[0-9a-f]{32}$'),
+     'rate_cleanup_cron', (SELECT j.schedule FROM cron.job j WHERE j.jobname = 'ifoodmap-market-rate-cleanup'),
+     'cron_cleans_blocks', (SELECT j.command LIKE '%market_rate_blocks_daily%' FROM cron.job j WHERE j.jobname = 'ifoodmap-market-rate-cleanup')
+   ) AS phase2;" > "$Q"
+   node scripts/supabase-sql.mjs ro "$Q"
+   SUPABASE_PROJECT_REF=cwvpehqcvbfuynabpqop node scripts/check-migrations.mjs
+   ```
+   Expected(JSON 裡的值;只印布林值,密鑰與鹽的值不會出現):
+   - `ledger` = `["20261009130000","20261009130100","20261009130200"]`
+   - `event_triggers` = `["trg_market_apply_event","trg_market_events_immutable","trg_market_events_one_per_order","trg_market_guard_event","trg_market_notify_event"]`
+   - `anon_can_read_orders`、`anon_can_insert_events`、`api_can_touch_rate_tables` = `false`
+   - `anon_rpc` = `{"place_order": true, "get_orders": true, "checkout_status": true, "rate_take": false}`
+   - 🔴 `checkout_open` = `"false"`
+   - `notify_url_ok`、`notify_key_set`、`rate_salt_set`、`cron_cleans_blocks` = `true`;`rate_cleanup_cron` = `"50 19 * * *"`
+     (`notify_key_set` 是 `false` = 資料庫不會呼叫 `market-notify`,一封信都不會寄:停下來查餐廳訂單 notify 的設定)
+   - `check-migrations` 最後一行是 `✅ 沒有落差 —— repo 的 migration 都已套用到線上`(repo 46 個、線上 46 個)。
+
+   除了 `ledger`(第 3 步寫的)與 `notify_key_set`(線上原本就有的設定),這些值 2026-10-11 在本機一次性的 Postgres 載入 120000 / 130000 / 130100 / 130200 原文實測過(不是正式庫)。
+   新函式要等 PostgREST 重新載入 schema 才叫得到(三支最後都有 `NOTIFY pgrst`);第 9 步拿到 404 `PGRST202` / `PGRST205` 時,照「寫了新 migration 之後」的方式送一次
+   `notify pgrst, 'reload schema';`。
+5. **用線上 schema 再跑一次測試**(不帶 `--with-migration`),並確認還原檔在線上 schema 跑得動:
+   ```bash
+   cd /Users/aimand/.gemini/File/ifoodmap && export SUPABASE_ACCESS_TOKEN="$(cat <token 檔>)"
+   RK=supabase/rollbacks/20261009130200_market_checkout.down.sql
+   RN=supabase/rollbacks/20261009130100_market_notify.down.sql
+   RO=supabase/rollbacks/20261009130000_market_orders.down.sql
+   node scripts/supabase-sql.mjs dry supabase/tests/database/market_orders.test.sql
+   node scripts/supabase-sql.mjs ro supabase/tests/database/market_residue.sql
+   node scripts/supabase-sql.mjs dry supabase/tests/database/market_notify.test.sql
+   node scripts/supabase-sql.mjs ro supabase/tests/database/market_residue.sql
+   node scripts/supabase-sql.mjs dry supabase/tests/database/market_checkout.test.sql
+   node scripts/supabase-sql.mjs ro supabase/tests/database/market_residue.sql
+   node scripts/supabase-sql.mjs dry supabase/tests/database/market_phase2_rollback.test.sql --with-rollback $RK --with-rollback $RN --with-rollback $RO
+   node scripts/supabase-sql.mjs ro supabase/tests/database/market_residue.sql
+   ```
+   Expected:依序 `共 67 項` / `共 9 項` / `共 93 項` / `共 4 項`,全部 `失敗 0 項`;每次殘留五個 `0`。
+   (`market_orders` 在線上跑時,每筆狀態紀錄會在交易裡把通知排到真的 `market-notify` 網址,跟著 ROLLBACK 消失、不會送出。還原的乾跑會拿鎖到 ROLLBACK,一兩秒;這一步在推前端之前做。)
+6. **部署 `market-notify`**:
+   ```bash
+   cd /Users/aimand/.gemini/File/ifoodmap && SUPABASE_ACCESS_TOKEN="$(cat <token 檔>)" supabase functions deploy market-notify --project-ref cwvpehqcvbfuynabpqop --no-verify-jwt --use-api
+   ```
+   - 🔴 **一定要 `--no-verify-jwt`**:呼叫者是資料庫(pg_net),沒有使用者 JWT;少了它 JWT 驗證會打開,資料庫送的通知全部 401,
+     而且 trigger 吞掉錯誤、不會有任何地方報錯(同 notify-lead 那一節的坑)。安全性靠共享密鑰 `NOTIFY_SECRET`;`supabase/config.toml` 也寫了 `verify_jwt = false`。
+   - `--use-api`:本機沒有 Docker;`../_shared/`、`../ai/crypto.ts`、`../notify/gate.ts`、`src/lib/order-number.ts` 會一起上傳。
+   - 不用設定任何 secret(全部是既有的);🔴 不要設 `MARKET_NOTIFY_LIVE`。
+
+   Expected:`Deployed Functions on project cwvpehqcvbfuynabpqop: market-notify`。接著確認 JWT 驗證是關的、沒密鑰會被擋:
+   ```bash
+   export SUPABASE_ACCESS_TOKEN="$(cat <token 檔>)"
+   UA="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/129.0 Safari/537.36"
+   curl -s https://api.supabase.com/v1/projects/cwvpehqcvbfuynabpqop/functions/market-notify -H "Authorization: Bearer $SUPABASE_ACCESS_TOKEN" -H "User-Agent: $UA" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const f=JSON.parse(s);console.log(f.slug,f.status,"verify_jwt="+f.verify_jwt)})'
+   curl -s -o /dev/null -w '%{http_code}\n' -X POST https://cwvpehqcvbfuynabpqop.supabase.co/functions/v1/market-notify -H "Content-Type: application/json" -d '{"kind":"event","event_id":"00000000-0000-4000-8000-000000000000"}'
+   ```
+   Expected:`market-notify ACTIVE verify_jwt=false`;沒帶密鑰的 POST 回 `401`。`verify_jwt=true` 的話資料庫的通知會全部 401:重新用上面那一行帶 `--no-verify-jwt` 部署。
+7. **合併 `market` 到 `main`、push**:同第 1 階段第 6 步,合併訊息改成 `"Merge branch 'market':消費者食材市集第 2 階段(購物車＋下單)"`;
+   記下合併 commit(等 CI、還原都要用),最後一樣把 `market` 快轉到 main。
+8. **等 CI**:同第 1 階段第 7 步(兩條 workflow 都 `completed success`;`check-migrations` 這次一定要綠,第 4 步本機已經是 ✅)。
+9. **線上驗證**:
+   1. 新版真的上線了(bundle 探針:只有新版才有這兩句):
+      ```bash
+      for pair in "https://app.ifoodmap.ai/market/cart|同一筆結帳不會重複下單" "https://ifoodmap-admin.vercel.app/admin/market/orders|更早的訂單不會出現在清單與搜尋結果裡"; do
+        url=${pair%%|*}; marker=${pair##*|}; origin=$(echo "$url" | grep -o '^https://[^/]*')
+        js=$(curl -s "$url" | grep -o '/assets/index-[^"]*\.js' | head -1)
+        if curl -s "$origin$js" | grep -q "$marker"; then echo "$url 新版"; else echo "$url 還是舊版"; fi
+      done
+      ```
+      Expected:兩行都是「新版」(2026-10-11 部署前實測兩行都是「還是舊版」;這兩句在 `abe2f2c` 的兩種 build 裡各自只出現在該站的 bundle)。
+   2. anon 的權限與下單開關(publishable key 是公開的,但不要印出來):
+      ```bash
+      cd /Users/aimand/.gemini/File/ifoodmap && export SUPABASE_ACCESS_TOKEN="$(cat <token 檔>)"
+      UA="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/129.0 Safari/537.36"
+      PK=$(curl -s https://api.supabase.com/v1/projects/cwvpehqcvbfuynabpqop/api-keys -H "Authorization: Bearer $SUPABASE_ACCESS_TOKEN" -H "User-Agent: $UA" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const k=JSON.parse(s).find(x=>x.type==="publishable");process.stdout.write(k?k.api_key:"")})')
+      API=https://cwvpehqcvbfuynabpqop.supabase.co/rest/v1
+      TOKEN=$(node -e 'process.stdout.write(require("crypto").randomBytes(32).toString("base64url"))')
+      curl -s -X POST "$API/rpc/market_checkout_status" -H "apikey: $PK" -H "Content-Type: application/json" -d '{}'; echo
+      curl -s -X POST "$API/rpc/market_get_orders" -H "apikey: $PK" -H "Content-Type: application/json" -d "{\"p_token\":\"$TOKEN\"}"; echo
+      curl -s -X POST "$API/rpc/market_place_order" -H "apikey: $PK" -H "Content-Type: application/json" \
+        -d "{\"p_checkout\":{\"token\":\"$TOKEN\",\"buyer\":{\"name\":\"部署檢查\",\"phone\":\"0900000000\",\"email\":\"deploy-check@example.com\",\"city\":\"臺北市\",\"address\":\"只是檢查不會建單\"},\"items\":[],\"terms_version\":\"deploy-check\"}}"; echo
+      curl -s -o /dev/null -w 'orders %{http_code}\n' "$API/market_orders?select=id&limit=1" -H "apikey: $PK"
+      curl -s -o /dev/null -w 'blocks %{http_code}\n' "$API/market_rate_blocks_daily?select=day&limit=1" -H "apikey: $PK"
+      ```
+      Expected:`{"open": false, "can_order": false}`、`{"ok": false, "code": "NOT_FOUND"}`(隨機的 token 查不到)、
+      `{"ok": false, "code": "MARKET_CLOSED"}`(開關關著:不建單、不寫任何限流計數)、`orders 401`、`blocks 401`。
+      (前三個回應 2026-10-11 在本機一次性的 Postgres 用 anon 身分對 130200 原文實測過。)
+   3. 頁面(手機 375 與桌機 1280,不能有橫向捲動):
+      ```bash
+      for p in cart terms privacy orders/abc; do
+        d=/tmp/market-p2-shots/$(echo "$p" | tr / -); mkdir -p "$d"
+        node ~/.claude/tools/cdp-shot.mjs "https://app.ifoodmap.ai/market/$p" 375 812 market-main "$d"
+        node ~/.claude/tools/cdp-shot.mjs "https://app.ifoodmap.ai/market/$p" 1280 800 market-main "$d"
+        sips -Z 1024 "$d/market-main-375x812.png" --out "/tmp/market-p2-preview-$(basename "$d")-375.png" > /dev/null
+        sips -Z 1024 "$d/market-main-1280x800.png" --out "/tmp/market-p2-preview-$(basename "$d")-1280.png" > /dev/null
+      done
+      ```
+      Expected:八行輸出的 `docW` 依序是 `375`、`1280` 交錯;只 Read `/tmp/market-p2-preview-*.png`(原圖不要直接 Read):購物車頁「購物車是空的。」;
+      條款、隱私權頁的標題是「食材市集服務條款」「食材市集隱私權政策」,最上面有「草稿:本文件待業主與法律專業確認後定稿。」;
+      `/market/orders/abc` 是「找不到這筆訂單。請確認網址完整(從確認信裡的連結打開最保險)。」。
+   4. 管理員站:`curl -s -o /dev/null -w '%{http_code}\n' https://ifoodmap-admin.vercel.app/admin/market/orders` → `200`(內容要登入,留給業主實測)。
+   5. 🔴 **IP 標頭檢查(實作計畫 Task 57 Step 8-2)這時做不了**:開關關著時 `market_place_order` 在限流之前(第 4 步)就回 `MARKET_CLOSED`、不寫任何計數;
+      計畫原文的請求也沒帶 token,會先回 `INVALID_INPUT` `token`。改在打開開關的當下做,見「對外開放前待辦」第 6 條。
+   6. 派一個沒參與實作的 agent 獨立驗收(fresh context;只准讀、乾跑、唯讀查詢,不准改檔、不准 apply、不准輸入密碼、不准設定任何 secret 或 `app_config`),
+      清單見實作計畫 Task 57 Step 9,數字以本節為準(67 / 9 / 93 / 4);IP 標頭那一項改成確認第 5 點已列入開放前待辦。
+      另外確認 `MARKET_NOTIFY_LIVE` 不在 `supabase secrets list --project-ref cwvpehqcvbfuynabpqop` 的清單裡(只看名稱、不印值)、`market_checkout_open` 還是 `false`。
+      有任何一項不過:照下面「還原(第 2 階段)」判斷要不要退版,回報派工者。
+
+### 怎麼查(第 2 階段)
+
+唯讀端點(`node scripts/supabase-sql.mjs ro`)或 Dashboard 的 SQL Editor:
+
+```sql
+-- 限流擋下了幾次(最近 7 天;day = 台北日期、rule = 規則種類,見上面的限流表;只記次數、不記是誰)
+-- ipo / ip48o 擋得多 = 共用網路的成單上限該調高;noip 有任何一筆 = IP 取得壞了,要去查
+select day, rule, hits from public.market_rate_blocks_daily
+where day >= (now() at time zone 'Asia/Taipei')::date - 7 order by day desc, hits desc;
+
+-- 沒寄出去的零售通知(閘門沒開時 recipient 都是 ifoodmaptw@gmail.com;
+-- Email 格式不對而沒寄的,message 結尾寫「(沒寄:原因)」,recipient 遮成帳號第一個字加網域前 3 個字,例如「王***@exa…」)
+select created_at, recipient, title, message from public.notifications
+where message like '零售%' and status = 'failed' order by created_at desc limit 20;
+
+-- pg_net 呼叫的結果(所有走 pg_net 的通知都在這張表、只留最近幾小時;剛做完一個動作就看最新幾筆)
+select id, status_code, timed_out, error_msg, left(content, 200) as content, created
+from net._http_response order by id desc limit 10;
+```
+
+- `notifications` 是 `failed`:Resend 回錯誤(原因在 Dashboard → Edge Functions → `market-notify` → Logs,token 已遮掉)、同一個 Idempotency-Key 內容不同(409),
+  或收件 Email 不合格(message 寫了原因)。寄信失敗不會自動重送。
+- `net._http_response`:`status_code` 200 = `market-notify` 收到並處理了(內容 `"live":false` = 閘門沒開;有 `"kinds"` 的是狀態信、有 `"orders"` 的是下單確認);
+  401 = 密鑰對不上(`NOTIFY_SECRET` 跟 `app_config.notify_service_key` 不一致)或 function 的 JWT 驗證被打開了(見「部署」第 6 步);
+  404 = function 沒部署、或那筆紀錄找不到;`status_code` 是空的而 `timed_out` / `error_msg` 有值 = 連不上或超過 8 秒。
+- 三段 SQL 2026-10-11 在本機一次性的 Postgres(載入四支 migration 原文、放了假的紀錄)跑過,欄位與輸出都對;`net._http_response` 用的是 pg_net 的欄位。
+
+### 還原(第 2 階段)
+
+**先退前端,再退資料庫**(新前端會呼叫 `market_place_order` / `market_get_orders` / `market_checkout_status`;第 1 階段的前端完全不碰訂單)。
+資料庫的順序一定是 **130200 → 130100 → 130000**(每支還原檔開頭都寫了前一支要先還原)。要連第 1 階段一起退,先做完這一節,再照「還原(第 1 階段)」。
+
+0. 對外開放之後,如果只是要先停止接新訂單、或停止寄信給真實的人:不用退版 ——
+   把開關改回關(`update public.app_config set value = 'false', updated_at = now() where key = 'market_checkout_open';`,照「寫了新 migration 之後」的方式送;
+   之後只剩平台管理員能下單)、`supabase secrets unset MARKET_NOTIFY_LIVE --project-ref cwvpehqcvbfuynabpqop`(信改回只寄內部信箱;改 secret 會讓所有 function
+   重新部署一次)。已成立的訂單照常由店家處理。
+1. **前端**:Vercel → `dish-to-supply`、`ifoodmap-admin` 兩個專案 → Deployments → 選第 2 階段合併之前的那一版 → Instant Rollback
+   (之後要上線的那一版要按 Promote,同第 1 階段還原第 1 步的 ⚠️)。只有前端有問題就到這裡為止:在 `market` 修好,照上面第 1、7–9 步重新上線(migration 不用重套)。
+2. **資料庫**(第 1 步做完才做):
+   1. 先匯出 —— 🔴 **130000 的還原會 DROP 三張訂單表,所有零售訂單、明細、狀態紀錄都會消失**;130200 的還原會刪掉擋下紀錄。
+      匯出檔含消費者的姓名、電話、Email、地址,放在 repo 外面,不要貼進對話:
+      ```bash
+      cd /Users/aimand/.gemini/File/ifoodmap && export SUPABASE_ACCESS_TOKEN="$(cat <token 檔>)" && mkdir -p ~/supabase-backups && Q=$(mktemp) && printf '%s\n' "
+      SELECT json_build_object(
+        'exported_at', now(),
+        'market_orders', (SELECT COALESCE(json_agg(o ORDER BY o.created_at, o.id), '[]'::json) FROM public.market_orders o),
+        'market_order_items', (SELECT COALESCE(json_agg(i ORDER BY i.order_id, i.id), '[]'::json) FROM public.market_order_items i),
+        'market_order_events', (SELECT COALESCE(json_agg(e ORDER BY e.order_id, e.created_at), '[]'::json) FROM public.market_order_events e),
+        'market_rate_blocks_daily', (SELECT COALESCE(json_agg(b ORDER BY b.day, b.rule), '[]'::json) FROM public.market_rate_blocks_daily b)
+      ) AS market_phase2_export;" > "$Q"
+      node scripts/supabase-sql.mjs ro "$Q" > ~/supabase-backups/market-phase2-$(date +%Y%m%d-%H%M).json && ls -l ~/supabase-backups/market-phase2-*.json
+      ```
+      Expected:檔案不是空的,內容是 `[{"market_phase2_export": {"exported_at": …, "market_orders": […], "market_order_items": […], "market_order_events": […], "market_rate_blocks_daily": […]}}]`
+      (唯讀端點的角色有 BYPASSRLS,每一列都讀得到)。計數表 `market_rate_counters` 只留兩天、沒有保存價值,不匯出。
+   2. 先乾跑還原(線上已經有三支 migration,所以不帶 `--with-migration`):
+      ```bash
+      cd /Users/aimand/.gemini/File/ifoodmap && export SUPABASE_ACCESS_TOKEN="$(cat <token 檔>)"
+      RK=supabase/rollbacks/20261009130200_market_checkout.down.sql
+      RN=supabase/rollbacks/20261009130100_market_notify.down.sql
+      RO=supabase/rollbacks/20261009130000_market_orders.down.sql
+      node scripts/supabase-sql.mjs dry supabase/tests/database/market_phase2_rollback.test.sql --with-rollback $RK --with-rollback $RN --with-rollback $RO
+      node scripts/supabase-sql.mjs ro supabase/tests/database/market_residue.sql
+      ```
+      Expected:`共 4 項,失敗 0 項`;殘留五個 `0`。
+   3. 正式還原,**130200 → 130100 → 130000**,整份檔案當成一個請求送出(= 一個交易;`send_sql` 跟第 1 階段還原第 2-3 步同一支),前一支回 `[]` 才送下一支:
+      ```bash
+      cd /Users/aimand/.gemini/File/ifoodmap && export SUPABASE_ACCESS_TOKEN="$(cat <token 檔>)"
+      send_sql() {  # 整份檔案 = 一個請求 = 一個交易;成功印 [],失敗印 {"message":"Failed to run sql query: …"}(已整支回滾)
+        J=$(mktemp)
+        node -e 'const fs = require("fs"); fs.writeFileSync(process.argv[2], JSON.stringify({ query: fs.readFileSync(process.argv[1], "utf8") }))' "$1" "$J"
+        curl -s -X POST "https://api.supabase.com/v1/projects/cwvpehqcvbfuynabpqop/database/query" \
+          -H "Authorization: Bearer $SUPABASE_ACCESS_TOKEN" -H "Content-Type: application/json" \
+          -H "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/129.0 Safari/537.36" \
+          --data-binary @"$J"
+        echo
+      }
+      OUT2=$(send_sql supabase/rollbacks/20261009130200_market_checkout.down.sql); echo "130200: $OUT2"
+      [ "$OUT2" = "[]" ] && OUT1=$(send_sql supabase/rollbacks/20261009130100_market_notify.down.sql) && echo "130100: $OUT1"
+      [ "$OUT1" = "[]" ] && OUT0=$(send_sql supabase/rollbacks/20261009130000_market_orders.down.sql) && echo "130000: $OUT0"
+      ```
+      Expected:`130200: []`、`130100: []`、`130000: []`。任何一支不是 `[]`,後面的不會送,停下來回報。
+   4. 還原後確認(唯讀):
+      ```bash
+      cd /Users/aimand/.gemini/File/ifoodmap && export SUPABASE_ACCESS_TOKEN="$(cat <token 檔>)" && Q=$(mktemp) && printf '%s\n' "
+      SELECT json_build_object(
+        'ledger', (SELECT count(*) FROM supabase_migrations.schema_migrations
+                    WHERE version IN ('20261009130000', '20261009130100', '20261009130200')),
+        'phase2_tables', (SELECT count(*) FROM pg_class WHERE relnamespace = 'public'::regnamespace
+                           AND relname IN ('market_orders', 'market_order_items', 'market_order_events', 'market_rate_counters', 'market_rate_blocks_daily')),
+        'phase2_functions', (SELECT count(*) FROM pg_proc WHERE pronamespace = 'public'::regnamespace AND proname IN (
+                              'market_place_order', 'market_checkout_status', 'market_get_orders', 'market_rate_take', 'market_rate_key',
+                              'market_client_ip', 'market_normalize_ip', 'market_mask_phone', 'market_mask_email', 'market_enqueue_notify',
+                              'market_notify_event', 'market_guard_event', 'market_apply_event', 'market_events_immutable',
+                              'market_events_one_per_order', 'market_transition_rules', 'market_order_status_label', 'market_phone_ok', 'market_email_ok')),
+        'cleanup_cron', (SELECT count(*) FROM cron.job WHERE jobname = 'ifoodmap-market-rate-cleanup'),
+        'phase2_config', (SELECT count(*) FROM public.app_config
+                           WHERE key IN ('market_checkout_open', 'market_rate_salt', 'market_notify_function_url')),
+        'phase1_tables', (SELECT count(*) FROM pg_class WHERE relnamespace = 'public'::regnamespace
+                           AND relname IN ('market_stores', 'market_store_transfer', 'market_products'))
+      ) AS phase2_rollback;" > "$Q"
+      node scripts/supabase-sql.mjs ro "$Q"
+      ```
+      Expected:`ledger`、`phase2_tables`、`phase2_functions`、`cleanup_cron`、`phase2_config` 都是 `0`;`phase1_tables` 是 `3`(第 1 階段不受影響)。
+      (匯出、三支還原檔、這個確認 2026-10-11 在本機一次性的 Postgres 依序跑過;結果跟上面的 Expected 一樣。)
+   5. `market-notify` 不用刪(沒人呼叫就不會寄信);要停用可在 Dashboard → Edge Functions 刪掉那支。`notifications` 裡的零售紀錄留著(那張表不屬於這三支 migration)。
+3. **repo**:同第 1 階段還原第 3 步,`git revert -m 1 --no-edit <部署第 7 步記下的第 2 階段合併 commit>` 再 push
+   (三支 migration 跟前端一起退,`check-migrations` 才不會一直紅);之後要重新上線,一樣先 revert 這個 revert commit。
+
+### 對外開放前待辦(第 3 階段,需要業主核准)
+
+第 2 階段上線之後,下面每一條都要業主決定或核准。🔴 打開下單(`market_checkout_open` 改成 `'true'`)與寄信(`MARKET_NOTIFY_LIVE`)不在任何部署步驟裡,不要自己設定。
+
+1. **Supabase 升級 Pro**:免費方案閒置會暫停,暫停期間市集打不開、下單失敗,等於關店。
+2. **服務條款與隱私權政策定稿**:`/market/terms`、`/market/privacy` 現在是工程擬的草稿(頁面上標「草稿」),七天解除權的例外、個資保存年限、平台責任範圍
+   都要請法律專業確認後定稿(定稿時改 `src/lib/market/legal.ts`:文字 → `LEGAL_DRAFT = false` → 換新的 `TERMS_VERSION`)。
+3. **`MARKET_NOTIFY_LIVE` 和 `market_checkout_open` 要一起打開**:查單頁寫著「店家接單後會寄信通知你」,只開下單、不開寄信,這句話就不實
+   (消費者、店家都收不到任何信,消費者也拿不到下單確認信裡的查詢連結;結帳頁的轉帳說明、供應商後台的接單說明也都寫消費者會收到信)。
+4. **目前沒有人機驗證**:全站每天 500 單的上限,可以被「真的建單」的假訂單吃光 —— 每個 IPv4、每個 IPv6 /48 每天各 20 單,大約 25 個 IPv4 或 25 個 /48,
+   加上一批假 Email 和電話(每個每天 10 單)就夠;吃光之後當天真的消費者全部下不了單。考慮加 Cloudflare Turnstile。
+5. **待接單沒有逾時自動取消**:假的貨到付款單會一直佔著庫存,直到店家拒單。
+6. **IP 標頭檢查要確認過**:限流靠的 IP 必須是偽造不了的那一個,偽造得了的話 IP 那幾條額度形同虛設(Email、電話、全站上限仍然有效)。
+   🔴 照現在的程式,這項在開關關著時**做不了**(見「部署」第 9-5 步),實作計畫 Task 57 Step 8-2 原本的做法要改成:業主核准、開關打開之後**馬上**做 ——
+   用「部署」第 9-2 步的 `$API`、`$PK` 送一個**空購物車**的請求(帶 token 與三個偽造的 IP 標頭;送請求和查自己的 IP 都用 IPv4,`-4`),
+   空購物車在 A 段之後才擋,只會寫 A 段的 `ip` 計數、不建單、不吃 B 段:
+   ```bash
+   MYIP=$(curl -s -4 https://api.ipify.org)
+   TOKEN=$(node -e 'process.stdout.write(require("crypto").randomBytes(32).toString("base64url"))')
+   curl -s -4 -X POST "$API/rpc/market_place_order" -H "apikey: $PK" -H "Content-Type: application/json" \
+     -H "X-Forwarded-For: 203.0.113.9" -H "X-Real-IP: 203.0.113.10" -H "CF-Connecting-IP: 203.0.113.11" \
+     -d "{\"p_checkout\":{\"token\":\"$TOKEN\",\"buyer\":{\"name\":\"IP 檢查\",\"phone\":\"0900000000\",\"email\":\"ip-check@example.com\",\"city\":\"臺北市\",\"address\":\"只是檢查不會建單\"},\"items\":[],\"terms_version\":\"ip-check\"}}"; echo
+   cd /Users/aimand/.gemini/File/ifoodmap && export SUPABASE_ACCESS_TOKEN="$(cat <token 檔>)" && Q=$(mktemp) && printf '%s\n' "
+   WITH s AS (SELECT c.value AS salt FROM public.app_config c WHERE c.key = 'market_rate_salt'),
+        cand(source, ip) AS (VALUES ('real', '$MYIP'), ('x-forwarded-for', '203.0.113.9'), ('x-real-ip', '203.0.113.10'), ('cf-connecting-ip', '203.0.113.11'))
+   SELECT json_agg(json_build_object('source', cand.source, 'counted', EXISTS (
+            SELECT 1 FROM public.market_rate_counters r
+             WHERE r.bucket = 'ip:' || left(encode(sha256(convert_to(cand.ip || '|' || s.salt, 'UTF8')), 'hex'), 16) || '|1h'
+               AND r.window_start > now() - interval '2 hours')) ORDER BY cand.source) AS ip_check,
+          EXISTS (SELECT 1 FROM public.market_rate_counters r WHERE r.bucket = 'noip|1h' AND r.window_start > now() - interval '2 hours') AS noip_counted
+     FROM cand, s;" > "$Q"
+   node scripts/supabase-sql.mjs ro "$Q"
+   ```
+   Expected:第一個請求回 `{"ok": false, "code": "EMPTY_CART"}`;查詢只有 `"source": "real"` 是 `"counted": true`、`noip_counted` 是 `false`。
+   偽造的有一個是 `true`(那個標頭偽造得了),或四個都是 `false`、`noip_counted` 是 `true`(PostgREST 拿不到 IP)→ 立刻把開關改回 `'false'`,
+   另開 migration 讓 `market_client_ip()` 只認 Supabase 實際使用、偽造不了的那個標頭。(這個請求與查詢 2026-10-11 在本機一次性的 Postgres 實測過:
+   開關關著回 `MARKET_CLOSED`、打開後回 `EMPTY_CART`,計數只記在被採用的那個 IP;正式環境只能在開放時驗。)
+7. **量變大時看 `market_rate_blocks_daily`**(查詢見「怎麼查(第 2 階段)」):`ipo`、`ip48o` 每天 20 單最先會擋到真人(公司、學校、同一個手機業者的出口);
+   要調整就另開 migration,用 `CREATE OR REPLACE FUNCTION public.market_place_order` 改數字。
+8. **管理員總覽的「進行中」和「全部」各最多 200 張、沒有分頁**(其他篩選也一樣):更早的單在清單與搜尋裡都找不到(畫面會提示),放量後要改成伺服器分頁。
+9. **管理員畫面是唯讀,但管理員帳號直接打 API 仍然可以取消訂單**(轉移表與 RLS 允許):刻意保留給處理客訴;要完全禁止得另開 migration。
+10. **sessionStorage 被封鎖時重新整理會遺失查詢 token**:極少數瀏覽器(封鎖網站資料等)不能用 sessionStorage,token 只放在記憶體;這時斷線、又重新整理再送,
+    而第一次其實已經成立,就會重複下單。
+11. **被大量灌請求時,擋下紀錄會排隊**:每個被擋的請求都要更新 `market_rate_blocks_daily` 的同一列(今天、同一種規則),要等前一個交易 commit 才寫得進去,
+    灌爆時被擋的請求會互相排隊。打開下單前,可以在被擋的那條路上加 `set_config('synchronous_commit', 'off', true)`(被擋的交易不建單,當機時少記幾筆無妨),
+    等待時間會大幅縮短。目前下單開關是關的,沒有這個風險。

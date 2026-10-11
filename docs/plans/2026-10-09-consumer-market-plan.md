@@ -17872,3 +17872,59 @@ gate / render / handler / index 與 `config.toml` 先照計畫的程式碼區塊
 - market-notify vitest:**4 檔 / 85 項**(gate 8、send 3、render 25、handler 49;上一節 72 項)→ Task 42 Step 4 的 Expected 改成 **`Tests  85 passed (85)`**;「F. 共用指令與基準數字」第 2、3 階段的總數比計畫多 **55 項、1 檔**(取代上一節的 42 項)。
 - 全套:`95548b3` 的乾淨副本(`git archive`)連跑兩次 **115 檔 / 1800 項**全過(含其他實作者同時 commit 的檔);tsc strict 兩份設定 0 error,eslint 沒有輸出。
 - 突變:審查員的 `scratchpad/review-notify-r3/mutate3.mjs` 複製到 `review-notify-r3-rerun/`(pristine 換成 `95548b3`,審查員原本的資料夾沒動)。這一輪改寫的 5 處 find 字串(V7、F4、F5、F6、X12)照新寫法改寫,另加 3 處(O10 不拿掉 `\p{Cf}`、V14 網域留 100 字、F8 少讀 ship_days),共 199 處:**182 殺、17 存活**,存活的 17 處全是審查員標成等價或良性的(E-ESC-apos、E-HREF、M-H6、A5、A8、A9、A10、O2、O5、O7、K17、R9、T9、T11、T12、T15、X15)。原本存活、該被殺的 18 處(E-P3、N-L4、V10、V12、R5、R6、R10、R10b、C4、G11、G12、T13、F1、F2、F4、F5、F6、F7)**18 處全殺**;等價清單裡的 K10、F3 也被殺(測試釘住 key 的格式、只靠 paid_at 也算已收款)。
+
+### 2026-10-11:更正「審查修正補充(三)」第 2 點的 token 換新時機(實作以 commit `384e4a5`、`264c769` 為準)
+
+「審查修正補充(三)」(commit `b0eb303`,第 17766 行那一節)第 2 點最後一段「🔴 給前端」寫「購物車或收件資料改了就換新 token」—— 跟最後的實作不同,這一句**作廢**
+(舊條目不改,以這裡為準):
+
+- 同一次結帳一直沿用同一個 token:斷線、逾時、缺貨、價格變了,或買家改了購物車、收件資料之後再送,都用同一個(`src/lib/market/checkout.ts` 的 `checkoutTokenStore`,存在 sessionStorage)。
+- 這個 token 已經成單、內容又改過再送 → 伺服器回 `TOKEN_REUSED`(什麼都不寫),結帳頁說「你剛才送出的訂單已經成立…」並給舊 token 的「查看訂單」連結;
+  還沒成單過的 token,內容改了伺服器照常建單。
+- 只有成功(含 `duplicate:true`)或 `TOKEN_REUSED` 之後才換新 token。
+- 理由:回應在路上斷掉、其實已經成單時,換新 token 再送會建出第二張單;沿用 token 會拿到 `TOKEN_REUSED`,買家看得到「查看訂單」。
+  上面「結帳頁接上下單冪等的查詢 token」一節(第 17801 行)第 3 點已經記了這個差異;`docs/DEPLOY.md`「第 2 階段」照這裡寫。
+
+### 2026-10-11:Task 56 第 2 階段全套檢查與 `docs/DEPLOY.md` 第 2 階段(分支 `market`)
+
+**Step 1–2 實測**(HEAD `abe2f2c`;工作目錄只有這個 Task 的文件修改。Task 56 沒有改任何程式、沒有乾跑、沒有碰正式庫):
+
+| | Task 56 原文 | 實測 |
+|---|---|---|
+| vitest | 111 檔 / 1428 項 | **115 檔 / 1800 項**全過(`7ef6944` 時先跑一次是 115 / 1787,差的 13 項是之後 commit 的 market-notify 測試) |
+| tsc 錯誤 | 72 | **72** |
+| eslint 錯誤 | 10 | **10** |
+| 兩種 build | exit 0 | 都 **exit 0** |
+
+- 指令照「F. 共用指令」,只把 log 與 build 輸出放到 scratchpad(避免跟其他實作者的 `/tmp/market-*` 互蓋)。前台站 bundle 有「同一筆結帳不會重複下單」、
+  管理員站有「更早的訂單不會出現在清單與搜尋結果裡」,反過來都沒有(DEPLOY.md 的 bundle 探針用這兩句;部署前實測兩站都還是舊版)。
+- 資料庫測試項數照上面「審查修正補充(四)」:`market_orders` 67、`market_notify` 9、`market_checkout` 93、`market_phase2_rollback` 4(四支檔案裡 `pg_temp.expect(` 的數目也是 67 / 9 / 93 / 4)。
+
+**Step 3–4**:DEPLOY.md 不照抄第 16459–16519 行的區塊,改寫成現在的行為 —— `docs/DEPLOY.md` 第 1079 行起「第 2 階段」(說明、檢查順序表、限流表、通知信表)、
+第 1215 行「部署(第 2 階段)」、第 1386 行「怎麼查(第 2 階段)」、第 1413 行「還原(第 2 階段)」、第 1494 行「對外開放前待辦(第 3 階段,需要業主核准)」11 條;
+第 1 階段那一節 `market_images_storage` 的 19 改成 20(四處)。Step 4 的 grep 四行都在、行號遞增。
+
+**Task 57 以 DEPLOY.md「部署(第 2 階段)」「還原(第 2 階段)」為準**,跟 Task 57 原文不一樣的地方:
+
+1. Step 2 / 5:不帶 `$C`;Expected 67 / 9 / 93 / 4。Step 5 多一支「線上 schema + 三支還原檔」的 `market_phase2_rollback` 乾跑(推前端之前確認還原檔在線上跑得動)。
+2. Step 4 的查詢多三項:`api_can_touch_rate_tables`(兩張限流表 anon / authenticated 沒有任何權限)、`notify_key_set`(`app_config.notify_service_key` 有值 ——
+   沒值的話 `market_enqueue_notify` 安靜跳過,一封信都不會寄)、`cron_cleans_blocks`(清理排程也刪擋下紀錄);另跑 `check-migrations`(repo 46 個、線上 46 個)。
+3. Step 7 改成第 1 階段的合併流程(`merge --no-ff market`、記下合併 commit、`market` 快轉到 main)。
+4. Step 8:bundle 探針;anon 多驗 `market_place_order` 回 `MARKET_CLOSED`(合法 token + 空購物車,不建單、不寫計數)與 `market_rate_blocks_daily` 401;頁面多 `/market/orders/abc`。
+5. 🔴 **Step 8-2 的 IP 標頭檢查照原文做不了**:`d55b19c` 把開關移到限流之前(現在開關是第 4 步、A 段是第 5 步),開關關著時不寫任何計數;
+   原文的請求也沒有 token(`b0eb303` 之後必填),會先回 `INVALID_INPUT` `token`。DEPLOY.md 把它移到「對外開放前待辦」第 6 條:業主核准、開關打開之後馬上用
+   **合法 token + 空購物車**送(回 `EMPTY_CART`;空購物車在 A 段之後才擋,只寫 A 段的 `ip` 計數、不建單、不吃 B 段),而且送請求與查自己的 IP 都用 `curl -4`
+   (原文只有查 IP 那一行有 `-4`,打 Supabase 的那一個若走 IPv6,`real` 會是 false,誤判成拿不到 IP);查詢多看 `noip|1h`。Step 9 的 IP 那一項跟著改。
+6. DEPLOY.md 裡新的 SQL(Step 4 的查詢、怎麼查三段、匯出、還原後確認、IP 檢查)與 anon 的三個 RPC 回應,在本機一次性的 Postgres 實跑過:Homebrew Postgres 18、
+   只開 Unix socket、資料放 scratchpad,用完停掉刪除;只 stub auth / roles / cron / pg_net / storage / app_config / suppliers 等,載入 120000 / 130000 / 130100 / 130200
+   原文與三支還原檔。Expected 照實際輸出寫(擋下紀錄「同一次兩條同種只算 1、沒擋不寫」、開關關著回 `MARKET_CLOSED` 且計數與擋下紀錄都沒變、原文 8-2 的請求回
+   `INVALID_INPUT` `token`、打開後空購物車回 `EMPTY_CART` 且計數只記在被採用的那個 IP、還原後 0 / 0 / 0 / 0 / 0 / 3)。DEPLOY.md 第 2 階段的 14 段 bash 都過
+   `bash -n` 與 `zsh -n`,用 printf 寫 SQL 的四段在 bash、zsh 各實跑一次。這不是正式庫,部署時以線上結果為準。
+
+**發現、沒有處理(記錄;都沒有改程式)**:
+
+- migration 130000 檔頭的狀態說明(第 10 行「pending / confirmed / awaiting_payment → cancelled」)沒有 `paid → cancelled`;轉移表(第 201、213、225 行)有。
+  只是註解,DEPLOY.md 照轉移表寫。
+- 「C. 關鍵技術決定」第 1 點(第 45 行)與「待業主決定」第 7 點(第 17075 行)的限流額度還是舊數字(每 IP 每小時 5 / 每天 20 等);現行數字以 130200 與 DEPLOY.md 的限流表為準。
+- 閘門關著時,結帳頁(`MarketCheckoutPage.tsx` 第 324 行的轉帳說明)、查單頁(`MarketOrderLookupPage.tsx` 第 86 行)、供應商零售訂單頁(`SupplierMarketOrdersPage.tsx`
+  第 85 行)與接單視窗(`OrderActionDialog.tsx` 第 35–36 行)都說消費者會收到信。開關關著時只有業主的測試單,影響不大;DEPLOY.md 待辦第 3 條要求兩個閘門一起開。
