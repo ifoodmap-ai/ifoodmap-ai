@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 
 vi.mock("@/integrations/supabase/client", () => ({ supabase: {} }));
 
-import { autoCancelDeadline, formatAutoCancelDeadline, hoursUntilAutoCancel, MARKET_AUTO_CANCEL_HOURS } from "./autoCancel";
+import { autoCancelDeadline, formatAutoCancelDeadline, hoursUntilAutoCancel, isAutoCancelDue, MARKET_AUTO_CANCEL_HOURS } from "./autoCancel";
 import type { OrderStatus } from "./orders";
 
 const HARDENING = resolve(__dirname, "../../../supabase/migrations/20261012100000_market_hardening.sql");
@@ -82,5 +82,34 @@ describe("hoursUntilAutoCancel(還有幾個完整的小時)", () => {
   it("不到 1 小時(含已經過期、排程還沒跑到)→ 0", () => {
     expect(hoursUntilAutoCancel(deadline, at("2026-10-12T03:05:00.001Z"))).toBe(0);
     expect(hoursUntilAutoCancel(deadline, at("2026-10-12T05:00:00Z"))).toBe(0);
+  });
+});
+
+describe("isAutoCancelDue(到期了沒:到了期限、排程還沒跑到的那段時間也算)", () => {
+  const deadline = "2026-10-12T04:05:00.000000Z";
+  it("還沒到 → false;剛好到期 → true;過期 30 分鐘 → true", () => {
+    expect(isAutoCancelDue(deadline, Date.parse("2026-10-12T04:04:59.999Z"))).toBe(false);
+    expect(isAutoCancelDue(deadline, Date.parse("2026-10-12T04:05:00Z"))).toBe(true);
+    expect(isAutoCancelDue(deadline, Date.parse("2026-10-12T04:35:00Z"))).toBe(true);
+  });
+});
+
+describe("formatAutoCancelDeadline 在別的時區執行(vitest 設定把 TZ 固定在台北,這裡在測試裡換掉)", () => {
+  it("TZ = UTC、America/Los_Angeles 時照樣是台北時間(拿掉 timeZone: \"Asia/Taipei\" 這項會紅)", () => {
+    const original = process.env.TZ;
+    try {
+      for (const tz of ["UTC", "America/Los_Angeles"]) {
+        process.env.TZ = tz;
+        // 先確認這個環境真的換了時區(換不掉的話這項要紅,不能默默通過)
+        expect(new Intl.DateTimeFormat().resolvedOptions().timeZone).toBe(tz);
+        expect(new Date("2026-10-12T04:05:00Z").getHours()).not.toBe(12);
+        expect(formatAutoCancelDeadline("2026-10-12T04:05:00Z")).toBe("10/12 12:05");
+        expect(formatAutoCancelDeadline("2026-10-02T16:30:00Z")).toBe("10/3 00:30");
+      }
+    } finally {
+      if (original === undefined) delete process.env.TZ;
+      else process.env.TZ = original;
+    }
+    expect(new Intl.DateTimeFormat().resolvedOptions().timeZone).toBe(original ?? new Intl.DateTimeFormat().resolvedOptions().timeZone);
   });
 });

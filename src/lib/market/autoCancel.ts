@@ -59,3 +59,10 @@ export const formatAutoCancelDeadline = (iso: string | null | undefined): string
  */
 export const hoursUntilAutoCancel = (deadline: string, now: number = Date.now()): number =>
   Math.max(0, Math.floor((Date.parse(deadline) - now) / HOUR_MS));
+
+/**
+ * 到期了沒(現在 ≥ 期限)。到了期限、排程還沒跑到的那段時間(平常最多 10 分鐘,積壓時更久)也算到期:
+ * 畫面改寫「即將自動取消」,查單頁的待匯款也不再給匯款帳號(消費者這時匯款,訂單接著被取消,只能自己找店家退款)。
+ * 「現在」用 useNow 每分鐘更新的瀏覽器時鐘。
+ */
+export const isAutoCancelDue = (deadline: string, now: number): boolean => now >= Date.parse(deadline);
