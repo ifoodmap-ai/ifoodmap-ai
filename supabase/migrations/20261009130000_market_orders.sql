@@ -284,7 +284,10 @@ BEGIN
     RETURN NEW;  -- 交給外鍵報錯
   END IF;
 
-  NEW.note := NULLIF(btrim(COALESCE(NEW.note, '')), '');
+  -- 原因 / 備註:跟第 1 階段商品欄位同一套 —— 去頭尾空白連全形空白、零寬字元一起去(market_trim),
+  -- 去完看不到字(market_visible)就當成沒填,所以只填全形空白或零寬字元的拒單 / 取消原因會被 reason_required 擋下。
+  -- (兩支都是線性時間:100 萬字的刻意輸入實測幾十毫秒,跟 btrim 同一個量級,不用先粗擋長度)
+  NEW.note := CASE WHEN public.market_visible(NEW.note) THEN public.market_trim(NEW.note) END;
   NEW.actor_id := v_uid;
 
   -- 第一筆紀錄:訂單只能由 market_place_order 建立,建好的當下(同一個交易裡)還沒有任何紀錄

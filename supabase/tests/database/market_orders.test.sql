@@ -307,3 +307,20 @@ SELECT pg_temp.expect('同一個商品兩列(1 + 2)的單取消:兩列都加回�
      FROM public.market_orders o, public.market_products p
     WHERE o.id = 'a9600000-0000-4000-8000-000000000007' AND p.id = 'a9300000-0000-4000-8000-0000000000a1'),
   'cancelled|13');
+-- 4-3 拒單 / 取消原因:用第 1 階段的 market_visible 判斷有沒有填、market_trim 去頭尾(全形空白、零寬字元也算空白)
+--     chr(12288) = U+3000 全形空白、chr(8203) = U+200B 零寬空白(不寫跳脫序列,避免工具把它換成看不見的字元本身)
+SELECT pg_temp.mk_order('a9600000-0000-4000-8000-000000000008', 'a9200000-0000-4000-8000-00000000000a', 'cod');
+SELECT pg_temp.expect('拒單原因只有全形空白與零寬字元:算沒填',
+  pg_temp.as_exec('authenticated', pg_temp.ua(), $q$
+    INSERT INTO public.market_order_events (order_id, from_status, to_status, note)
+    VALUES ('a9600000-0000-4000-8000-000000000008', 'pending', 'rejected', chr(12288) || chr(8203) || chr(12288))$q$),
+  'ERR 22023:reason_required');
+SELECT pg_temp.as_exec('authenticated', pg_temp.ua(), $q$
+  INSERT INTO public.market_order_events (order_id, from_status, to_status, note)
+  VALUES ('a9600000-0000-4000-8000-000000000008', 'pending', 'rejected', chr(12288) || '今日停止接單' || chr(8203))$q$);
+SELECT pg_temp.expect('原因頭尾的全形空白、零寬字元會去掉(紀錄與訂單都存去掉後的字)',
+  (SELECT o.status || '|' || o.status_note || '|' || e.note
+     FROM public.market_orders o
+     JOIN public.market_order_events e ON e.order_id = o.id AND e.to_status = 'rejected'
+    WHERE o.id = 'a9600000-0000-4000-8000-000000000008'),
+  'rejected|今日停止接單|今日停止接單');
