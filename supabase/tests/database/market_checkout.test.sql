@@ -437,3 +437,24 @@ SELECT pg_temp.expect('查單的紀錄順序:B 店轉帳單 pending → confirme
           jsonb_array_elements(o -> 'events') WITH ORDINALITY AS t(ev, ord)
     WHERE k = 'happy' AND o ->> 'payment_method' = 'transfer'),
   'pending>confirmed>awaiting_payment');
+-- 5-3 補庫存只補下單時真的扣掉的數量(審查員的情境):下單時不限量 → 店家改成庫存 10 → 取消 → 還是 10
+INSERT INTO _ctx VALUES ('unlimited', pg_temp.place(pg_temp.anon(), '198.51.107.1', pg_temp.co('unlimited@market-test.invalid',
+  jsonb_build_array(pg_temp.item('a2', 2)), '{"a9200000-0000-4000-8000-00000000000a":"cod"}')));
+SELECT pg_temp.as_exec('authenticated', pg_temp.jwt('a9100000-0000-4000-8000-000000000001'), $q$
+  UPDATE public.market_products SET stock = 10 WHERE id = 'a9300000-0000-4000-8000-0000000000a2'$q$);
+SELECT pg_temp.as_exec('authenticated', pg_temp.jwt('a9100000-0000-4000-8000-000000000001'), format($q$
+  INSERT INTO public.market_order_events (order_id, from_status, to_status, note) VALUES (%L, 'pending', 'cancelled', '改成限量後取消')$q$,
+  (SELECT v -> 'orders' -> 0 ->> 'id' FROM _ctx WHERE k = 'unlimited')));
+SELECT pg_temp.expect('下單時不限量、店家之後改成庫存 10、再取消:庫存還是 10(不會憑空多出 2)',
+  (SELECT COALESCE(v ->> 'code', 'ok') FROM _ctx WHERE k = 'unlimited') || '|' ||
+  (SELECT o.status FROM public.market_orders o WHERE o.id = (SELECT (v -> 'orders' -> 0 ->> 'id')::uuid FROM _ctx WHERE k = 'unlimited')) || '|' ||
+  (SELECT stock::text FROM public.market_products WHERE id = 'a9300000-0000-4000-8000-0000000000a2'),
+  'ok|cancelled|10');
+-- 牛肉片改回不限量(後面的測試當它不限量)
+SELECT pg_temp.as_exec('authenticated', pg_temp.jwt('a9100000-0000-4000-8000-000000000001'), $q$
+  UPDATE public.market_products SET stock = NULL WHERE id = 'a9300000-0000-4000-8000-0000000000a2'$q$);
+SELECT pg_temp.expect('下單記下每一項真的扣掉的庫存:高麗菜 2、鮭魚 1、不限量的牛肉片 0',
+  (SELECT string_agg(i.product_name || '=' || i.stock_deducted, ',' ORDER BY i.unit_price)
+     FROM public.market_order_items i
+    WHERE i.order_id IN (SELECT (o ->> 'id')::uuid FROM _ctx, jsonb_array_elements(v -> 'orders') o WHERE k = 'happy')),
+  '有機高麗菜=2,挪威鮭魚=1,牛肉片=0');

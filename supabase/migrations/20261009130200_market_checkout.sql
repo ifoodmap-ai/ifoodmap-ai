@@ -446,8 +446,10 @@ BEGIN
        v_store->>'payment', v_hash, v_terms)
     RETURNING id INTO v_order;
 
-    INSERT INTO public.market_order_items (order_id, product_id, product_name, spec, temperature, unit_price, qty, line_total)
-    SELECT v_order, p.id, p.name, p.spec, p.temperature, p.price, q.qty, p.price * q.qty
+    -- stock_deducted:有設庫存的商品等一下會扣 qty(下面的 UPDATE),不限量的記 0 —— 拒單 / 取消只補這個數
+    INSERT INTO public.market_order_items (order_id, product_id, product_name, spec, temperature, unit_price, qty, line_total, stock_deducted)
+    SELECT v_order, p.id, p.name, p.spec, p.temperature, p.price, q.qty, p.price * q.qty,
+           CASE WHEN p.stock IS NOT NULL THEN q.qty ELSE 0 END
       FROM jsonb_to_recordset(v_req) AS q(product_id uuid, qty integer)
       JOIN public.market_products p ON p.id = q.product_id
      WHERE p.supplier_id = (v_store->>'supplier_id')::uuid

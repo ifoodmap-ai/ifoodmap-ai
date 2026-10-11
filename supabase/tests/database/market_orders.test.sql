@@ -48,8 +48,9 @@ SELECT pg_temp.mk_order('a9600000-0000-4000-8000-000000000002', 'a9200000-0000-4
 SELECT pg_temp.mk_order('a9600000-0000-4000-8000-000000000003', 'a9200000-0000-4000-8000-00000000000b', 'cod');
 SELECT pg_temp.mk_order('a9600000-0000-4000-8000-000000000004', 'a9200000-0000-4000-8000-00000000000a', 'cod');
 SELECT pg_temp.mk_order('a9600000-0000-4000-8000-000000000005', 'a9200000-0000-4000-8000-00000000000a', 'cod');
-INSERT INTO public.market_order_items (order_id, product_id, product_name, spec, temperature, unit_price, qty, line_total) VALUES
-  ('a9600000-0000-4000-8000-000000000004', 'a9300000-0000-4000-8000-0000000000a1', '有機高麗菜', '1 顆', 'ambient', 100, 2, 200);
+-- stock_deducted = 下單時扣掉的數量(market_place_order 對有設庫存的商品記 qty);這張單代表扣過 2 個
+INSERT INTO public.market_order_items (order_id, product_id, product_name, spec, temperature, unit_price, qty, line_total, stock_deducted) VALUES
+  ('a9600000-0000-4000-8000-000000000004', 'a9300000-0000-4000-8000-0000000000a1', '有機高麗菜', '1 顆', 'ambient', 100, 2, 200, 2);
 
 -- ---------------------------------------------------------------------
 -- 1. 物件與權限
@@ -296,9 +297,9 @@ SELECT pg_temp.expect('管理員接轉帳單:接單那筆是管理員,自動補�
 -- 4-2 同一張單裡同一個商品有好幾列時,取消要把每一列的數量都加回去
 --     (下單 RPC 會先合併同一個商品,正常不會有;直接寫明細時 UPDATE … FROM 一個商品只會配到其中一列)
 SELECT pg_temp.mk_order('a9600000-0000-4000-8000-000000000007', 'a9200000-0000-4000-8000-00000000000a', 'cod');
-INSERT INTO public.market_order_items (order_id, product_id, product_name, spec, temperature, unit_price, qty, line_total) VALUES
-  ('a9600000-0000-4000-8000-000000000007', 'a9300000-0000-4000-8000-0000000000a1', '有機高麗菜', '1 顆', 'ambient', 100, 1, 100),
-  ('a9600000-0000-4000-8000-000000000007', 'a9300000-0000-4000-8000-0000000000a1', '有機高麗菜', '1 顆', 'ambient', 100, 2, 200);
+INSERT INTO public.market_order_items (order_id, product_id, product_name, spec, temperature, unit_price, qty, line_total, stock_deducted) VALUES
+  ('a9600000-0000-4000-8000-000000000007', 'a9300000-0000-4000-8000-0000000000a1', '有機高麗菜', '1 顆', 'ambient', 100, 1, 100, 1),
+  ('a9600000-0000-4000-8000-000000000007', 'a9300000-0000-4000-8000-0000000000a1', '有機高麗菜', '1 顆', 'ambient', 100, 2, 200, 2);
 SELECT pg_temp.as_exec('authenticated', pg_temp.ua(), $q$
   INSERT INTO public.market_order_events (order_id, from_status, to_status, note)
   VALUES ('a9600000-0000-4000-8000-000000000007', 'pending', 'cancelled', '測試:同一個商品兩列')$q$);
@@ -347,8 +348,8 @@ SELECT pg_temp.expect('資料庫擁有者直接寫(沒有 JWT)也是 system:待�
   'system');
 -- 4-5 已收款的轉帳單也能取消(店家收了錢卻出不了貨,不然這張單會卡死);原因必填、庫存照補,跟其他取消一樣
 SELECT pg_temp.mk_order('a9600000-0000-4000-8000-000000000010', 'a9200000-0000-4000-8000-00000000000a', 'transfer');
-INSERT INTO public.market_order_items (order_id, product_id, product_name, spec, temperature, unit_price, qty, line_total) VALUES
-  ('a9600000-0000-4000-8000-000000000010', 'a9300000-0000-4000-8000-0000000000a1', '有機高麗菜', '1 顆', 'ambient', 100, 2, 200);
+INSERT INTO public.market_order_items (order_id, product_id, product_name, spec, temperature, unit_price, qty, line_total, stock_deducted) VALUES
+  ('a9600000-0000-4000-8000-000000000010', 'a9300000-0000-4000-8000-0000000000a1', '有機高麗菜', '1 顆', 'ambient', 100, 2, 200, 2);
 SELECT pg_temp.as_exec('authenticated', pg_temp.ua(), $q$
   INSERT INTO public.market_order_events (order_id, from_status, to_status)
   VALUES ('a9600000-0000-4000-8000-000000000010', 'pending', 'confirmed')$q$);
@@ -422,3 +423,15 @@ SELECT pg_temp.expect('物流、單號頭尾的全形空白、零寬字元去掉
      JOIN public.market_order_events e ON e.order_id = o.id AND e.to_status = 'shipped'
     WHERE o.id = 'a9600000-0000-4000-8000-000000000011'),
   'shipped|黑貓宅急便|9001|{"carrier": "黑貓宅急便", "tracking_no": "9001"}');
+-- 5-4 補庫存只補下單時真的扣掉的數量(明細的 stock_deducted;直接寫的明細預設 0 = 下單時沒扣)
+SELECT pg_temp.mk_order('a9600000-0000-4000-8000-000000000012', 'a9200000-0000-4000-8000-00000000000a', 'cod');
+INSERT INTO public.market_order_items (order_id, product_id, product_name, spec, temperature, unit_price, qty, line_total) VALUES
+  ('a9600000-0000-4000-8000-000000000012', 'a9300000-0000-4000-8000-0000000000a1', '有機高麗菜', '1 顆', 'ambient', 100, 3, 300);
+SELECT pg_temp.as_exec('authenticated', pg_temp.ua(), $q$
+  INSERT INTO public.market_order_events (order_id, from_status, to_status, note)
+  VALUES ('a9600000-0000-4000-8000-000000000012', 'pending', 'cancelled', '測試:下單時沒扣庫存')$q$);
+SELECT pg_temp.expect('下單時沒扣庫存的明細,取消不會憑空補回去(維持 15)',
+  (SELECT o.status || '|' || p.stock::text
+     FROM public.market_orders o, public.market_products p
+    WHERE o.id = 'a9600000-0000-4000-8000-000000000012' AND p.id = 'a9300000-0000-4000-8000-0000000000a1'),
+  'cancelled|15');

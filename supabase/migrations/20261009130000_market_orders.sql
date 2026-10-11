@@ -132,13 +132,17 @@ CREATE TABLE IF NOT EXISTS public.market_order_items (
   unit_price   integer NOT NULL CHECK (unit_price BETWEEN 1 AND 1000000),
   qty          integer NOT NULL CHECK (qty BETWEEN 1 AND 99),
   line_total   integer NOT NULL,
+  stock_deducted integer NOT NULL DEFAULT 0,
   created_at   timestamptz NOT NULL DEFAULT now(),
-  CONSTRAINT market_order_items_line_total CHECK (line_total = unit_price * qty)
+  CONSTRAINT market_order_items_line_total CHECK (line_total = unit_price * qty),
+  CONSTRAINT market_order_items_stock_deducted CHECK (stock_deducted BETWEEN 0 AND qty)
 );
 
 CREATE INDEX IF NOT EXISTS market_order_items_order_idx ON public.market_order_items (order_id);
 
 COMMENT ON TABLE public.market_order_items IS '零售訂單明細(下單當下的品名、規格、單價快照;商品之後改價不影響舊訂單)';
+COMMENT ON COLUMN public.market_order_items.stock_deducted IS
+  '下單時真的從庫存扣掉的數量(商品有設庫存 = qty,不限量 = 0);拒單 / 取消只補這個數';
 
 CREATE TABLE IF NOT EXISTS public.market_order_events (
   id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -446,15 +450,16 @@ BEGIN
    WHERE o.id = NEW.order_id
   RETURNING o.payment_method INTO v_payment;
 
-  -- 拒單 / 取消:有設庫存的商品把數量加回去(商品已刪除的就算了)。
+  -- 拒單 / 取消:只補下單時真的扣掉的數量(明細的 stock_deducted;下單時不限量的記 0),商品已刪除的就算了;
+  -- 商品現在是不限量(stock NULL)就不動 —— 下單時不限量、之後店家改成有庫存,取消也不會憑空多出庫存。
   -- 先依商品加總:同一個商品在明細裡有好幾列時,UPDATE … FROM 一個商品只會配到其中一列
   -- (下單 RPC 會先合併同一個商品,正常不會有;直接寫明細才會)
   IF NEW.to_status IN ('rejected', 'cancelled') THEN
     UPDATE public.market_products p
        SET stock = LEAST(p.stock + i.qty, 100000)
-      FROM (SELECT oi.product_id, sum(oi.qty) AS qty
+      FROM (SELECT oi.product_id, sum(oi.stock_deducted) AS qty
               FROM public.market_order_items oi
-             WHERE oi.order_id = NEW.order_id AND oi.product_id IS NOT NULL
+             WHERE oi.order_id = NEW.order_id AND oi.product_id IS NOT NULL AND oi.stock_deducted > 0
              GROUP BY oi.product_id) i
      WHERE i.product_id = p.id AND p.stock IS NOT NULL;
   END IF;
