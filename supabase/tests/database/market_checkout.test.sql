@@ -66,9 +66,11 @@ SELECT pg_temp.expect('每日上限回 DAILY_CAP,而且優先於 RATE_LIMITED',
   'DAILY_CAP');
 SELECT pg_temp.expect('retry_after 是正的秒數',
   ((public.market_rate_take('[{"bucket":"test:a","window":"1h","limit":3}]'::jsonb) ->> 'retry_after')::integer > 0)::text, 'true');
-SELECT pg_temp.expect('規則格式不對直接報錯(沒有 10m 窗格)',
-  pg_temp.as_exec('postgres', '', $q$SELECT public.market_rate_take('[{"bucket":"x","window":"10m","limit":1}]'::jsonb)$q$),
-  'ERR 22023');
+-- 冒號前的種類是擋下紀錄的 rule,不能是空的;limit 0 是為了讓「沒驗格式」時會走到擋下紀錄、報成別的錯
+SELECT pg_temp.expect('規則格式不對直接報錯(沒有 10m 窗格;bucket 冒號前的種類不能是空的)',
+  pg_temp.as_exec('postgres', '', $q$SELECT public.market_rate_take('[{"bucket":"x","window":"10m","limit":1}]'::jsonb)$q$) || '|' ||
+  pg_temp.as_exec('postgres', '', $q$SELECT public.market_rate_take('[{"bucket":":x","window":"1h","limit":0}]'::jsonb)$q$),
+  'ERR 22023|ERR 22023');
 SELECT pg_temp.expect('IP 正規化:IPv4 原樣、IPv6 取 /64、亂填回 NULL',
   public.market_normalize_ip('203.0.113.7') || '|' || public.market_normalize_ip('2001:db8:1:2:3:4:5:6') || '|'
   || COALESCE(public.market_normalize_ip('不是 IP'), '∅'),
@@ -705,3 +707,49 @@ SELECT pg_temp.expect('開關關掉之後,同一個 token 重送仍拿到既有�
           ((v ->> 'checkout_id') = (SELECT x.v ->> 'checkout_id' FROM _ctx x WHERE x.k = 'idem1'))::text
      FROM _ctx WHERE k = 'idem4'),
   'ok|true|true');
+-- 5-9 依規則記錄擋下了幾次(market_rate_blocks_daily:台北日 × 規則種類,種類 = bucket 冒號前的前綴;只記次數、不記是誰)。
+--     計數照樣整批不扣(被擋的請求不吃額度),只是另外記一筆擋下次數
+SELECT public.market_rate_take('[{"bucket":"blkok:x","window":"1h","limit":5}]'::jsonb);
+SELECT pg_temp.expect('沒被擋時不寫擋下紀錄(額度照常扣)',
+  (SELECT count(*)::text FROM public.market_rate_blocks_daily WHERE rule = 'blkok') || '|' ||
+  (SELECT count(*)::text FROM public.market_rate_counters WHERE bucket LIKE 'blkok:%'), '0|1');
+SELECT public.market_rate_take('[{"bucket":"blkhit:x","window":"1h","limit":0},{"bucket":"blkhit:y","window":"day","limit":0},{"bucket":"blkother:z","window":"1h","limit":5}]'::jsonb);
+SELECT public.market_rate_take('[{"bucket":"blkhit:x","window":"1h","limit":0}]'::jsonb);
+SELECT pg_temp.expect('被擋時那種規則加 1(同一次被同一種的兩條擋下算 1,擋兩次就是 2);沒擋的那種不記;計數照樣整批不扣',
+  concat_ws('|',
+    COALESCE((SELECT hits::text FROM public.market_rate_blocks_daily
+               WHERE rule = 'blkhit' AND day = (now() AT TIME ZONE 'Asia/Taipei')::date), '0'),
+    (SELECT count(*)::text FROM public.market_rate_blocks_daily WHERE rule = 'blkother'),
+    (SELECT count(*)::text FROM public.market_rate_counters WHERE bucket LIKE 'blkhit:%' OR bucket LIKE 'blkother:%')),
+  '2|0|0');
+SELECT pg_temp.expect('真的下單流程:前面各節被擋下的都依種類記到(Email 2、IP 1、/48 嘗試 1、/48 成單 1、IPv4 成單 1、noip 1;單元測試 test 4)',
+  (SELECT string_agg(rule || '=' || hits, ',' ORDER BY rule) FROM public.market_rate_blocks_daily
+    WHERE day = (now() AT TIME ZONE 'Asia/Taipei')::date AND rule NOT LIKE 'blk%'),
+  'email=2,ip=1,ip48=1,ip48o=1,ipo=1,noip=1,test=4');
+SELECT pg_temp.expect('anon、登入者讀不到擋下紀錄、也沒有任何權限;RLS 開著',
+  concat_ws('|',
+    pg_temp.as_val('anon', pg_temp.anon(), $q$SELECT count(*)::text FROM public.market_rate_blocks_daily$q$),
+    pg_temp.as_val('authenticated', pg_temp.jwt('a9100000-0000-4000-8000-000000000001'), $q$SELECT count(*)::text FROM public.market_rate_blocks_daily$q$),
+    (has_table_privilege('anon', 'public.market_rate_blocks_daily', 'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER,MAINTAIN')
+     OR has_table_privilege('authenticated', 'public.market_rate_blocks_daily', 'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER,MAINTAIN'))::text,
+    (SELECT relrowsecurity::text FROM pg_class WHERE oid = 'public.market_rate_blocks_daily'::regclass)),
+  'ERR 42501|ERR 42501|false|true');
+-- 清理排程的指令實際跑一次(同一個 job 的兩句都要跑得動):先記下前面各節留下幾列,再放幾筆舊資料進去
+INSERT INTO _ctx SELECT 'cron_before', jsonb_build_object(
+  'counters', (SELECT count(*) FROM public.market_rate_counters),
+  'blocks',   (SELECT count(*) FROM public.market_rate_blocks_daily));
+INSERT INTO public.market_rate_counters (bucket, window_start, hits) VALUES
+  ('cronold:x|1h', now() - interval '3 days', 1), ('cronnew:x|1h', now() - interval '1 day', 1);
+INSERT INTO public.market_rate_blocks_daily (day, rule, hits) VALUES
+  ((now() AT TIME ZONE 'Asia/Taipei')::date - 91, 'cronold', 1),
+  ((now() AT TIME ZONE 'Asia/Taipei')::date - 90, 'cronkeep', 1);
+DO $$ BEGIN EXECUTE (SELECT command FROM cron.job WHERE jobname = 'ifoodmap-market-rate-cleanup'); END $$;
+SELECT pg_temp.expect('清理排程的指令實際跑得動:3 天前的計數、91 天前的擋下紀錄刪掉;1 天前的計數、剛好 90 天前的紀錄留著;前面各節的列一筆都沒少',
+  concat_ws('|',
+    (SELECT string_agg(split_part(bucket, ':', 1), ',' ORDER BY bucket) FROM public.market_rate_counters WHERE bucket LIKE 'cron%'),
+    (SELECT string_agg(rule, ',' ORDER BY rule) FROM public.market_rate_blocks_daily WHERE rule LIKE 'cron%'),
+    ((SELECT count(*) FROM public.market_rate_counters WHERE bucket NOT LIKE 'cron%')
+       = (SELECT (v ->> 'counters')::bigint FROM _ctx WHERE k = 'cron_before'))::text,
+    ((SELECT count(*) FROM public.market_rate_blocks_daily WHERE rule NOT LIKE 'cron%')
+       = (SELECT (v ->> 'blocks')::bigint FROM _ctx WHERE k = 'cron_before'))::text),
+  'cronnew|cronkeep|true|true');

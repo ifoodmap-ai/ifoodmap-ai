@@ -5,7 +5,7 @@
 SELECT pg_temp.expect('還原後第 2 階段的表都不在',
   (SELECT count(*)::text FROM pg_class
     WHERE relnamespace = 'public'::regnamespace
-      AND relname IN ('market_orders', 'market_order_items', 'market_order_events', 'market_rate_counters')),
+      AND relname IN ('market_orders', 'market_order_items', 'market_order_events', 'market_rate_counters', 'market_rate_blocks_daily')),
   '0');
 SELECT pg_temp.expect('還原後第 2 階段的函式都不在',
   (SELECT count(*)::text FROM pg_proc WHERE pronamespace = 'public'::regnamespace

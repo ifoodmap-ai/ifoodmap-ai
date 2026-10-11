@@ -41,6 +41,12 @@
 --   量變大時怎麼調:另開一支 migration,用 CREATE OR REPLACE FUNCTION public.market_place_order 改 A 段、B 段的數字
 --     (計數表與 market_rate_take 不用動)。窗格是整點與台北日:數字改小時,目前窗格裡已經有的計數照算,
 --     下一個窗格起完全生效;要加新的一條,bucket 種類取新名字,不要跟另一段重疊。
+--   擋下紀錄:market_rate_take 每擋下一次,就在 market_rate_blocks_daily 依規則種類(bucket 冒號前的前綴:ip、ip48、noip、
+--     email、phone、ipo、ip48o、global)把台北日的次數加 1;只記次數、不記是誰,清理排程刪 90 天前的列。查詢範例
+--     (最近 7 天每天各規則擋下幾次;唯讀端點或 Dashboard 的 SQL Editor):
+--       SELECT day, rule, hits FROM public.market_rate_blocks_daily
+--        WHERE day >= (now() AT TIME ZONE 'Asia/Taipei')::date - 7 ORDER BY day DESC, hits DESC;
+--     ipo / ip48o 擋得多 = 共用網路的成單上限該調高;noip 有任何一筆 = IP 取得壞了,要去查。
 --   刻意的取捨(審查後決定,不是漏掉):
 --     同一個 token 的重送(duplicate、TOKEN_REUSED)在開關與限流之前就回傳、不吃任何額度 —— 重送不能被擋
 --       (網路斷線後重按的人會被拒),每次只花一次 advisory lock 加一次索引查詢;拿到 token 的人可以一直重送,但成本很低。
@@ -72,11 +78,29 @@ COMMENT ON TABLE public.market_rate_counters IS
 ALTER TABLE public.market_rate_counters ENABLE ROW LEVEL SECURITY;
 REVOKE ALL ON TABLE public.market_rate_counters FROM PUBLIC, anon, authenticated;
 
+-- 每條規則每天(台北日)擋下了幾次:rule = bucket 冒號前的前綴(ip、ip48、noip、email、phone、ipo、ip48o、global),
+-- 只記次數、不記是誰。只由 market_rate_take 寫入;清理排程刪 90 天前的列
+CREATE TABLE IF NOT EXISTS public.market_rate_blocks_daily (
+  day  date    NOT NULL,
+  rule text    NOT NULL,
+  hits integer NOT NULL DEFAULT 0,
+  PRIMARY KEY (day, rule),
+  CONSTRAINT market_rate_blocks_daily_rule CHECK (char_length(rule) BETWEEN 1 AND 100),
+  CONSTRAINT market_rate_blocks_daily_hits CHECK (hits >= 0)
+);
+
+COMMENT ON TABLE public.market_rate_blocks_daily IS
+  '零售下單限流:每條規則(bucket 種類)每天(台北日)擋下了幾次。只由 market_rate_take 寫入,不記是誰;每天清掉 90 天前的列。';
+
+ALTER TABLE public.market_rate_blocks_daily ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON TABLE public.market_rate_blocks_daily FROM PUBLIC, anon, authenticated;
+
 INSERT INTO public.app_config (key, value) VALUES ('market_checkout_open', 'false') ON CONFLICT (key) DO NOTHING;
 INSERT INTO public.app_config (key, value) VALUES ('market_rate_salt', encode(extensions.gen_random_bytes(16), 'hex')) ON CONFLICT (key) DO NOTHING;
 
 -- p_rules = [{bucket, window: "1h"|"day", limit, code?: "RATE_LIMITED"|"DAILY_CAP"}](1–8 條)
 -- 回 {ok:true} 或 {ok:false, code, retry_after(秒)};任何一條超過就整批退回(被擋的請求不吃額度)。
+-- 被擋時另外在 market_rate_blocks_daily 把擋下的規則種類(bucket 冒號前的前綴)加 1。
 -- 只給內部用(market_place_order 以擁有者身分呼叫);API 角色沒有執行權,函式裡再擋一次。
 CREATE OR REPLACE FUNCTION public.market_rate_take(p_rules jsonb)
 RETURNS jsonb
@@ -114,6 +138,7 @@ BEGIN
       v_code   := COALESCE(v_rule->>'code', 'RATE_LIMITED');
       v_limit  := CASE WHEN jsonb_typeof(v_rule->'limit') = 'number' THEN (v_rule->>'limit')::integer END;
       IF v_bucket IS NULL OR char_length(v_bucket) NOT BETWEEN 1 AND 100
+         OR split_part(v_bucket, ':', 1) = ''   -- 冒號前的種類是擋下紀錄的 rule,不能是空的
          OR v_window IS NULL OR v_window NOT IN ('1h', 'day')
          OR v_limit IS NULL OR v_limit < 0
          OR v_code NOT IN ('RATE_LIMITED', 'DAILY_CAP') THEN
@@ -136,7 +161,8 @@ BEGIN
 
       IF v_hits > v_limit THEN
         v_failed := v_failed || jsonb_build_array(jsonb_build_object(
-          'code', v_code, 'retry_after', GREATEST(1, ceil(extract(epoch FROM (v_end - v_now)))::integer)));
+          'code', v_code, 'rule', split_part(v_bucket, ':', 1),
+          'retry_after', GREATEST(1, ceil(extract(epoch FROM (v_end - v_now)))::integer)));
       END IF;
     END LOOP;
 
@@ -150,6 +176,13 @@ BEGIN
   IF jsonb_array_length(v_failed) = 0 THEN
     RETURN jsonb_build_object('ok', true);
   END IF;
+  -- 擋下紀錄:這次被哪幾種規則擋下,每種 +1(同一種的兩條一起擋下也只算 1)。寫在上面的子交易之外,
+  -- 才不會跟著計數一起退回;依種類排序寫,同時被擋的請求鎖這張表的順序固定
+  INSERT INTO public.market_rate_blocks_daily AS b (day, rule, hits)
+  SELECT (v_now AT TIME ZONE 'Asia/Taipei')::date, k.rule, 1
+    FROM (SELECT DISTINCT f->>'rule' AS rule FROM jsonb_array_elements(v_failed) f) k
+   ORDER BY k.rule
+  ON CONFLICT (day, rule) DO UPDATE SET hits = b.hits + 1;
   v_pick := CASE WHEN EXISTS (SELECT 1 FROM jsonb_array_elements(v_failed) f WHERE f->>'code' = 'DAILY_CAP')
                  THEN 'DAILY_CAP' ELSE 'RATE_LIMITED' END;
   SELECT max((f->>'retry_after')::integer) INTO v_retry FROM jsonb_array_elements(v_failed) f WHERE f->>'code' = v_pick;
@@ -217,11 +250,13 @@ REVOKE ALL ON FUNCTION public.market_rate_key(text, text, text) FROM PUBLIC, ano
 REVOKE ALL ON FUNCTION public.market_normalize_ip(text) FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION public.market_client_ip() FROM PUBLIC, anon, authenticated;
 
--- 每天 19:50 UTC(台北 03:50,錯開 19:00 的訂單逾時與 19:40 的 AI 清理)清掉 2 天前的計數。同名排程已存在時會更新
+-- 每天 19:50 UTC(台北 03:50,錯開 19:00 的訂單逾時與 19:40 的 AI 清理)清掉 2 天前的計數與 90 天前的擋下紀錄。
+-- 同名排程已存在時會更新
 SELECT cron.schedule(
   'ifoodmap-market-rate-cleanup',
   '50 19 * * *',
-  $cron$DELETE FROM public.market_rate_counters WHERE window_start < now() - interval '2 days'$cron$
+  $cron$DELETE FROM public.market_rate_counters WHERE window_start < now() - interval '2 days';
+DELETE FROM public.market_rate_blocks_daily WHERE day < (now() AT TIME ZONE 'Asia/Taipei')::date - 90$cron$
 );
 
 -- ---------------------------------------------------------------------
