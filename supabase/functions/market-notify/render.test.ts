@@ -173,6 +173,16 @@ describe("店家、買家能控制的欄位放進 HTML 前一律跳脫", () => {
     }
   });
 
+  // 第 3 輪審查:原本的跳脫測試都是「還沒收款」,已收款的測試電話又沒有特殊字元 —— 退款那一句(含店家電話)沒有被釘住
+  it("已收款的取消信:店名、退款那一句裡的店家電話都是跳脫後的樣子", () => {
+    const m = renderEventMail("consumer_cancelled", { ...EVIL_CTX, paid: true });
+    expect(m.html).not.toContain('<a href="https://evil');
+    expect(m.html).not.toContain("<img");
+    expect(m.html).toContain(`您在「${htmlEscaped(evil("S-NAME"))}」的訂單`);
+    expect(m.html).toContain(`請直接聯絡店家(店家電話:${htmlEscaped(evil("S-PHONE"))})。iFoodmap 平台不經手款項。`);
+    expect(m.text).toContain(`請直接聯絡店家(店家電話:${evil("S-PHONE")})。iFoodmap 平台不經手款項。`);
+  });
+
   it("純文字版維持原樣(不做 HTML 跳脫)", () => {
     for (const [kind, m] of mails()) {
       expect(m.text, kind).not.toMatch(/&(lt|gt|amp|quot|#39);/);
