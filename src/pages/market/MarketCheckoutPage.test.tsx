@@ -465,3 +465,12 @@ describe("MarketCheckoutPage:查詢 token(重送不會重複下單)", () => {
     expect(sentTokens()[1]).toBe(first);
   });
 });
+
+describe("MarketCheckoutPage:72 小時自動取消的說明", () => {
+  it("送出鈕正上方說明:送出後店家會在 72 小時內確認,超過時間沒接單會自動取消", async () => {
+    renderCheckout();
+    const button = await screen.findByRole("button", { name: /送出訂單/ });
+    const note = screen.getByText("送出後,店家會在 72 小時內確認訂單;超過時間沒有接單,訂單會自動取消。");
+    expect(button.previousElementSibling).toBe(note);
+  });
+});

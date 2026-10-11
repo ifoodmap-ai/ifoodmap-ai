@@ -32,6 +32,7 @@ import {
   type BuyerErrors,
   type BuyerForm,
 } from "@/lib/market/checkout";
+import { MARKET_AUTO_CANCEL_HOURS } from "@/lib/market/autoCancel";
 import { LIMITS, PAYMENT_METHODS, TW_CITIES, type PaymentMethod, type TwCity } from "@/lib/market/constants";
 import { formatTwd } from "@/lib/market/format";
 import { TERMS_VERSION } from "@/lib/market/legal";
@@ -372,6 +373,10 @@ export default function MarketCheckoutPage() {
               ) : null}
             </div>
           ) : null}
+          {/* 72 小時自動取消(資料庫排程,autoCancel.ts):按下去之前就講清楚 */}
+          <p className="text-xs text-slate-600">
+            送出後,店家會在 {MARKET_AUTO_CANCEL_HOURS} 小時內確認訂單;超過時間沒有接單,訂單會自動取消。
+          </p>
           <button
             type="submit"
             disabled={submitting}
