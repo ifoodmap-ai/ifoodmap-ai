@@ -1,7 +1,7 @@
 // /market/orders/:token:token 頁 —— 壞網址 / 找不到、每張訂單的狀態與明細、轉帳資訊只在待匯款時出現、拒單原因、出貨單號、
 // 剛下單的提示(網址與複製)、載入失敗可以重試。
 // 檔尾另外釘住:已收款後被取消、進度照時間排、聯絡店家只有電話(查單 RPC 不給 contact_email)、離線、複製失敗、背景重抓失敗。
-import { act, cleanup, screen, within } from "@testing-library/react";
+import { act, cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { onlineManager } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -218,12 +218,23 @@ describe("MarketOrderLookupPage:取消、排序、聯絡店家、離線、複製
     expect(await screen.findByText("有機高麗菜")).toBeInTheDocument();
   });
 
-  it("沒辦法自動複製(瀏覽器沒有 navigator.clipboard):請消費者手動複製,不會整個沒反應", async () => {
+  it("沒辦法自動複製(瀏覽器沒有 navigator.clipboard):請消費者手動複製(電腦沒有長按:直接選好網址),不會整個沒反應", async () => {
     Object.defineProperty(navigator, "clipboard", { value: undefined, configurable: true });
     vi.mocked(fetchOrdersByToken).mockResolvedValue([A]);
     renderAt(`/market/orders/${TOKEN}?new=1`);
     await userEvent.click(await screen.findByRole("button", { name: "複製連結" }));
-    expect(await screen.findByText("沒辦法自動複製,請長按上面的網址手動複製。")).toBeInTheDocument();
+    expect(await screen.findByText("沒辦法自動複製,請選取上面的網址手動複製(手機可以長按網址)。")).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "訂單查詢網址" })).toHaveFocus();
+  });
+
+  it("剛下單的提示顯示後拿掉網址的 ?new=1(加入書籤不會每次都顯示「已送出」),提示照樣留在畫面上、不重抓", async () => {
+    vi.mocked(fetchOrdersByToken).mockResolvedValue([A, B]);
+    renderAt(`/market/orders/${TOKEN}?new=1`);
+    expect(await screen.findByText(/訂單已送出,共 2 張/)).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByTestId("location").textContent).toBe(`/market/orders/${TOKEN}`));
+    expect(screen.getByText(/訂單已送出,共 2 張/)).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "訂單查詢網址" })).toHaveValue(`${window.location.origin}/market/orders/${TOKEN}`);
+    expect(fetchOrdersByToken).toHaveBeenCalledTimes(1);
   });
 
   it("明細的金額欄一律不換行(360px 寬時粗體的總額不會被拆成「NT$」與數字兩行)", async () => {
