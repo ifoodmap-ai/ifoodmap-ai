@@ -2,11 +2,12 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { FakeDb, type FakeDbOptions, type Row } from "../../tests/fake-supabase.ts";
-import type { MailConfig, SendMail } from "../_shared/supplier-mail.ts";
+import type { MailConfig } from "../_shared/supplier-mail.ts";
 import { formatOrderNo } from "../../../src/lib/order-number.ts";
 import { sha256Hex } from "../ai/crypto.ts";
 import { marketLiveFromEnv } from "./gate.ts";
 import { createMarketNotifyHandler, EVENT_COLUMNS, ITEM_COLUMNS, ORDER_COLUMNS, secretMatches } from "./handler.ts";
+import type { MarketSendMail } from "./send.ts";
 
 const SECRET = "notify-secret";
 const TOKEN = `tok_${"x".repeat(39)}`; // 43 字元 base64url
@@ -73,9 +74,9 @@ const tables = (): Record<string, Row[]> => ({
   notifications: [],
 });
 
-const setup = (opts: { live?: boolean; secret?: string; fail?: FakeDbOptions["fail"]; send?: SendMail } = {}) => {
+const setup = (opts: { live?: boolean; secret?: string; fail?: FakeDbOptions["fail"]; send?: MarketSendMail } = {}) => {
   const db = new FakeDb({ tables: tables(), fail: opts.fail });
-  const send = vi.fn(opts.send ?? (async () => ({ ok: true, id: "re_1", error: null })));
+  const send = vi.fn<MarketSendMail>(opts.send ?? (async () => ({ ok: true, id: "re_1", error: null })));
   const log = vi.fn();
   const handler = createMarketNotifyHandler({
     db,
@@ -375,6 +376,24 @@ describe("market-notify:狀態紀錄", () => {
     expect(logged).not.toContain(TOKEN.slice(0, 8));
   });
 
+  // 審查追加:同一封信重送(pg_net 重送、有人重放)時 Resend 只寄一次 —— 每封信帶 Idempotency-Key
+  it("每封信帶 Idempotency-Key:狀態信 market-notify:<event_id>:<收件對象>,下單確認 market-notify:placed:<checkout_id>", async () => {
+    const s = setup();
+    await s.call({ kind: "event", event_id: EV(5) }); // 平台取消 → 消費者 + 店家
+    await s.call({ kind: "placed", checkout_id: CHECKOUT, token: TOKEN });
+    await s.call({ kind: "event", event_id: EV(5) }); // 同一個事件重送
+    const keys = s.send.mock.calls.map((c) => c[0].idempotencyKey);
+    expect(keys).toEqual([
+      `market-notify:${EV(5)}:consumer`,
+      `market-notify:${EV(5)}:supplier`,
+      `market-notify:placed:${CHECKOUT}`,
+      `market-notify:${EV(5)}:consumer`,
+      `market-notify:${EV(5)}:supplier`,
+    ]);
+    expect(keys[0]).not.toBe(keys[1]); // 同一個事件、兩種收件人的 key 不同
+    expect(keys.join(" ")).not.toContain(TOKEN); // 下單確認用結帳 id,不用 token
+  });
+
   it("讀資料庫失敗 500(不洩漏細節)", async () => {
     const s = setup({ fail: (table) => (table === "market_orders" ? { message: "boom" } : undefined) });
     const r = await s.call({ kind: "event", event_id: EV(1) });
@@ -415,7 +434,7 @@ const setupEnv = (env: Record<string, string | undefined>) => {
     { id: EV(9), order_id: ORDER_A, from_status: "pending", to_status: "rejected", actor_role: "supplier", note: "缺貨", payload: {} },
     { id: EV(10), order_id: ORDER_A, from_status: "confirmed", to_status: "cancelled", actor_role: "supplier", note: "無法出貨", payload: {} },
   );
-  const send = vi.fn<SendMail>(async () => ({ ok: true, id: "re_1", error: null }));
+  const send = vi.fn<MarketSendMail>(async () => ({ ok: true, id: "re_1", error: null }));
   const handler = createMarketNotifyHandler({
     db,
     send,
@@ -506,6 +525,8 @@ describe("market-notify:MARKET_NOTIFY_LIVE 不是剛好字串 true,就不會寄�
     const src = readFileSync(resolve(__dirname, "index.ts"), "utf8");
     expect(src).toContain("isLive: () => marketLiveFromEnv((k) => Deno.env.get(k)),");
     expect(src.match(/\bisLive\s*:/g)).toHaveLength(1);
+    // 寄信接 send.ts(帶 Idempotency-Key)
+    expect(src).toContain("send: createMarketResendSender(config.resendKey),");
   });
 });
 

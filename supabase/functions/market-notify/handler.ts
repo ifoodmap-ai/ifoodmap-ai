@@ -9,7 +9,7 @@
 //    placed 先比對 sha256(token) 與訂單上的雜湊,對不上就不寄 —— 拿到密鑰的人也沒辦法替別人的訂單寄出一個假的查詢連結。
 // 🔴 MARKET_NOTIFY_LIVE 不是 "true" 時,所有信只寄 ifoodmaptw@gmail.com(gate.ts)。開放要業主核准。
 import type { Db, DbResult, LogFn } from "../_shared/db.ts";
-import { isDeliverableEmail, type MailConfig, type SendMail } from "../_shared/supplier-mail.ts";
+import { isDeliverableEmail, type MailConfig } from "../_shared/supplier-mail.ts";
 import { sha256Hex } from "../ai/crypto.ts";
 import { type MarketAudience, planMarketDeliveries, TEST_SUBJECT_PREFIX } from "./gate.ts";
 import {
@@ -23,10 +23,12 @@ import {
   renderEventMail,
   resolveEventMails,
 } from "./render.ts";
+import type { MarketSendMail } from "./send.ts";
 
 export interface MarketNotifyDeps {
   db: Db;
-  send: SendMail;
+  /** 寄信(index.ts 接 send.ts 的 createMarketResendSender:帶 Idempotency-Key) */
+  send: MarketSendMail;
   config: MailConfig;
   /** = Supabase secret NOTIFY_SECRET */
   secret: string;
@@ -168,6 +170,8 @@ const deliver = async (
   recipient: { email: string; audience: MarketAudience },
   mail: Mail,
   logMessage: string,
+  /** Resend 的 Idempotency-Key:同一封信重送只寄一次(一次 deliver 只有一位收件人、一封信) */
+  idempotencyKey: string,
 ): Promise<DeliveryResult[]> => {
   const results: DeliveryResult[] = [];
   for (const d of planMarketDeliveries([recipient], mail.subject, live)) {
@@ -181,6 +185,7 @@ const deliver = async (
       text: forwarded ? `${TEST_SUBJECT_PREFIX} 原本的收件人:${original}\n\n${mail.text}` : mail.text,
       // 回信一律到平台信箱:🔴 店家的 contact_email 是收新訂單通知的信箱,不給消費者(要聯絡店家看信裡的店家電話)
       replyTo: deps.config.replyTo,
+      idempotencyKey,
     });
     await recordNotification(deps, d.audience, {
       recipient: d.to,
@@ -229,6 +234,7 @@ const handlePlaced = async (deps: MarketNotifyDeps, live: boolean, body: Row): P
     { email, audience: "consumer" },
     mail,
     `零售下單確認:${mailOrders.map((o) => orderLabel(o.id)).join("、")}`,
+    `market-notify:placed:${checkoutId}`,
   );
   return summary(live, results, { orders: mailOrders.length });
 };
@@ -281,7 +287,14 @@ const handleEvent = async (deps: MarketNotifyDeps, live: boolean, body: Row): Pr
       skipped.push(kind);
       continue;
     }
-    const sent = await deliver(deps, live, { email, audience }, renderEventMail(kind, ctx), `${orderLabel(mailOrder.id)} → ${toStatus}`);
+    const sent = await deliver(
+      deps,
+      live,
+      { email, audience },
+      renderEventMail(kind, ctx),
+      `${orderLabel(mailOrder.id)} → ${toStatus}`,
+      `market-notify:${eventId}:${audience}`,
+    );
     results.push(...sent.map((r) => ({ ...r, kind })));
   }
   return summary(live, results, { kinds, skipped });

@@ -10,9 +10,10 @@
 //    寄給真實消費者要業主核准 —— 不要自己設定這個 secret。
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { type Db, defaultLog } from "../_shared/db.ts";
-import { createResendSender, mailConfigFromEnv } from "../_shared/supplier-mail.ts";
+import { mailConfigFromEnv } from "../_shared/supplier-mail.ts";
 import { marketLiveFromEnv } from "./gate.ts";
 import { createMarketNotifyHandler } from "./handler.ts";
+import { createMarketResendSender } from "./send.ts";
 
 const db = createClient(
   Deno.env.get("SUPABASE_URL")!,
@@ -25,7 +26,8 @@ const config = mailConfigFromEnv((k) => Deno.env.get(k));
 Deno.serve(
   createMarketNotifyHandler({
     db: db as unknown as Db,
-    send: createResendSender(config.resendKey),
+    // 帶 Idempotency-Key 的 Resend 寄信(send.ts);這一行的寫法 handler.test.ts 有逐字比對
+    send: createMarketResendSender(config.resendKey),
     config,
     secret: Deno.env.get("NOTIFY_SECRET") ?? "",
     // 每次請求重讀 MARKET_NOTIFY_LIVE(gate.ts;不快取)。這一行的寫法 handler.test.ts 有逐字比對
