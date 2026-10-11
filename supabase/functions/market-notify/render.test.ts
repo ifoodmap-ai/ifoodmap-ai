@@ -109,6 +109,14 @@ describe("renderEventMail", () => {
     expect(renderEventMail("consumer_cancelled", CTX).text).toContain("缺貨<img src=x>");
   });
 
+  it("接單信的出貨天數:N 天、當天、沒有設定(不寫)", () => {
+    expect(renderEventMail("consumer_confirmed", CTX).text).toContain("已接受您的訂單 零售訂單 #000000A1,預計 2 個工作天內出貨。");
+    expect(renderEventMail("consumer_confirmed", { ...CTX, order: { ...ORDER, shipDays: 0 } }).text).toContain(",預計當天出貨。");
+    const none = renderEventMail("consumer_confirmed", { ...CTX, order: { ...ORDER, shipDays: null } });
+    expect(none.text).toContain("已接受您的訂單 零售訂單 #000000A1。付款方式");
+    expect(none.html).not.toContain("預計");
+  });
+
   it("寄給供應商的新訂單信:後台連結、備註(跳脫)", () => {
     const m = renderEventMail("supplier_new", CTX);
     expect(m.subject).toBe(`新的零售訂單 ${formatOrderNo(ORDER.id)} — 請到後台接單`);

@@ -37,11 +37,14 @@ export interface MarketNotifyDeps {
   log: LogFn;
 }
 
-// 讀資料用的欄位(handler.test.ts 會對照 migration 的 CREATE TABLE,打錯字測試就會失敗)
+// 讀資料用的欄位(handler.test.ts 會對照 migration 的 CREATE TABLE,打錯字測試就會失敗;測試的假資料庫也照這些字串只回傳選到的欄位)
 export const ORDER_COLUMNS =
   "id, checkout_id, supplier_id, status, buyer_name, buyer_email, ship_city, ship_address, buyer_note, subtotal, shipping_fee, total, payment_method, lookup_token_hash, paid_at";
 export const ITEM_COLUMNS = "product_name, spec, qty, unit_price, line_total";
 export const EVENT_COLUMNS = "id, order_id, from_status, to_status, actor_role, note, payload";
+export const SUPPLIER_COLUMNS = "name, contact_email, phone";
+export const STORE_COLUMNS = "ship_days";
+export const TRANSFER_COLUMNS = "transfer_info";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -120,8 +123,8 @@ const one = async (q: PromiseLike<DbResult>): Promise<Row | null> => {
 /** 訂單 → 信裡要用的樣子(店名、店家電話、明細、出貨天數),順便回傳供應商資料(contact_email 只用來寄給店家) */
 const loadMailOrder = async (db: Db, order: Row): Promise<{ mail: MailOrder; supplier: Row | null }> => {
   const [supplier, store, items] = await Promise.all([
-    one(db.from("suppliers").select("name, contact_email, phone").eq("id", order.supplier_id).maybeSingle()),
-    one(db.from("market_stores").select("ship_days").eq("supplier_id", order.supplier_id).maybeSingle()),
+    one(db.from("suppliers").select(SUPPLIER_COLUMNS).eq("id", order.supplier_id).maybeSingle()),
+    one(db.from("market_stores").select(STORE_COLUMNS).eq("supplier_id", order.supplier_id).maybeSingle()),
     many(db.from("market_order_items").select(ITEM_COLUMNS).eq("order_id", order.id)),
   ]);
   const mailItems: MailItem[] = items
@@ -289,7 +292,7 @@ const handleEvent = async (deps: MarketNotifyDeps, live: boolean, body: Row): Pr
 
   const { mail: mailOrder, supplier } = await loadMailOrder(deps.db, order);
   const transfer = kinds.includes("consumer_awaiting_payment")
-    ? await one(deps.db.from("market_store_transfer").select("transfer_info").eq("supplier_id", order.supplier_id).maybeSingle())
+    ? await one(deps.db.from("market_store_transfer").select(TRANSFER_COLUMNS).eq("supplier_id", order.supplier_id).maybeSingle())
     : null;
   const payload = (ev.payload && typeof ev.payload === "object" ? ev.payload : {}) as Row;
   const ctx: EventContext = {

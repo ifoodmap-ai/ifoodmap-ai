@@ -2,11 +2,21 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { FakeDb, type FakeDbOptions, type Row } from "../../tests/fake-supabase.ts";
+import type { Db, DbQuery, DbResult } from "../_shared/db.ts";
 import type { MailConfig } from "../_shared/supplier-mail.ts";
 import { formatOrderNo } from "../../../src/lib/order-number.ts";
 import { sha256Hex } from "../ai/crypto.ts";
 import { marketLiveFromEnv } from "./gate.ts";
-import { createMarketNotifyHandler, EVENT_COLUMNS, ITEM_COLUMNS, ORDER_COLUMNS, secretMatches } from "./handler.ts";
+import {
+  createMarketNotifyHandler,
+  EVENT_COLUMNS,
+  ITEM_COLUMNS,
+  ORDER_COLUMNS,
+  secretMatches,
+  STORE_COLUMNS,
+  SUPPLIER_COLUMNS,
+  TRANSFER_COLUMNS,
+} from "./handler.ts";
 import type { MarketSendMail } from "./send.ts";
 
 const SECRET = "notify-secret";
@@ -76,12 +86,71 @@ const tables = (): Record<string, Row[]> => ({
   notifications: [],
 });
 
+/**
+ * 跟 PostgREST 一樣:select("a, b") 只回傳選到的欄位(資料列裡沒有的欄位是 null)。
+ * 共用的 FakeDb 不看欄位清單 —— 少讀一個欄位(total、phone、contact_email…)測試照樣全綠、正式環境卻壞掉。
+ * 這裡包一層,handler 只拿得到它真的有選的欄位(其他 Edge Function 的測試也用 FakeDb,所以不改共用檔)。
+ */
+class SelectingQuery implements DbQuery {
+  private columns: string[] | null = null;
+  constructor(private inner: DbQuery) {}
+  select(columns?: string) {
+    if (columns !== undefined && columns.trim() !== "*") {
+      this.columns = columns.split(",").map((c) => c.trim());
+      // 別名、巢狀查詢這裡不支援:handler 改用那種寫法時要先改這個包裝,不然測試會照錯的欄位跑
+      for (const c of this.columns) if (!/^[a-z_][a-z0-9_]*$/.test(c)) throw new Error(`測試的假資料庫只認單純的欄位名稱:${c}`);
+    }
+    this.inner = this.inner.select(columns);
+    return this;
+  }
+  insert(values: Record<string, unknown>) {
+    this.inner = this.inner.insert(values);
+    return this;
+  }
+  update(values: Record<string, unknown>) {
+    this.inner = this.inner.update(values);
+    return this;
+  }
+  delete() {
+    this.inner = this.inner.delete();
+    return this;
+  }
+  eq(column: string, value: unknown) {
+    this.inner = this.inner.eq(column, value);
+    return this;
+  }
+  neq(column: string, value: unknown) {
+    this.inner = this.inner.neq(column, value);
+    return this;
+  }
+  private pick = (r: DbResult): DbResult => {
+    const cols = this.columns;
+    if (!cols || r.error || r.data === null || r.data === undefined) return r;
+    const only = (row: Row) => Object.fromEntries(cols.map((c) => [c, row[c] === undefined ? null : row[c]]));
+    return { data: Array.isArray(r.data) ? (r.data as Row[]).map(only) : only(r.data as Row), error: null };
+  };
+  maybeSingle() {
+    return this.inner.maybeSingle().then(this.pick);
+  }
+  single() {
+    return this.inner.single().then(this.pick);
+  }
+  then<A = DbResult, B = never>(
+    onfulfilled?: ((value: DbResult) => A | PromiseLike<A>) | null,
+    onrejected?: ((reason: unknown) => B | PromiseLike<B>) | null,
+  ): PromiseLike<A | B> {
+    return this.inner.then(this.pick).then(onfulfilled, onrejected);
+  }
+}
+/** 給 handler 用的資料庫:照 select 字串回傳欄位;測試自己檢查用的還是原本的 FakeDb(db.tables、db.calls) */
+const selecting = (db: FakeDb): Db => ({ from: (table) => new SelectingQuery(db.from(table)), rpc: (fn, args) => db.rpc(fn, args) });
+
 const setup = (opts: { live?: boolean; secret?: string; fail?: FakeDbOptions["fail"]; send?: MarketSendMail } = {}) => {
   const db = new FakeDb({ tables: tables(), fail: opts.fail });
   const send = vi.fn<MarketSendMail>(opts.send ?? (async () => ({ ok: true, id: "re_1", error: null })));
   const log = vi.fn();
   const handler = createMarketNotifyHandler({
-    db,
+    db: selecting(db),
     send,
     config: CONFIG,
     secret: opts.secret ?? SECRET,
@@ -205,6 +274,9 @@ describe("market-notify:狀態紀錄", () => {
     expect(msg.to).toEqual(["buyer@example.com"]);
     expect(msg.subject).toContain("市集測試 A 店 已接單");
     expect(msg.replyTo).toBe("ifoodmaptw@gmail.com");
+    // 出貨天數讀自 market_stores.ship_days(A 店 2 天)
+    expect(msg.text).toContain("預計 2 個工作天內出貨");
+    expect(msg.html).toContain("預計 2 個工作天內出貨");
   });
 
   it("轉帳訂單:confirmed 不寄,緊接著的 awaiting_payment 寄匯款資訊", async () => {
@@ -511,21 +583,38 @@ describe("market-notify:狀態紀錄", () => {
 });
 
 describe("讀取的欄位都存在於 migration", () => {
-  const sql = readFileSync(resolve(__dirname, "../../migrations/20261009130000_market_orders.sql"), "utf8");
-  const tableBlock = (name: string) => {
-    const start = sql.indexOf(`CREATE TABLE IF NOT EXISTS public.${name} (`);
-    expect(start, name).toBeGreaterThan(-1);
+  const migration = (file: string) => readFileSync(resolve(__dirname, `../../migrations/${file}`), "utf8");
+  const tableBlock = (sql: string, name: string) => {
+    const found = new RegExp(`CREATE TABLE (IF NOT EXISTS )?public\\.${name} \\(`).exec(sql);
+    expect(found, name).not.toBeNull();
+    const start = found!.index;
     return sql.slice(start, sql.indexOf("\n);", start));
   };
+  // 第 3 輪審查追加 suppliers、market_stores、market_store_transfer(定義在更早的 migration;之後沒有改名或刪欄位)
   it.each([
-    ["market_orders", ORDER_COLUMNS],
-    ["market_order_items", ITEM_COLUMNS],
-    ["market_order_events", EVENT_COLUMNS],
-  ])("%s", (table, columns) => {
-    const block = tableBlock(table);
+    ["market_orders", ORDER_COLUMNS, "20261009130000_market_orders.sql"],
+    ["market_order_items", ITEM_COLUMNS, "20261009130000_market_orders.sql"],
+    ["market_order_events", EVENT_COLUMNS, "20261009130000_market_orders.sql"],
+    ["suppliers", SUPPLIER_COLUMNS, "20260528233000_core_supply_schema.sql"],
+    ["market_stores", STORE_COLUMNS, "20261009120000_market_catalog.sql"],
+    ["market_store_transfer", TRANSFER_COLUMNS, "20261009120000_market_catalog.sql"],
+  ])("%s", (table, columns, file) => {
+    const block = tableBlock(migration(file), table);
     for (const col of columns.split(",").map((c) => c.trim())) {
       expect(block, `${table}.${col}`).toMatch(new RegExp(`\\n\\s+${col}\\s`));
     }
+  });
+
+  it("寫進 notifications 的欄位也都存在(寄出、寄信失敗、沒寄三種紀錄)", async () => {
+    const s = setup({ live: true });
+    await s.call({ kind: "event", event_id: EV(2) }); // 寄出
+    await s.call({ kind: "event", event_id: EV(8) }); // 沒寄(B 店沒有聯絡信箱)
+    const failing = setup({ live: true, send: async () => ({ ok: false, id: null, error: "Resend 500" }) });
+    await failing.call({ kind: "event", event_id: EV(2) }); // 寄信失敗
+    const rows = [...s.db.tables.notifications, ...failing.db.tables.notifications];
+    expect(rows.map((n) => n.status)).toEqual(["sent", "failed", "failed"]);
+    const block = tableBlock(migration("20260704140000_transaction_and_ops_tables.sql"), "notifications");
+    for (const key of new Set(rows.flatMap((n) => Object.keys(n)))) expect(block, `notifications.${key}`).toMatch(new RegExp(`\\n\\s+${key}\\s`));
   });
 });
 
@@ -543,7 +632,7 @@ const setupEnv = (env: Record<string, string | undefined>) => {
   );
   const send = vi.fn<MarketSendMail>(async () => ({ ok: true, id: "re_1", error: null }));
   const handler = createMarketNotifyHandler({
-    db,
+    db: selecting(db),
     send,
     config: CONFIG,
     secret: SECRET,
