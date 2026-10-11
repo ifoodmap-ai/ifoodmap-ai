@@ -335,6 +335,29 @@ test('home links to the consumer food market on the product site (/market)', () 
   assert.equal(dict('en').home.marketCta, 'Buying for home? Visit the Food Market →');
 });
 
+test('market entry sits right under the categories subtitle on wide screens, on its own line on phones', () => {
+  // 寬螢幕:副標維持原本靠右,入口疊在副標正下方、一起靠右;手機維持在標題下方另起一行。
+  // 副標與入口包在 .mc-catside 裡,版面寫在 <style>,不寫行內(support.js 會把行內的多欄 grid 改掉)。
+  assert.match(
+    home,
+    /<div class="mc-cathead"[^>]*>\s*<h2[^>]*>食材分類<\/h2>\s*<div class="mc-catside">\s*<p class="mc-catsub"[^>]*>從產地、工廠、大盤到小盤商<\/p>\s*<a href="\{\{ marketUrl \}\}" class="mc-catmarket"[^>]*>個人也能買：逛食材市集 →<\/a>\s*<\/div>\s*<\/div>/,
+  );
+  // 寬螢幕(主要 <style>):直排、靠右,副標在上
+  const mainStyle = source.slice(source.indexOf('<x-dc>'), source.indexOf('</x-dc>'));
+  assert.match(mainStyle, /\.mc-catside\s*\{[^}]*display:\s*flex;[^}]*flex-direction:\s*column;[^}]*align-items:\s*flex-end;/);
+  assert.doesNotMatch(mainStyle, /\.mc-catside[^{]*\{[^}]*display:\s*contents/);
+  // 手機(m-compact,≤768px):拆掉外框,副標與入口回到標題列的 flex 裡換行
+  const compactStart = source.indexOf('<style id="m-compact">');
+  const compact = source.slice(compactStart, source.indexOf('</style>', compactStart));
+  assert.match(compact, /\.mc-catside\s*\{\s*display:\s*contents\s*!important;\s*\}/);
+});
+
+test('market entry gets the same 3px keyboard focus ring as the other home links', () => {
+  const ring = source.match(/((?:\.mc-[a-z]+:focus-visible,\s*)+\.mc-[a-z]+:focus-visible)\s*\{ outline:3px solid #0B6B40; outline-offset:3px; \}/);
+  assert.ok(ring, '找不到首頁 .mc-* 共用的 3px 焦點外框');
+  assert.match(ring[1], /\.mc-catmarket:focus-visible/);
+});
+
 test('homepage retains design metrics and explains the six-step workflow', () => {
   assertHomeMetricsAndWorkflow(component, homeData);
   assert.match(home, /<sc-for list="\{\{\s*flowA\s*\}\}"/);

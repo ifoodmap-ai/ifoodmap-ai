@@ -343,6 +343,7 @@
   .mc-hottag:focus-visible,
   .mc-flowcta:focus-visible,
   .mc-catcell:focus-visible,
+  .mc-catmarket:focus-visible,
   .mc-alllink:focus-visible,
   .mc-ctaprimary:focus-visible,
   .mc-ctasecondary:focus-visible { outline:3px solid #0B6B40; outline-offset:3px; }
@@ -362,6 +363,12 @@
     .mc-navcta:hover, .mc-navcta:focus-visible,
     .mc-flowcta:hover, .mc-flowcta:focus-visible { transform:none; }
   }
+
+  /* 首頁「食材分類」標題列的右側:副標維持原本靠右的位置,消費者食材市集的入口疊在副標正下方、一起靠右。
+     標題列(.mc-cathead)的 align-items:baseline 對齊的是這一欄第一個子元素(副標)的基線,所以副標的位置不變。
+     手機(<=768px)在 #m-compact 把這一欄拆掉(display:contents),副標與入口回到標題列的 flex 裡照原本的方式換行
+     (手機直拿時入口在標題下方另起一行)。 */
+  .mc-catside { display:flex; flex-direction:column; align-items:flex-end; gap:6px; }
   .contact-submit { border:0; min-height:52px; }
   .footer-grid { display:grid; grid-template-columns:minmax(250px,1.5fr) repeat(4,minmax(120px,1fr)); gap:32px; }
   .footer-group-title { font-size:14px; font-weight:700; color:#fff; margin-bottom:16px; }
@@ -972,8 +979,10 @@
       <div class="mc-sec" style="max-width:1240px;margin:0 auto;padding:clamp(52px,8vw,88px) 20px">
         <div class="mc-cathead" style="display:flex;align-items:baseline;justify-content:space-between;gap:18px;flex-wrap:wrap">
           <h2 style="font-size:clamp(26px,3.4vw,38px)">{{ L.home.categoriesTitle }}</h2>
-          <p class="mc-catsub" style="font-size:14px;color:#4B5A52;font-weight:300">{{ L.home.categoriesSub }}</p>
-          <a href="{{ marketUrl }}" class="mc-catmarket" style="font-size:14.5px;font-weight:700;color:#0E6B40;text-decoration:underline;text-underline-offset:3px">{{ L.home.marketCta }}</a>
+          <div class="mc-catside">
+            <p class="mc-catsub" style="font-size:14px;color:#4B5A52;font-weight:300">{{ L.home.categoriesSub }}</p>
+            <a href="{{ marketUrl }}" class="mc-catmarket" style="font-size:14.5px;font-weight:700;color:#0E6B40;text-decoration:underline;text-underline-offset:3px">{{ L.home.marketCta }}</a>
+          </div>
         </div>
         <div class="mc-catgrid" style="margin-top:34px;display:grid;grid-template-columns:repeat(auto-fill,minmax(168px,1fr));gap:0;border-top:1px solid #E1E7E3;border-left:1px solid #E1E7E3;border-radius:12px;overflow:hidden">
           <sc-for list="{{ categories }}" as="c" hint-placeholder-count="12">
@@ -3124,6 +3133,8 @@ class Component extends DCLogic {
   /* 「食材分類」：12 格 x（96px 圖框 + 一行字）= 2.5 螢幕，整頁最糟的一塊。
      改 3 欄 + 圖框 96 -> 54px。整格 ~100px 高，仍遠大於 44px 觸控下限。 */
   .mc-cathead    { gap: 6px !important; }
+  /* 桌機把副標與市集入口疊成靠右的一欄(.mc-catside);手機拆掉這一欄,兩個照原本的方式在標題列裡換行 */
+  .mc-catside    { display: contents !important; }
   .mc-catsub     { line-height: 1.5 !important; }
   .mc-catgrid    { grid-template-columns: repeat(3, minmax(0, 1fr)) !important; margin-top: 16px !important; gap: 0 !important; }
   .mc-catcell    { text-align: center !important; }
