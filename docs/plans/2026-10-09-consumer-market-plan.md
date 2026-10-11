@@ -17535,3 +17535,26 @@ gate / render / handler / index 與 `config.toml` 先照計畫的程式碼區塊
 7. **給後續 Task 與 130200 的注意事項(沒有處理)**:
    - 轉帳單接單時「已接單」和自動補的「待匯款」在同一個交易,`created_at` 一樣:`market_get_orders` 的 `ORDER BY created_at, id` 由隨機 uuid 決定先後(驗收的模擬 60 單有 26 單「待匯款」排在「已接單」前面);Task 55 管理員頁(第 16311–16312 行)用 `created_at` 排序、`fetchAdminOrders` 內嵌的 `market_order_events` 也沒排序,一樣分不出先後。建議同時間再用 `ORDER_STATUSES` 的順序當第二排序(資料庫端可用 `array_position`)。Task 51 查單頁、Task 55 畫時間軸時要處理。
    - 地址前後夾零寬字元時,JS 的長度可能 ≥ 5、伺服器 `market_trim` 之後 < 5(回 `buyer.address`,畫面顯示「收件地址格式不對」,不會壞);跟上一節 E 的罕用字同一類。
+
+### 2026-10-11:Task 40–42 審查修正(commit `f310110`、`1bf0193`、`ea30739`、`754ab43`、`1986105`、`e31a088`、`7354efc`、`f74f7ab`、`bbf6e22`,分支 `market`)
+
+接上面兩節「Task 40–42」。審查結果規格通過、沒有 Critical,要求修 9 項,全部做完;每項都先寫測試、看到紅才改(只是補洞的測試用突變驗證)。只動 `supabase/functions/market-notify/` 與本勘誤。**以 repo 為準。**
+
+1. **跳脫測試**(Important,`f310110`):每個店家 / 買家能控制、會進信件的欄位(店名、店家電話、品名、規格、匯款資訊、物流、單號、原因、買家姓名、縣市、備註)各放一個記號加 `<a href="https://evil.example">點我</a>`、`"><img src=x onerror=alert(1)>`、`&`;下單確認與 7 種狀態信都斷言 html 沒有原始的 `<a href="https://evil` 或 `<img`、每個欄位都是跳脫後的樣子;text 不做 HTML 跳脫。新訂單信本來就只放收件縣市、不放地址(計畫原樣),測試另外斷言地址哪一封都不出現。
+2. **金額測試**(Important,`f310110`):小計 1234、運費 150、總額 1384、兩列小計 615 / 619(單價 205 / 619)全都不同;html 比對「標籤格的下一格」、text 比對整行,render 與 handler 兩層都測(handler 層從資料庫欄位讀,欄位對錯一定紅)。明細表與純文字**新增「小計」一列**(原本只有運費、總額,小計沒有標籤可以對)。
+3. **密鑰常數時間比對**(Minor 1,`1986105`):`secretMatches` 兩邊先 sha256(都是 64 個 hex 字)再逐字 XOR 累加。測試:只對開頭、多一個字、重複兩次、少一個字、大小寫不同、沒有 Bearer、空的都擋、都不寄。🔴 審查寫「都要回 403」,但計畫規定密鑰不對回 **401**(token 對不上才是 403;既有測試與審查員的 e2e 也是 401)→ 維持 401。
+4. **主旨單行**(Minor 2,`1bf0193`):`render.ts` 的 `oneLine`(`\p{Cc}` 控制字元與 U+2028 / U+2029 換成空白、連續空白壓成一個;supplier-mail 的 oneLine 沒有 export,另寫一份),placedMail / renderEventMail 回傳前套用。測試店名 `"A 店\r\nBcc: x@y…"`,每一種信的主旨與實際交給寄信的主旨(閘門開 / 關)都只有一行。
+5. **notifications 寫入要檢查**(Minor 3,`e31a088`):`recordNotification` 檢查 insert 的 error,失敗只記 log(下單確認走遮 token 的 redactLog),寄信結果不變。
+6. **防重送**(Minor 4,`7354efc`):新增 `send.ts` 的 `createMarketResendSender`:沿用 `_shared` 的 `createResendSender`,經 `fetchImpl` 補 Resend 的 `Idempotency-Key` 標頭(`_shared` 不能改、`SendMail` 不收標頭);`index.ts` 改接它(測試逐字比對那一行)。key:狀態信 `market-notify:<event_id>:<consumer|supplier>`、下單確認 `market-notify:placed:<checkout_id>`(不用 token)。同一個 key 24 小時內內容不同 Resend 回 409(例如閘門關著時寄過、24 小時內開閘門後重送同一個事件)→ 記成 failed。
+7. **收件 Email 不合格**(Minor 5,`f74f7ab`):買家 Email、店家聯絡信箱不能寄時跳過、記 log(帳號只留第一個字、網域照留)並在 notifications 留一筆 `status = failed`、message 結尾「(沒寄:原因)」的紀錄(status 只收 sent / failed / pending,沒有改 schema)。補測試缺口:系統取消也通知店家、店家信箱不是空的但格式不對要跳過、(另加)請求帶 `live: true` 打不開閘門、同一次結帳的雜湊不一致一律 403。
+8. **已收款的單也能取消**(`754ab43`、`bbf6e22`):讀訂單多讀 `paid_at`(測試對照 130000 的 CREATE TABLE);已收款(paid_at 有值,或紀錄的 from_status = paid)時消費者的取消信寫「這張訂單店家已確認收款,退款由店家處理,請直接聯絡店家(店家電話:…)。iFoodmap 平台不經手款項。」;管理員 / 系統取消照舊也通知店家。資料庫的 paid → cancelled 轉換由資料庫修正者加,這邊只看 from_status / paid_at,轉移表怎麼改都不影響。
+9. **給消費者的信不出現店家的 contact_email**(`ea30739`):計畫原本讓消費者的信 reply_to = 店家 contact_email → 改成一律平台信箱;下單確認(每家店那段)與給消費者的狀態信改附「店家電話」(suppliers.phone,店家頁本來就公開;沒填不寫)。**計畫的測試「貨到付款接單 → 消費者;回信給店家」改成回信到平台信箱**;fixture 的 suppliers 加 `phone`。新測試檢查 html、text、reply_to 三處(閘門開 / 關)。
+- 上面「Task 40–42」一節第 6 點「自查發現、沒有處理」的前三項(notifications 寫入不檢查、主旨不壓單行、共享密鑰重送與非常數時間比對)這次都已處理。
+
+**數字**
+
+- market-notify vitest:**4 檔 / 72 項**(gate 8、send 3、render 22、handler 39;上一節是 3 檔 / 43 項)→ Task 42 Step 4 的 Expected 改成 **`Tests  72 passed (72)`**;「F. 共用指令與基準數字」第 2、3 階段的總數比計畫多 **42 項、1 檔**(取代上一節的 13 項)。tsc strict 兩份設定(做法見上面「Task 40–42」一節第 4 點,測試那份多 `send.test.ts`)0 error,eslint 沒有輸出。
+- 全套:`6e0e208` 的乾淨副本(`git archive`)**109 檔 / 1694 項**全過(含其他實作者同時 commit 的檔)。
+- 審查員的突變腳本(`scratchpad/review-notify/mutate.mjs`,51 處):修改前 36 殺 / 15 存活;修改後同一份清單 **46 殺 / 0 存活**、5 處的 find 字串已不存在(這次改寫的 G13、A1、A2、E4、E5)。v2 腳本(`scratchpad/review-notify-v2/mutate2.mjs`:那 5 處照新程式改寫、另加 14 處這次的新功能)65 處 **64 殺、1 存活**(N3:下單確認的主旨沒有任何變數,拿掉 oneLine 輸出不變,等價)。原本存活的 15 處全部變紅,含可以扣掉的 G15(等價後門)、T3(等價)、S3(文案)。
+- 審查員的 e2e(`scratchpad/review-notify/e2e/e2e.test.ts` 原檔,程式換成新版):19 / 20,唯一紅的是記錄舊行為的「店名的 CRLF 原樣進主旨」(第 4 點修掉了);把那項反過來、另加一項「每個 Resend 請求都帶 Idempotency-Key」的改版(`review-notify-v2/e2e/e2e-adapted.test.ts`)21 / 21。
+- 🔴 在 scratchpad 跑突變 / e2e 要固定 vitest 版本:repo 的 `node_modules/.bin` 在 16:07 左右短暫消失過(有人在重裝),那段時間 scratchpad 裡的 `npx vitest` 會改用 npx 快取的 **vitest 4.1.11**,同一組測試固定多 3 項失敗,讓每個突變都看起來被殺了。改用 `node /Users/aimand/.gemini/File/ifoodmap/node_modules/vitest/vitest.mjs`(2.1.9)跑,上面的數字都是這樣得到的。
