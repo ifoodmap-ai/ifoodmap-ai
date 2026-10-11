@@ -313,8 +313,12 @@ SELECT pg_temp.expect('拿不到 IP 的請求不算 IP 額度(不會所有人共
   pg_temp.place(pg_temp.anon(), NULL, pg_temp.co('noip@market-test.invalid',
     jsonb_build_array(pg_temp.item('a2', 1)), '{"a9200000-0000-4000-8000-00000000000a":"cod"}')) ->> 'ok',
   'true');
-SELECT pg_temp.expect('計數表裡沒有明文 Email / 電話 / IP',
-  (SELECT count(*)::text FROM public.market_rate_counters WHERE bucket ~ '@|09[0-9]{8}|198\.51'), '0');
+-- 每個 bucket 都必須是「種類:16 位雜湊|窗格」或 global|day(單元測試的 test: 除外)。
+-- 原本用 bucket ~ '@|09[0-9]{8}|198\.51' 找明文,但雜湊本身是十六進位,偶爾會出現「09 + 8 位數字」(鹽每次隨機),乾跑時紅時綠
+SELECT pg_temp.expect('計數表裡沒有明文 Email / 電話 / IP(bucket 都是雜湊格式)',
+  (SELECT count(*)::text FROM public.market_rate_counters
+    WHERE bucket NOT LIKE 'test:%' AND bucket <> 'global|day'
+      AND bucket !~ '^(ip|ip48|email|phone):[0-9a-f]{16}[|](1h|day)$'), '0');
 SELECT pg_temp.expect('anon 讀不到訂單、明細、紀錄、計數',
   concat_ws('|',
     pg_temp.as_val('anon', pg_temp.anon(), $q$SELECT count(*)::text FROM public.market_orders$q$),
