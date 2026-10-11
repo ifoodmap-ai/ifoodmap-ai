@@ -84,6 +84,7 @@ import SupplierForecastPage from "./pages/supplier/SupplierForecastPage";
 import SupplierCustomersPage from "./pages/supplier/SupplierCustomersPage";
 import SupplierReviewsPage from "./pages/supplier/SupplierReviewsPage";
 import SupplierMarketStorePage from "./pages/supplier/SupplierMarketStorePage";
+import SupplierMarketOrdersPage from "./pages/supplier/SupplierMarketOrdersPage";
 
 // 餐廳後台(僅前台站)
 import RestaurantRoute from "./components/RestaurantRoute";
@@ -207,6 +208,7 @@ const MainRoutes = () => (
       <Route path="reviews" element={<SupplierReviewsPage />} />
       {/* 零售市集(B2C) */}
       <Route path="market/store" element={<SupplierMarketStorePage />} />
+      <Route path="market/orders" element={<SupplierMarketOrdersPage />} />
     </Route>
 
     {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}

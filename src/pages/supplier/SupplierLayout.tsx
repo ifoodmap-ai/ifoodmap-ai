@@ -81,11 +81,14 @@ const sections: SupplierSection[] = [
   {
     // 消費者食材市集(B2C):跟餐廳的詢價訂單完全分開。零售商品在「商品與價格 › 商品目錄」的「零售商品」分頁
     key: "market",
-    to: "/supplier/market/store",
+    to: "/supplier/market/orders",
     label: "零售市集",
     icon: Store,
     match: startsWithAny(["/supplier/market"]),
-    tabs: [{ label: "店家設定", path: "/supplier/market/store" }],
+    tabs: [
+      { label: "零售訂單", path: "/supplier/market/orders" },
+      { label: "店家設定", path: "/supplier/market/store" },
+    ],
   },
 ];
 

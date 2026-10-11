@@ -52,6 +52,7 @@ const renderLayout = (path: string) =>
           <Route path="shipments" element={<Navigate to="/supplier/orders?stage=shipped" replace />} />
           <Route path="reviews" element={<h1>我的評價頁</h1>} />
           <Route path="market/store" element={<h1>店家設定頁</h1>} />
+          <Route path="market/orders" element={<h1>零售訂單頁</h1>} />
         </Route>
       </Routes>
     </MemoryRouter>,
@@ -118,8 +119,8 @@ describe("SupplierLayout — 11 條舊路由全部打得開,落在正確的分�
     ["/supplier/catalog", "商品目錄頁", "商品與價格", null as string[] | null, null as string | null],
     ["/supplier/customers", "客戶管理頁", "客戶與評價", ["客戶", "評價"], "客戶"],
     ["/supplier/reviews", "我的評價頁", "客戶與評價", ["客戶", "評價"], "評價"],
-    // 零售市集第 1 階段只有一個分頁 → 不畫分頁列
-    ["/supplier/market/store", "店家設定頁", "零售市集", null as string[] | null, null as string | null],
+    ["/supplier/market/orders", "零售訂單頁", "零售市集", ["零售訂單", "店家設定"], "零售訂單"],
+    ["/supplier/market/store", "店家設定頁", "零售市集", ["零售訂單", "店家設定"], "店家設定"],
   ])("%s → 頁面 %s,分區「%s」", (path, heading, sectionLabel, expectedTabs, activeTab) => {
     renderLayout(path);
 
