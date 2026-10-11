@@ -17621,3 +17621,51 @@ gate / render / handler / index 與 `config.toml` 先照計畫的程式碼區塊
 | `market_phase2_rollback` | 4 | 4 |
 
 - **Task 57** Step 2(第 16560 行)的 Expected 改成依序 `共 65 項` / `共 9 項` / `共 77 項` / `共 4 項`,Step 5(第 16611 行)改成 `共 65 項` / `共 9 項` / `共 77 項`(上一節的 74 作廢);「F. 共用指令與基準數字」第 116 行同樣改成 65 / 9 / 77 / 4。
+
+### 2026-10-11:Task 48–52 購物車、條款、結帳、查單頁與路由(commit `cc002b0`、`6062b36`、`d60cca6`、`76c6092`、`35b947a`;版面修正 `caa853e`、`1ba31b7`,分支 `market`)
+
+每個 Task 先寫測試、看到失敗(`Failed to resolve import`)才實作;計畫之外加的測試,先對「照抄計畫的實作」跑一次確認是紅的,再改成現在的寫法。**以 repo 為準,不要再照抄 Task 48–51 的程式碼區塊**(Task 52 的兩組「找到 → 換成」照計畫,都剛好命中一次)。沒有乾跑、沒有查正式庫;畫面實測只連本機的假 Supabase。
+
+**A. 照派工指示與勘誤調整的地方**
+
+1. **查單不給 `contact_email`**(上面「第 2 階段三支 migration 審查修正」第 5 點):`LookupOrder.store` 只有 `supplier_id`、`name`、`phone`、`ship_days`、`return_policy`;測試資料與畫面都沒有 contact_email,聯絡店家只有電話(`tel:`)。測試釘住頁面上的 `a[href]` 只有 `tel:`(沒有 mailto、沒有外部 http)。
+2. **進度時間軸**:`lookup.ts` 新增 `sortEvents` —— `created_at` 由舊到新、比到微秒(`Date` 只到毫秒;同一交易的兩筆資料庫保證至少差 1 微秒);時間完全一樣才看 `ORDER_STATUSES` 的順序;不靠 RPC 的 `ORDER BY created_at, id`(uuid)。跟 `4efbf5b`(guard 讓同一張單的時間嚴格遞增)不衝突:資料正常時第二排序用不到。
+3. **已收款後被取消**(`2e843dd`):照常顯示「已取消」與原因、時間軸走到已取消,有測試。
+4. **錯誤訊息一律經 `checkout.ts` 的 `checkoutErrorMessage`**:伺服器回的失敗、還沒開放的整頁說明(`MARKET_CLOSED`)、送出前擋的超過 10 家店(`TOO_MANY_STORES`)、非預期的例外(預設句當 `friendlyDbError` 的中文備援)。`ORDER_TOO_LARGE`(`6e0e208`、`c88296c`)結帳頁不用改;測試用真的 `checkoutErrorMessage` 算預期字串,checkout.ts 改字也不會紅。「沒有可以結帳的店家」是畫面狀態、不是伺服器錯誤,照計畫留在頁面。
+5. **「前端修正」一節注意事項第 3 點**:查單頁找不到時 `MarketNotFound title="找不到訂單"`、分頁標題跟畫面一致;載入失敗改用 `MarketLoadError`(h1「訂單載入失敗」+「重新載入」)—— 計畫測試裡的「再試一次」改成「重新載入」。
+6. **「前端修正第 2 輪」的離線 / 背景重抓規則**套到三個新頁面(見 B-1)。
+
+**B. 自查修正(都先寫測試、看到失敗才改)**
+
+1. **購物車頁、結帳頁還沒拿到商品資料時**:React Query v5 離線時第一次載入被暫停,`isLoading` 是 false —— 照抄計畫會用空陣列算購物車:購物車頁把每一件都列成「已下架」還給「從購物車移除」(一按就清光),結帳頁顯示「0 家店、NT$ 0」的表單。改成離線提示(購物車頁 `MarketOfflineNotice`、結帳頁整頁 `MarketOffline`)、載入失敗給重新載入(結帳頁整頁 `MarketLoadError`「商品資料載入失敗」)、背景重抓失敗保留舊資料加 `MarketStaleNotice`。
+2. **購物車頁**:移除商品時查詢 key 跟著變,照抄計畫整頁閃成骨架 → `placeholderData: keepPreviousData`;這時上一份資料裡沒有的商品(別的分頁剛加的)不列成已下架。下單開關查詢失敗時計畫會寫「線上訂購還沒對外開放。」→ 改成「沒辦法確認線上訂購是否開放…」+「重新確認」;查詢中寫「正在確認…」。
+3. **結帳頁**:已下架 / 查不到的商品不在任何一家店裡,照抄計畫會默默不結 → 列在「這次不能結帳」(「N 項商品已下架或暫停販售,這次不會結帳」)並給「回購物車修改」;選過的付款方式店家不收了(`PAYMENT_NOT_ACCEPTED` 後重抓)照抄計畫會照樣送出 → 退回店家接受的預設,畫面與送出內容一致;送出中再按不會重送。
+4. **查單頁**:`navigator.clipboard?.writeText(...).then` 在沒有 clipboard(http、舊瀏覽器)時丟 TypeError、按了沒反應 → try/catch,顯示「沒辦法自動複製,請長按上面的網址手動複製」;店名與「訂單 #…」之間補空白(行內元素之間螢幕閱讀器不會補空白)。
+5. **條款草稿**(`legal.ts`):第一條明講「交易媒合(仲介)平台」、「店家」就是在本市集刊登商品的供應商;第五條補「(俗稱七天鑑賞期)」;隱私權:限流雜湊實際留 2 至 3 天(排程每天刪 2 天前的窗格)、購物車會用商品編號向伺服器查價格(原文「不會傳到我們的伺服器」不精確)、管理人員為了營運與客訴都看得到(原文只寫處理客訴時);`updated` 改成 2026-10-11。新增一項測試釘住三個重點的用詞,並驗兩頁都有「草稿」提示(照抄計畫的 `legal.ts` 這項紅)。
+6. **觸控目標**:條款頁「看隱私權政策 / 看服務條款」、結帳頁的條款連結與「回購物車修改」、查單頁的店家電話改 `min-h-11`。
+7. **版面**(headless Chrome 實測才發現,`caa853e`、`1ba31b7`,各補一項測試):購物車每一列的小計與「移除」包成一組 `ml-auto`(390px 原本只有「移除」掉到下一行的左邊,360px 卻是兩個一起靠右);`OrderItems` 的金額欄一律 `whitespace-nowrap`(360px 長英文品名時,粗體的「NT$ 1,540」被拆成兩行),品名欄 `overflow-wrap:anywhere`。`OrderItems` 的 props 沒變(Task 53 / 55 共用)。
+8. **測試寫法**:計畫的 `beforeEach(() => vi.mocked(x).mockReset())` 會回傳 mock 本身,vitest 把它當清理函式在測試結束後多呼叫一次(mock 設成 reject 時整個測試紅)→ 一律大括號;購物車與結帳測試的 `beforeEach` 另外 `mockReset()`,上一個測試沒用完的 `mockResolvedValueOnce` 不會留到下一個。
+
+**C. 數字**
+
+| 測試檔 | 計畫 | 現在 |
+|---|---|---|
+| `src/pages/market/MarketCartPage.test.tsx` | 7 | **12** |
+| `src/pages/market/MarketLegalPage.test.tsx` | 2 | **3** |
+| `src/pages/market/MarketCheckoutPage.test.tsx` | 8 | **13** |
+| `src/lib/market/lookup.test.ts` | 3 | **6** |
+| `src/pages/market/MarketOrderLookupPage.test.tsx` | 7 | **14** |
+| `src/App.market-routes.test.tsx` | 3 | **4**(多驗結帳、訂單查詢也掛在市集版面裡) |
+
+- 這五個 Task 共 50 項(計畫 28 項,**+22**),新增 5 個測試檔(跟計畫一樣)。「F. 共用指令與基準數字」第 2、3 階段的總數,在其他各節的調整之外再多 **22** 項。
+- Step 2 的錯誤訊息:Task 49 實際是 `Failed to resolve import "./MarketLegalPage"`(計畫寫 `"@/lib/market/legal"`,先解析到哪個就報哪個,意思相同);其餘跟計畫一樣。
+- `1ba31b7` 的乾淨副本(`git archive`)全套 vitest 連跑 2 次都是 **114 檔 / 1752 項**全過(含其他實作者同時 commit 的 Task 53–55 與 migration 修正);tsc 錯誤 **72**、eslint 錯誤 **10**(都不在這幾個檔,這幾個檔也沒有 warning);兩種 build 都 exit 0(前台站 bundle 有「食材市集服務條款」「這次不能結帳的店家」「訂單查詢網址」,管理員站沒有)。
+- **畫面實測**(scratchpad 的 `p2-pages/verify/run.mjs`,不進 repo):乾淨副本起 vite dev(預先打包的快取放 scratchpad、拿掉 `/api` 轉發正式後端的 proxy),`VITE_SUPABASE_URL` 指向本機假的 Supabase(PostgREST / RPC 回測試資料,下單只記在記憶體);headless Chrome 用自己的 `--user-data-dir` / `--disk-cache-dir`(跑完刪掉)。8 個情境(購物車正常 / 有問題、結帳錯誤 / 部分店家不能結帳 / 送出後到查單頁、查單、條款、隱私權)× 390 / 360 / 1280 共 24 組全過:沒有橫向捲動(`scrollWidth` = 視窗寬)、沒有元素超出畫面、每個連結 / 按鈕 / 欄位捲到中間後 `elementFromPoint` 打到自己(沒被蓋住)、沒有文字溢出、送出失敗時焦點移到的欄位在黏住的頁首下面、時間軸照時間排(假資料刻意亂序)、查單頁沒有外部連結、送出後導到 `?new=1` 而且購物車清空;所有請求只到本機(dev server 與假 Supabase),console 沒有錯誤。截圖 70 張(每張一個視窗高)。
+
+**D. 發現、沒有處理(記錄)**
+
+- 頁尾的「服務條款 / 隱私權政策」(Task 46 的 `MarketLayout`)與購物車裡的店名 / 品名連結高 18–21px:相鄰目標的距離夠,WCAG 2.5.8 的間距例外成立,沒改。
+- 購物車超過 10 家店時只有結帳頁送出前擋(「一次最多結帳 10 家店,請分次結帳。」),結帳頁不能選要結哪幾家,要回購物車移除(Task 43–47 一節 E 已記,照計畫沒在購物車頁擋)。
+- 結帳頁沒有在送出前擋單店超過上限(由伺服器回 `ORDER_TOO_LARGE`,字走 checkout.ts);伺服器回的 `INVALID_INPUT` 欄位沒有標到欄位上,只在送出鈕上方的 alert 顯示(照計畫)。
+- 查單頁「店家接單後會寄信通知你」在寄信閘門(`MARKET_NOTIFY_LIVE`)沒開時不成立(計畫風險第 2 點,照計畫寫)。
+- 工作環境:2026-10-11 約 16:05 repo 的 `node_modules` 整個不見了(當時另一位審查者的乾淨副本用 symlink 指向它),用 `npm ci` 照 `package-lock.json` 補回(vitest 2.1.9、vite 5.4.19、react-query 5.83.0 跟之前一樣)。之後用「乾淨副本 + symlink 指向 repo 的 node_modules」時,清理一律先 `unlink` 那個 symlink、確認 repo 的 node_modules 還在,再刪資料夾。
