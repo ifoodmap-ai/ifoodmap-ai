@@ -1,7 +1,9 @@
-// checkout.ts:表單驗證(跟資料庫同一套正規表示式)、送出的內容(只算能結帳的店、帶預期總額)、錯誤訊息。
+// checkout.ts:表單驗證(跟資料庫同一套正規表示式)、送出的內容(只算能結帳的店、帶預期總額)、錯誤訊息、
+// 查詢 token(瀏覽器產生、同一次結帳重送沿用 —— 下單 RPC 靠它認出重送、不重複建單)。
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createMemoryStorage } from "@/test/memory-storage";
 
 const { rpc } = vi.hoisted(() => ({ rpc: vi.fn() }));
 vi.mock("@/integrations/supabase/client", () => ({ supabase: { rpc } }));
@@ -9,17 +11,24 @@ vi.mock("@/integrations/supabase/client", () => ({ supabase: { rpc } }));
 import { buildCart } from "./cart";
 import {
   buildCheckoutPayload,
+  CHECKOUT_NO_RESPONSE_MESSAGE,
+  CHECKOUT_TOKEN_PATTERN,
+  CHECKOUT_TOKEN_STORAGE_KEY,
   checkoutErrorMessage,
+  checkoutExceptionMessage,
+  checkoutTokenStore,
   defaultPayment,
   EMAIL_PATTERN,
   emptyBuyer,
   fetchCheckoutStatus,
+  newCheckoutToken,
   PHONE_PATTERN,
   placeOrder,
   validateBuyer,
   type BuyerForm,
   type PlaceOrderResult,
 } from "./checkout";
+import { MarketDbError } from "./db";
 import { BEEF, CABBAGE, SALMON, SUPPLIER_A, SUPPLIER_B } from "./testFixtures";
 
 const MIGRATION = readFileSync(resolve(__dirname, "../../../supabase/migrations/20261009130000_market_orders.sql"), "utf8");
@@ -38,6 +47,8 @@ const GOOD: BuyerForm = {
   address: "測試路 1 號 2 樓",
   note: " 請放管理室 ",
 };
+
+const TOKEN = `tok_${"x".repeat(39)}`;
 
 describe("跟資料庫一致", () => {
   it("電話、Email 的正規表示式", () => {
@@ -89,7 +100,7 @@ describe("buildCheckoutPayload", () => {
   );
 
   it("收件資料去空白、電話去符號、Email 轉小寫;明細、付款方式、預期總額", () => {
-    const payload = buildCheckoutPayload({ buyer: GOOD, groups: view.groups, payments: { [SUPPLIER_A]: "transfer" }, termsVersion: "2026-10-draft" });
+    const payload = buildCheckoutPayload({ buyer: GOOD, groups: view.groups, payments: { [SUPPLIER_A]: "transfer" }, termsVersion: "2026-10-draft", token: TOKEN });
     expect(payload).toEqual({
       buyer: { name: "王小明", phone: "0912345678", email: "buyer@example.com", city: "臺北市", address: "測試路 1 號 2 樓", note: "請放管理室" },
       items: [
@@ -100,11 +111,12 @@ describe("buildCheckoutPayload", () => {
       payments: { [SUPPLIER_A]: "transfer", [SUPPLIER_B]: "cod" },
       expected_totals: { [SUPPLIER_A]: 770, [SUPPLIER_B]: 260 },
       terms_version: "2026-10-draft",
+      token: TOKEN,
     });
   });
 
   it("只送傳進來的店(不能結帳的店不要傳);沒填備註就不送 note", () => {
-    const payload = buildCheckoutPayload({ buyer: { ...GOOD, note: "  " }, groups: [view.groups[1]], payments: {}, termsVersion: "v" });
+    const payload = buildCheckoutPayload({ buyer: { ...GOOD, note: "  " }, groups: [view.groups[1]], payments: {}, termsVersion: "v", token: TOKEN });
     expect(payload.items).toEqual([{ product_id: SALMON.id, qty: 1 }]);
     expect(Object.keys(payload.payments)).toEqual([SUPPLIER_B]);
     expect(payload.buyer).not.toHaveProperty("note");
@@ -119,7 +131,7 @@ describe("buildCheckoutPayload", () => {
 describe("呼叫資料庫", () => {
   it("下單送 p_checkout;開關狀態不帶參數", async () => {
     rpc.mockResolvedValueOnce({ data: { ok: true, token: "t", checkout_id: "c", orders: [] }, error: null });
-    const payload = buildCheckoutPayload({ buyer: GOOD, groups: [], payments: {}, termsVersion: "v" });
+    const payload = buildCheckoutPayload({ buyer: GOOD, groups: [], payments: {}, termsVersion: "v", token: TOKEN });
     await placeOrder(payload);
     expect(rpc).toHaveBeenLastCalledWith("market_place_order", { p_checkout: payload });
     rpc.mockResolvedValueOnce({ data: { open: false, can_order: true }, error: null });
@@ -166,7 +178,7 @@ describe("checkoutErrorMessage", () => {
     );
     expect(msg({ ok: false, code: "PAYMENT_NOT_ACCEPTED", stores: [SUPPLIER_A, SUPPLIER_B] })).toBe("A 店、B 店 不接受你選的付款方式,請重新選擇。");
     expect(msg({ ok: false, code: "INVALID_INPUT", field: "terms_version" })).toBe("有欄位格式不對,請檢查後再送出。");
-    expect(msg({ ok: false, code: "TOKEN_REUSED" })).toBe("這筆結帳剛才已經送出過了,請查看訂單。");
+    expect(msg({ ok: false, code: "TOKEN_REUSED" })).toBe("你剛才送出的訂單已經成立,請先查看訂單。如果還要另外下一張,再按一次「送出訂單」。");
   });
 
   it("下單 RPC 回的每一種代碼都有自己的一句話,不會掉到「下單失敗,請稍後再試。」", () => {
@@ -182,5 +194,119 @@ describe("checkoutErrorMessage", () => {
     const messages = codes.map((code) => checkoutErrorMessage({ ok: false, code, stores: [SUPPLIER_A] }, name));
     messages.forEach((m, i) => expect(m, codes[i]).not.toBe(fallback));
     expect(new Set(messages).size).toBe(codes.length);
+  });
+});
+
+describe("查詢 token(下單冪等)", () => {
+  // 一讀寫就丟例外的 sessionStorage(無痕模式、使用者封鎖網站資料)
+  const blockedStorage = (): Storage =>
+    ({
+      get length(): number {
+        throw new DOMException("blocked", "SecurityError");
+      },
+      clear: () => {
+        throw new DOMException("blocked", "SecurityError");
+      },
+      getItem: () => {
+        throw new DOMException("blocked", "SecurityError");
+      },
+      key: () => {
+        throw new DOMException("blocked", "SecurityError");
+      },
+      removeItem: () => {
+        throw new DOMException("blocked", "SecurityError");
+      },
+      setItem: () => {
+        throw new DOMException("blocked", "SecurityError");
+      },
+    }) as Storage;
+
+  beforeEach(() => {
+    vi.stubGlobal("sessionStorage", createMemoryStorage());
+    checkoutTokenStore.resetForTests();
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("格式跟 market_place_order 一字不差:32 bytes 隨機值的 base64url、不帶「=」、43 字;每次都不一樣", () => {
+    const m = CHECKOUT_MIGRATION.match(/\(p_checkout->>'token'\) !~ '([^']+)'/);
+    expect(m, "migration 130200 的 token 格式檢查").not.toBeNull();
+    expect(CHECKOUT_TOKEN_PATTERN.source).toBe(m?.[1]);
+    const tokens = Array.from({ length: 300 }, () => newCheckoutToken());
+    for (const t of tokens) expect(t).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(new Set(tokens).size).toBe(300);
+  });
+
+  it("用 crypto.getRandomValues 拿 32 bytes,原樣轉成 base64url(+ → -、/ → _、去掉 =)", () => {
+    const bytes = Uint8Array.from({ length: 32 }, (_, i) => (i * 37 + 251) % 256);
+    const spy = vi.spyOn(globalThis.crypto, "getRandomValues").mockImplementation((arr) => {
+      (arr as Uint8Array).set(bytes);
+      return arr;
+    });
+    const t = newCheckoutToken();
+    expect((spy.mock.calls[0][0] as Uint8Array).length).toBe(32);
+    expect(t).toBe(Buffer.from(bytes).toString("base64url"));
+    expect(t).toHaveLength(43);
+    spy.mockImplementation((arr) => ((arr as Uint8Array).fill(0xff), arr));
+    expect(newCheckoutToken()).toBe(`${"_".repeat(42)}8`);
+  });
+
+  it("第一次要用才產生,之後一直沿用同一個(存在 sessionStorage);clear 之後下一次換新的", () => {
+    expect(checkoutTokenStore.peek()).toBeNull();
+    const t = checkoutTokenStore.getOrCreate();
+    expect(t).toMatch(CHECKOUT_TOKEN_PATTERN);
+    expect(checkoutTokenStore.getOrCreate()).toBe(t);
+    expect(checkoutTokenStore.peek()).toBe(t);
+    expect(sessionStorage.getItem(CHECKOUT_TOKEN_STORAGE_KEY)).toBe(t);
+    checkoutTokenStore.clear();
+    expect(sessionStorage.getItem(CHECKOUT_TOKEN_STORAGE_KEY)).toBeNull();
+    expect(checkoutTokenStore.peek()).toBeNull();
+    const t2 = checkoutTokenStore.getOrCreate();
+    expect(t2).toMatch(CHECKOUT_TOKEN_PATTERN);
+    expect(t2).not.toBe(t);
+  });
+
+  it("重新整理頁面(記憶體清空、同一個分頁的 sessionStorage 還在)後沿用同一個", () => {
+    const t = checkoutTokenStore.getOrCreate();
+    checkoutTokenStore.resetForTests();
+    expect(checkoutTokenStore.peek()).toBe(t);
+    expect(checkoutTokenStore.getOrCreate()).toBe(t);
+  });
+
+  it("sessionStorage 不能用(一讀寫就丟例外)時退回記憶體:照樣產生、沿用、清掉,不會丟錯", () => {
+    vi.stubGlobal("sessionStorage", blockedStorage());
+    expect(checkoutTokenStore.peek()).toBeNull();
+    const t = checkoutTokenStore.getOrCreate();
+    expect(t).toMatch(CHECKOUT_TOKEN_PATTERN);
+    expect(checkoutTokenStore.getOrCreate()).toBe(t);
+    checkoutTokenStore.clear();
+    expect(checkoutTokenStore.peek()).toBeNull();
+    expect(checkoutTokenStore.getOrCreate()).not.toBe(t);
+  });
+
+  it("sessionStorage 裡的值格式不對就不用,重新產生並寫回", () => {
+    sessionStorage.setItem(CHECKOUT_TOKEN_STORAGE_KEY, "not-a-token");
+    expect(checkoutTokenStore.peek()).toBeNull();
+    const t = checkoutTokenStore.getOrCreate();
+    expect(t).toMatch(CHECKOUT_TOKEN_PATTERN);
+    expect(sessionStorage.getItem(CHECKOUT_TOKEN_STORAGE_KEY)).toBe(t);
+  });
+});
+
+describe("checkoutExceptionMessage(送出時丟出例外)", () => {
+  it("沒拿到資料庫的回覆(斷線、閘道逾時、回應壞掉):訂單可能已經送出,請再按一次(同一個 token 不會重複下單)", () => {
+    expect(CHECKOUT_NO_RESPONSE_MESSAGE).toBe("連線中斷,訂單可能已經送出。請再按一次「送出訂單」,同一筆結帳不會重複下單。");
+    // supabase-js 斷線時回 { message: "TypeError: Failed to fetch", hint: "", code: "" }
+    expect(checkoutExceptionMessage(new MarketDbError({ message: "TypeError: Failed to fetch", hint: "", code: "" }))).toBe(CHECKOUT_NO_RESPONSE_MESSAGE);
+    expect(checkoutExceptionMessage(new MarketDbError({ message: "<html>504 Gateway Time-out</html>" }))).toBe(CHECKOUT_NO_RESPONSE_MESSAGE);
+    expect(checkoutExceptionMessage(new TypeError("Load failed"))).toBe(CHECKOUT_NO_RESPONSE_MESSAGE);
+    expect(checkoutExceptionMessage(new Error("unexpected"))).toBe(CHECKOUT_NO_RESPONSE_MESSAGE);
+  });
+
+  it("資料庫帶錯誤代碼回絕(交易已經回滾、確定沒建單):照 db.ts 的中文,不叫人再按", () => {
+    expect(checkoutExceptionMessage(new MarketDbError({ message: "permission denied", code: "42501" }))).toBe("沒有權限做這個動作");
+    expect(checkoutExceptionMessage(new MarketDbError({ message: "boom", code: "XX000" }))).toBe("下單失敗,請稍後再試。(錯誤代碼 XX000)");
   });
 });
