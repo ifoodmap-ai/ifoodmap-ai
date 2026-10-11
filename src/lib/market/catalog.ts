@@ -70,6 +70,16 @@ export const fetchStoreProducts = async (supplierId: string): Promise<MarketProd
   ).filter(isPubliclyVisible);
 };
 
+/**
+ * 購物車、結帳用:依 id 重新抓商品(最新的價格、庫存、店家條件)。不篩可見性 —— 下架的交給 buildCart 標成「已下架」。
+ * 不是 uuid 的 id 丟掉;一個都沒有就不查。
+ */
+export const fetchProductsByIds = async (ids: readonly string[]): Promise<MarketProductRow[]> => {
+  const valid = [...new Set(ids)].filter(isUuid);
+  if (valid.length === 0) return [];
+  return unwrap(await marketDb<MarketProductRow[]>("market_products").select(PRODUCT_WITH_STORE).in("id", valid));
+};
+
 // ---------------------------------------------------------------------
 // 首頁篩選(條件放在網址 ?q=&cat=&city=&temp=,可以分享、上一頁不會掉)
 // ---------------------------------------------------------------------

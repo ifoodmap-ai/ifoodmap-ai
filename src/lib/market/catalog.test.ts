@@ -24,6 +24,10 @@ vi.mock("@/integrations/supabase/client", () => ({
           call.filters.push(["eq", c, v]);
           return builder;
         },
+        in: (c: string, v: unknown) => {
+          call.filters.push(["in", c, v]);
+          return builder;
+        },
         order: (c: string, o: { ascending: boolean }) => {
           call.filters.push(["order", c, o.ascending]);
           return builder;
@@ -46,6 +50,7 @@ import {
   fetchListedProducts,
   fetchMarketProduct,
   fetchMarketStore,
+  fetchProductsByIds,
   fetchStoreProducts,
   filterProducts,
   filtersFromParams,
@@ -133,6 +138,16 @@ describe("公開查詢", () => {
     await expect(fetchStoreProducts(SUPPLIER_A)).rejects.toBeInstanceOf(MarketDbError);
     await expect(fetchListedProducts()).rejects.toBeInstanceOf(MarketDbError);
     await expect(fetchMarketProduct(CABBAGE.id)).rejects.toBeInstanceOf(MarketDbError);
+  });
+
+  it("購物車:依 id 重新抓(去重、丟掉不是 uuid 的;不篩可見性);一個都沒有就不查", async () => {
+    rows.value = [CABBAGE, { ...BEEF, review_status: "pending" }];
+    const list = await fetchProductsByIds([CABBAGE.id, CABBAGE.id, "abc", BEEF.id]);
+    expect(calls[0].filters).toEqual([["in", "id", [CABBAGE.id, BEEF.id]]]);
+    expect(calls[0].select).toContain("market_stores(");
+    expect(list).toHaveLength(2);
+    await expect(fetchProductsByIds(["abc"])).resolves.toEqual([]);
+    expect(calls).toHaveLength(1);
   });
 });
 
