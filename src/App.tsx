@@ -35,6 +35,10 @@ import MarketHomePage from "./pages/market/MarketHomePage";
 import MarketProductPage from "./pages/market/MarketProductPage";
 import MarketStorePage from "./pages/market/MarketStorePage";
 import MarketNotFound from "./pages/market/MarketNotFound";
+import MarketCartPage from "./pages/market/MarketCartPage";
+import MarketCheckoutPage from "./pages/market/MarketCheckoutPage";
+import MarketOrderLookupPage from "./pages/market/MarketOrderLookupPage";
+import MarketLegalPage from "./pages/market/MarketLegalPage";
 
 // 平台營運後台(僅 admin 站)
 import AdminRoute from "./components/AdminRoute";
@@ -165,6 +169,11 @@ const MainRoutes = () => (
       <Route index element={<MarketHomePage />} />
       <Route path="p/:productId" element={<MarketProductPage />} />
       <Route path="s/:supplierId" element={<MarketStorePage />} />
+      <Route path="cart" element={<MarketCartPage />} />
+      <Route path="checkout" element={<MarketCheckoutPage />} />
+      <Route path="orders/:token" element={<MarketOrderLookupPage />} />
+      <Route path="terms" element={<MarketLegalPage doc="terms" />} />
+      <Route path="privacy" element={<MarketLegalPage doc="privacy" />} />
       <Route path="*" element={<MarketNotFound />} />
     </Route>
 
