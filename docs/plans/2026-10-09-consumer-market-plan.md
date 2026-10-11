@@ -18042,3 +18042,28 @@ gate / render / handler / index 與 `config.toml` 先照計畫的程式碼區塊
   照原樣做會看不到結果。DEPLOY.md 改成只帶 `X-Forwarded-For`、`X-Real-IP`,候選清單拿掉 `cf-connecting-ip`。
 - 加固之後 `noip` 的意義變了:原本拿不到 cf / x-real-ip 時會退回 XFF,現在直接算 `noip`(全站共用每小時 60、每天 300)。正式請求都經過 Cloudflare,正常不會發生;
   開放後「開放前檢查」的 `noip_attempts_24h` 不是 0 就要查。
+
+### 2026-10-12:第 3 階段資料庫加固 20261012100000_market_hardening(commit `fc25de1`、`9aa90d2`,分支 `market`)
+
+130000 / 130100 / 130200 已經套用,不改原檔;新的一支用 CREATE OR REPLACE 換掉三支函式、新增逾時自動取消。每一項都先寫測試、看到失敗才算數。未套用、未 push。**以 repo 為準。**
+
+1. **IP 退路不再信任 X-Forwarded-For**(`market_client_ip`,簽章不變):cf-connecting-ip → x-real-ip → NULL(NULL 照舊算進全站共用的 `noip`)。不帶新 migration 跑測試時,只帶 XFF 的下單被算在偽造的那個 IP 的 `ip` 與 `ipo` 兩格(`true|0|0|2`)—— 這就是補起來的洞。`market_checkout.test.sql` 第 86–88 行「再沒有才用 x-forwarded-for 第一段」改成期待 NULL(項數不變),檔頭改成只帶 hardening(沒帶時那一項會紅,屬預期)。
+2. **被擋的請求改成非同步 commit**(`market_rate_take` 第 144 行):擋下的那條路先 `set_config('synchronous_commit', 'off', true)` 再寫擋下紀錄;沒被擋的路(建單)不動。測試:成功下單後維持原值、被擋(直接呼叫、經下單 RPC 層層 SECURITY DEFINER)之後是 off(SET LOCAL 會跨出有 SET 子句的函式,一路留到交易結束)。檔頭寫明取捨與「以後別的呼叫端被擋後還要寫重要資料,要自己改回 on」。
+3. **72 小時自動取消**(`market_expire_orders`,第 283 行起;pg_cron `ifoodmap-market-expire-orders` `*/10 * * * *`):
+   - 標記在第 290 行、唯一的常數在第 291 行(全檔只有一處;`autoCancel.test.ts` 已經讀得到、通過);取消原因用 `format()` 從同一個常數組。原因的逗號照 repo 既有字串用半形「,」(規格打的是全形)。
+   - 候選:pending 看 `created_at`、awaiting_payment 看最後一筆 `to_status = 'awaiting_payment'` 紀錄的時間,早於 `now() - 72h`;依 `created_at, id`、每次 200 張。每張單在自己的子交易裡 `FOR UPDATE SKIP LOCKED` → 上鎖後重讀狀態與時間 → 寫取消紀錄;失敗 `RAISE WARNING` 跳過。身分交給 guard(pg_cron 沒有 JWT → system),補庫存與通知照既有的 trigger。
+   - **guard**:payload 的 CHECK 只管「物件、1000 bytes」不會擋,但 `market_guard_event` 原本把出貨以外的 payload 一律清成 `{}`,auto_expire 會被默默拿掉,所以 guard 一起換(第 250 行起):auto_expire 只能用在 **system** 的 `cancelled`、值只能是 pending / awaiting_payment **而且要等於取消前的狀態**,否則 22023 `auto_expire_invalid`;帶了也只留這個鍵。「只有 system」與「等於取消前的狀態」是我加的(規格只要求 cancelled 與兩個值):供應商、管理員帶不得,冒充不了「系統自動取消」的通知信。
+   - 沒有加部分索引:既有的 `market_orders_status_idx (status, created_at DESC)` 已經涵蓋。
+4. **測試** `market_hardening.test.sql` 31 項:IP 7 項(含只帶 XFF 的下單算 noip)、非同步 commit 3 項、自動取消 21 項(權限、排程、73 / 71 小時、下單 100 小時前但 1 小時前才進待匯款、進待匯款 73 小時、已接單 / 已收款 / 已出貨不論多舊、庫存補回、通知佇列多一筆、一張失敗不影響整批、冪等、一次 200 張且先取最舊的、auto_expire 的 guard 規則 4 項)。
+   - 「73 小時前進入待匯款」寫不出來:guard 一律把紀錄時間改成伺服器時間,這個帳號也不能設 `session_replication_role`(實測 42501)。所以只在乾跑交易裡把 guard 換成照送來的值寫的版本、建完 fixture 再用換掉前的 `pg_get_functiondef` 換回來,並比對逐字相同。換函式不鎖表(不用 `ALTER TABLE … DISABLE TRIGGER`)。
+   - 線上本來就該取消的單會先在交易裡清掉,張數才剛好。下單開關、通知網址只在交易裡改(跟既有測試一樣),殘留五個 0。
+   - 突變 6 處殺 5:批次上限、每張單的子交易、只有 system、值等於取消前的狀態、只在被擋的路改非同步。沒殺的是「上鎖後重讀」改錯:單一連線做不出候選查詢與上鎖之間的競態,只能靠讀程式;guard 的 stale 檢查是第二道。
+5. **還原檔**:先停排程、再刪 `market_expire_orders`;三支函式照抄 130000 / 130200(生成時逐字比對原檔)。`market_hardening_rollback.test.sql` 4 項:三支函式的 md5(pg_get_functiondef)、權限、其他排程的指紋都跟線上套用前相同,而且 XFF 照舊會退回。不帶還原檔時紅 3 項。
+
+**數字**(乾跑只帶 20261012100000,已套用的 120000–130200 都不帶;每支之後殘留五個 0):`market_hardening` **31**、`market_orders` 67、`market_notify` 9、`market_checkout` 93、`market_hardening_rollback` **4**(帶 migration 加還原檔)。vitest:`6f24f18` 的乾淨副本 **116 檔 / 1843 項**全過(含 `autoCancel.test.ts` 的標記比對)。
+
+**沒有處理 / 給 DEPLOY.md 的人**:
+
+- 取消失敗只有 `RAISE WARNING`,`cron.job_run_details` 不記 WARNING(只記成功的指令或錯誤),實際上看不到。真正的監控是「過期但還沒被取消」的單:`SELECT count(*) FROM public.market_orders WHERE status = 'pending' AND created_at < now() - interval '72 hours 20 minutes'`(待匯款同理),正常應該是 0。
+- 整批是同一個交易:最多 200 張單和它們商品的鎖會留到整批跑完(通常 0–5 張,很快)。理論上會跟同時在拒單 / 取消、而且共用商品的供應商死結,由資料庫偵測;排程這邊被選中時只有那一張進 WARNING,下一輪再試。
+- 如果有 200 張以上「永遠取消不了」的壞資料,排在後面的單會一直輪不到(目前只有沒有任何紀錄的訂單會這樣,正常建單不會發生)。
