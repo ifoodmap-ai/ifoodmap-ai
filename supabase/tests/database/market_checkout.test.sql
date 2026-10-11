@@ -321,7 +321,7 @@ SELECT pg_temp.expect('拿不到 IP 的請求不算 IP 額度(改算全站共用
 SELECT pg_temp.expect('計數表裡沒有明文 Email / 電話 / IP(bucket 都是雜湊格式)',
   (SELECT count(*)::text FROM public.market_rate_counters
     WHERE bucket NOT LIKE 'test:%' AND bucket <> 'global|day'
-      AND bucket !~ '^((ip|ip48|email|phone):[0-9a-f]{16}|noip)[|](1h|day)$'), '0');
+      AND bucket !~ '^((ip|ip48|ip48o|email|phone):[0-9a-f]{16}|noip)[|](1h|day)$'), '0');
 SELECT pg_temp.expect('anon 讀不到訂單、明細、紀錄、計數',
   concat_ws('|',
     pg_temp.as_val('anon', pg_temp.anon(), $q$SELECT count(*)::text FROM public.market_orders$q$),
@@ -542,16 +542,43 @@ SELECT pg_temp.expect('B 段超額(同一個 Email 第 4 次):RATE_LIMITED、不
                WHERE bucket = public.market_rate_key('ip', '198.51.109.4',
                                                      (SELECT value FROM public.app_config WHERE key = 'market_rate_salt')) || '|1h'), '0')),
   'RATE_LIMITED|3|true|1');
--- (c) IPv6:同一個 /48 的不同 /64 輪流送,每小時第 21 次被 /48 彙總擋下(前 20 次都是缺貨:失敗的嘗試也算數);別的 /48 不受影響
-SELECT pg_temp.expect('同一個 IPv6 /48 的 21 個不同 /64:第 21 次 RATE_LIMITED;另一個 /48 照常',
+-- (c) IPv6 /48:很多用戶共用同一個 /48(手機、家用寬頻的 /64、/56 都是從業者的 /48 位址池切出來的),
+--     所以 A 段的 /48 只防灌爆(每小時 200 次嘗試),嚴格的額度只算成單(B 段 ip48o:同一個 /48 每天 20 單)
+-- (c1) 複審 R6b:同一個 /48 裡別人用 4 個 /64 各送 5 次空購物車,另一個 /64 的正常買家第一次下單照樣成功
+SELECT pg_temp.expect('同一個 /48:別人 4 個 /64 各送 5 次空購物車(20 次)之後,另一個 /64 的正常買家照樣能下單',
   (SELECT string_agg(COALESCE(pg_temp.place(pg_temp.anon(),
-                                            CASE WHEN n <= 21 THEN '2001:db8:48:' || to_hex(n) || '::1' ELSE '2001:db8:49:1::1' END,
-            pg_temp.co('v6-' || n || '@market-test.invalid', jsonb_build_array(pg_temp.item('b1', 99)),
-                       '{"a9200000-0000-4000-8000-00000000000b":"cod"}')) ->> 'code', 'ok'), ',' ORDER BY n)
-     FROM generate_series(1, 22) AS n),
-  repeat('OUT_OF_STOCK,', 20) || 'RATE_LIMITED,OUT_OF_STOCK');
-SELECT pg_temp.expect('/48 彙總的 bucket 也只存加鹽雜湊(ip48:16 位雜湊)',
-  (SELECT (count(*) > 0 AND bool_and(bucket ~ '^ip48:[0-9a-f]{16}[|](1h|day)$'))::text
+            CASE WHEN n < 20 THEN '2001:db8:48:' || to_hex(n / 5) || '::1' ELSE '2001:db8:48:ff::1' END,
+            CASE WHEN n < 20 THEN pg_temp.co('v6junk-' || n || '@market-test.invalid', '[]'::jsonb, '{}'::jsonb)
+                 ELSE pg_temp.co('v6-neighbor@market-test.invalid', jsonb_build_array(pg_temp.item('a2', 1)),
+                                 '{"a9200000-0000-4000-8000-00000000000a":"cod"}') END) ->> 'code', 'ok'), ',' ORDER BY n)
+     FROM generate_series(0, 20) AS n),
+  repeat('EMPTY_CART,', 20) || 'ok');
+-- (c2) 同一個 /48 當天第 21 單 RATE_LIMITED(B 段 ip48o):不建單、不動庫存。前 20 單用 20 個不同的 /64、不同 Email
+SELECT pg_temp.place(pg_temp.anon(), '2001:db8:4a:' || to_hex(n) || '::1', pg_temp.co('v6o-' || n || '@market-test.invalid',
+  jsonb_build_array(pg_temp.item('a2', 1)), '{"a9200000-0000-4000-8000-00000000000a":"cod"}'))
+  FROM generate_series(1, 20) AS n;
+INSERT INTO _ctx VALUES ('o48_stock', to_jsonb((SELECT stock FROM public.market_products WHERE id = 'a9300000-0000-4000-8000-0000000000a1')));
+INSERT INTO _ctx VALUES ('o48_21', pg_temp.place(pg_temp.anon(), '2001:db8:4a:15::1', pg_temp.co('v6o-21@market-test.invalid',
+  jsonb_build_array(pg_temp.item('a1', 3)), '{"a9200000-0000-4000-8000-00000000000a":"cod"}')));
+SELECT pg_temp.expect('同一個 /48 當天第 21 單:RATE_LIMITED、不建單、庫存不變;這個 /48 的成單計數 20(只算成單)',
+  concat_ws('|',
+    (SELECT v ->> 'code' FROM _ctx WHERE k = 'o48_21'),
+    (SELECT count(*)::text FROM public.market_orders WHERE buyer_email LIKE 'v6o-%@market-test.invalid'),
+    ((SELECT stock FROM public.market_products WHERE id = 'a9300000-0000-4000-8000-0000000000a1')
+       = (SELECT v::text::integer FROM _ctx WHERE k = 'o48_stock'))::text,
+    COALESCE((SELECT hits::text FROM public.market_rate_counters
+               WHERE bucket = public.market_rate_key('ip48o', '2001:db8:4a::',
+                                                     (SELECT value FROM public.app_config WHERE key = 'market_rate_salt')) || '|day'), '0')),
+  'RATE_LIMITED|20|true|20');
+-- (c3) 同一個 /48 一小時內第 201 次嘗試 RATE_LIMITED(A 段 ip48 每小時 200;201 個不同的 /64,每個只送 1 次空購物車)
+SELECT pg_temp.expect('同一個 /48 一小時內第 201 次嘗試 RATE_LIMITED',
+  (SELECT string_agg(COALESCE(pg_temp.place(pg_temp.anon(), '2001:db8:4b:' || to_hex(n) || '::1',
+            pg_temp.co('v6f-' || n || '@market-test.invalid', '[]'::jsonb, '{}'::jsonb)) ->> 'code', 'ok'), ',' ORDER BY n)
+     FROM generate_series(1, 201) AS n),
+  repeat('EMPTY_CART,', 200) || 'RATE_LIMITED');
+SELECT pg_temp.expect('/48 的兩種 bucket(A 段 ip48、B 段 ip48o)都只存加鹽雜湊',
+  (SELECT (count(*) FILTER (WHERE bucket LIKE 'ip48:%') > 0 AND count(*) FILTER (WHERE bucket LIKE 'ip48o:%') > 0
+           AND bool_and(bucket ~ '^ip48o?:[0-9a-f]{16}[|](1h|day)$'))::text
      FROM public.market_rate_counters WHERE bucket LIKE 'ip48%'),
   'true');
 -- 5-6 拿不到 IP 時的保底額度:全站共用一格 noip(每小時 60、每天 300,回 RATE_LIMITED);被擋的不吃 B 段額度

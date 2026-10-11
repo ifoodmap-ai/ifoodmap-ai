@@ -18,7 +18,9 @@
 -- 防灌單(market_rate_take,不沿用 ai_rate_take —— 理由見計畫「關鍵技術決定」第 1 點);平台管理員(業主實測)不限流:
 --   A 段:同一個網路的嘗試次數,失敗的嘗試也算(回 RATE_LIMITED)
 --     同一個 IP(IPv4 用完整位址、IPv6 取 /64):每小時 5 次、每天 20 次
---     IPv6 另外彙總到 /48(bucket 種類 ip48):每小時 20 次、每天 80 次 —— 一個用戶端常拿到整段 /48,換 /64 繞不過
+--     IPv6 另外彙總到 /48(bucket 種類 ip48):每小時 200 次,只用來防灌爆 —— /48 是電信、寬頻業者的共用位址池,
+--       手機、家用寬頻拿到的 /64、/56 都從這裡切,一個 /48 背後可能是成千上萬個互不相干的用戶;
+--       所以 /48 嚴格的額度只算成單(B 段的 ip48o),不算嘗試(不然鄰居送幾次空購物車就能讓別人下不了單)
 --     拿不到 IP:改用全站共用的一格 noip,每小時 60 次、每天 300 次(拿得到 IP 時不加這條)。
 --       正常情況一定拿得到 IP(計畫 Task 57 Step 8-2 會驗);這條只是 IP 取不到時的保險 ——
 --       被觸發代表 IP 取得壞了(所有拿不到 IP 的請求共用這一格,正常買家也會被擋),要去查。
@@ -26,6 +28,8 @@
 --     未達最低金額等失敗都不吃這段
 --     同一個 Email(去 +tag、gmail 去點,沿用 supplier_mail_email_key):每小時 3 次、每天 10 次
 --     同一支電話:每天 10 次;全站:每天 500 次(DAILY_CAP)
+--     IPv6 同一個 /48:每天 20 單(bucket 種類 ip48o,跟 A 段的 ip48 名稱不同;只有 IPv6 才加)——
+--       A 段的 /48 放寬之後一定要有這條,不然用假訂單吃光全站 500 單會變便宜
 --     B 段被擋時不建單、不動庫存;A 段已經扣的照算
 --   同一段裡任何一條超過就整段退回(被擋的那次不吃那一段的額度)。
 --   IP / Email / 電話只以「加鹽 sha256 前 16 hex」落地(鹽 = app_config.market_rate_salt,migration 產生,不印出來)
@@ -328,12 +332,12 @@ BEGIN
         jsonb_build_object('bucket', public.market_rate_key('ip', v_ip, v_salt), 'window', '1h', 'limit', 5),
         jsonb_build_object('bucket', public.market_rate_key('ip', v_ip, v_salt), 'window', 'day', 'limit', 20)
       );
-      -- IPv6 另外彙總到 /48(market_client_ip 已經把 IPv6 正規化成 /64 的網段位址)
+      -- IPv6 另外彙總到 /48(market_client_ip 已經把 IPv6 正規化成 /64 的網段位址):每小時 200 次,只防灌爆。
+      -- /48 是很多用戶共用的位址池,嚴格的額度只算成單(第 7 步 B 段的 ip48o,每天 20 單)
       IF position(':' IN v_ip) > 0 THEN
         v_ip48 := host(network(set_masklen(v_ip::inet, 48)));
         v_rules := v_rules || jsonb_build_array(
-          jsonb_build_object('bucket', public.market_rate_key('ip48', v_ip48, v_salt), 'window', '1h', 'limit', 20),
-          jsonb_build_object('bucket', public.market_rate_key('ip48', v_ip48, v_salt), 'window', 'day', 'limit', 80)
+          jsonb_build_object('bucket', public.market_rate_key('ip48', v_ip48, v_salt), 'window', '1h', 'limit', 200)
         );
       END IF;
     ELSE
@@ -476,6 +480,12 @@ BEGIN
       jsonb_build_object('bucket', public.market_rate_key('phone', v_phone, v_salt), 'window', 'day', 'limit', 10),
       jsonb_build_object('bucket', 'global', 'window', 'day', 'limit', 500, 'code', 'DAILY_CAP')
     );
+    -- IPv6:同一個 /48 每天 20 單(bucket ip48o,跟 A 段的 ip48 名稱不同,維持「A 計數 → 商品 → B 計數」不重疊)
+    IF v_ip48 IS NOT NULL THEN
+      v_rules := v_rules || jsonb_build_array(
+        jsonb_build_object('bucket', public.market_rate_key('ip48o', v_ip48, v_salt), 'window', 'day', 'limit', 20)
+      );
+    END IF;
     v_rate := public.market_rate_take(v_rules);
     IF NOT COALESCE((v_rate->>'ok')::boolean, false) THEN
       RETURN jsonb_build_object('ok', false, 'code', v_rate->>'code', 'retry_after', (v_rate->>'retry_after')::integer);
@@ -533,7 +543,7 @@ COMMENT ON FUNCTION public.market_place_order(jsonb) IS
 REVOKE ALL ON FUNCTION public.market_place_order(jsonb) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.market_place_order(jsonb) TO anon, authenticated, service_role;
 
--- 下單開關的狀態,給前端決定要不要讓人進結帳(真正的關卡仍是 market_place_order 第 4 步)。
+-- 下單開關的狀態,給前端決定要不要讓人進結帳(真正的關卡仍是 market_place_order 第 3 步)。
 -- {open:對外開放了沒, can_order:這位呼叫者現在能不能下單(開放了,或是平台管理員)};不洩漏 app_config 其他內容。
 CREATE OR REPLACE FUNCTION public.market_checkout_status()
 RETURNS jsonb
