@@ -550,9 +550,9 @@ BEGIN
            'ship_city', o.ship_city,
            'ship_address', o.ship_address,
            'buyer_note', o.buyer_note,
+           -- 店家:店名、電話給買家聯絡;suppliers.contact_email 是新訂單的通知信箱,不送到瀏覽器(第 1 階段已定案)
            'store', jsonb_build_object('supplier_id', s.supplier_id, 'name', sp.name, 'phone', sp.phone,
-                                       'contact_email', sp.contact_email, 'ship_days', s.ship_days,
-                                       'return_policy', s.return_policy),
+                                       'ship_days', s.ship_days, 'return_policy', s.return_policy),
            'items', (SELECT COALESCE(jsonb_agg(jsonb_build_object(
                               'product_name', i.product_name, 'spec', i.spec, 'unit_price', i.unit_price,
                               'qty', i.qty, 'line_total', i.line_total, 'temperature', i.temperature)

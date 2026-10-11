@@ -419,3 +419,14 @@ SELECT pg_temp.expect('店家被管理員停用、供應商帳號停用:商品�
 UPDATE public.suppliers SET is_active = true WHERE id = 'a9200000-0000-4000-8000-00000000000a';
 SELECT pg_temp.exec_with_claims(pg_temp.jwt('a9100000-0000-4000-8000-000000000003', true), $q$
   UPDATE public.market_stores SET is_enabled = true WHERE supplier_id = 'a9200000-0000-4000-8000-00000000000b'$q$);
+
+-- ---------------------------------------------------------------------
+-- 5. 第 2 階段審查修正(2026-10-11)
+-- ---------------------------------------------------------------------
+-- 5-1 查單不給店家的 contact_email(新訂單通知信箱,第 1 階段已定案不送到瀏覽器);店名、電話留著
+SELECT pg_temp.expect('查單回應沒有 contact_email;兩家店的店名、電話都還在',
+  (SELECT (position('contact_email' IN r::text) = 0)::text || '|' ||
+          (SELECT string_agg(o -> 'store' ->> 'name', ',' ORDER BY o -> 'store' ->> 'name') FROM jsonb_array_elements(r -> 'orders') o) || '|' ||
+          (SELECT bool_and(o -> 'store' ? 'phone') FROM jsonb_array_elements(r -> 'orders') o)::text
+     FROM (SELECT pg_temp.lookup(v ->> 'token') AS r FROM _ctx WHERE k = 'happy') x),
+  'true|市集測試 A 店,市集測試 B 店|true');
