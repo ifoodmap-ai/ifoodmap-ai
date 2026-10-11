@@ -17511,3 +17511,13 @@ gate / render / handler / index 與 `config.toml` 先照計畫的程式碼區塊
 - 兩個分頁在 storage 事件送達之前(毫秒級)同時加入購物車,後寫的會蓋掉先寫的(localStorage 沒有原子的讀改寫)。
 - 超過庫存的那一列照樣算進小計、運費、免運與最低金額;這家店已經因為「超過庫存」不能結帳,改了數量就重算,只影響顯示。
 - `buildCart` 沒有檢查一次最多 10 家店(`CART_LIMITS.maxStores`):Task 50 結帳頁送出前檢查,伺服器也會回 `TOO_MANY_STORES`。
+
+### 2026-10-11:Task 40–42 補充(fresh-context 審查後)(commit `2074cfc`、`4f0e541`,分支 `market`)
+
+接上面「Task 40–42 `market-notify`」一節。fresh-context 審查(只給驗收條件與 diff 範圍)八項驗收全過,另外找到 1 個低嚴重度缺口,已修;也照審查的說明把閘門測試補齊。**以 repo 為準。**
+
+1. **被截斷的 token 片段也要遮**(`2074cfc`):`createResendSender` 只留 Resend 錯誤內文的前 300 字,截點落在 token 中間時,上一節的 `redactLog` 只比對完整 token,前半段會留在 log(截點不同可留 1–42 字;留到 40 字以上只剩幾字可猜,而 `market_get_orders` 開放 anon)。改成逐一處理 log 裡的字串(不在序列化後的 JSON 上改,跳脫字元不會被弄壞),token 與任何 **8 字以上的 token 片段**都換成 `***`(少於 8 字最多透露 42 bits)。`handler.test.ts` +1:截在 token 中間、從 token 中間開始(沒有網址前綴)兩種,log 裡找不到任何 8 字片段;先紅(log 留下 token 前 20 字)後綠。
+2. **閘門測試走過每一種信**(`4f0e541`,項數不變):上一節「每一種值」那項原本只走下單確認、新訂單、接單、平台取消 5 封;測試裡另外補拒單、供應商自己取消兩筆紀錄(不改計畫的 fixture),現在每個值都走下單確認 + 7 種狀態信共 9 封,並檢查 7 種信都出現過。突變驗證:讓出貨信繞過閘門,只有這項紅(計畫原本的出貨測試是在閘門開放時跑的)。
+3. **Node 端到端(scratchpad,不進 repo)**:照 ai 的做法(Node 25 直接載入真正的 `market-notify/index.ts`,Deno 換成替身、`npm:@supabase/supabase-js@2` 用 loader 換成記憶體假 DB、Resend 用 mock fetch,沒有任何網路請求)16 / 16 過:11 種不開的值、對照組、每次請求重讀、Resend 422 夾帶連結、截點落在 token 中間(走真正的 300 字截斷)、403 / 401 / 503。同一套換成計畫的照抄版 → 422 那項紅(console 裡是完整 token);index.ts 寫死 `isLive: () => true` → 13 項紅;換成 `4c2d56c`(只遮完整 token)→ 截斷那項紅。
+4. **數字(取代上一節第 5 點的總數)**:Task 42 Step 4 的 Expected → **`Tests  43 passed (43)`**(gate 8 + render 9 + handler 26);「F. 共用指令與基準數字」第 2、3 階段的總數比計畫**多 13 項**(上一節寫的 12 改成 13)。`4f0e541` 的乾淨副本(`git archive`)全套 **106 檔 / 1642 項**全過(含其他實作者同時 commit 的檔);tsc strict(上一節第 4 點的兩份設定)0 error,eslint 沒有輸出。
+5. 審查的其他說明:OPTIONS 回 200(CORS 預檢)是「非 POST 一律 405」唯一的例外,沒有實際影響。上一節第 6 點「自查發現、沒有處理」的四項不變。
