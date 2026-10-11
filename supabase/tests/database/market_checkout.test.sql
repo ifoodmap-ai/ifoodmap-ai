@@ -312,16 +312,16 @@ SELECT pg_temp.expect('同一個 IP 一小時第 6 次 RATE_LIMITED',
             jsonb_build_array(pg_temp.item('a2', 1)), '{"a9200000-0000-4000-8000-00000000000a":"cod"}')) ->> 'code', ',' ORDER BY n)
      FROM generate_series(1, 6) AS n),
   'RATE_LIMITED');
-SELECT pg_temp.expect('拿不到 IP 的請求不算 IP 額度(不會所有人共用一格)',
+SELECT pg_temp.expect('拿不到 IP 的請求不算 IP 額度(改算全站共用的保底 noip,每小時 60 次,見第 5 節)',
   pg_temp.place(pg_temp.anon(), NULL, pg_temp.co('noip@market-test.invalid',
     jsonb_build_array(pg_temp.item('a2', 1)), '{"a9200000-0000-4000-8000-00000000000a":"cod"}')) ->> 'ok',
   'true');
--- 每個 bucket 都必須是「種類:16 位雜湊|窗格」或 global|day(單元測試的 test: 除外)。
+-- 每個 bucket 都必須是「種類:16 位雜湊|窗格」、global|day 或拿不到 IP 時的 noip|窗格(單元測試的 test: 除外)。
 -- 原本用 bucket ~ '@|09[0-9]{8}|198\.51' 找明文,但雜湊本身是十六進位,偶爾會出現「09 + 8 位數字」(鹽每次隨機),乾跑時紅時綠
 SELECT pg_temp.expect('計數表裡沒有明文 Email / 電話 / IP(bucket 都是雜湊格式)',
   (SELECT count(*)::text FROM public.market_rate_counters
     WHERE bucket NOT LIKE 'test:%' AND bucket <> 'global|day'
-      AND bucket !~ '^(ip|ip48|email|phone):[0-9a-f]{16}[|](1h|day)$'), '0');
+      AND bucket !~ '^((ip|ip48|email|phone):[0-9a-f]{16}|noip)[|](1h|day)$'), '0');
 SELECT pg_temp.expect('anon 讀不到訂單、明細、紀錄、計數',
   concat_ws('|',
     pg_temp.as_val('anon', pg_temp.anon(), $q$SELECT count(*)::text FROM public.market_orders$q$),
@@ -554,3 +554,23 @@ SELECT pg_temp.expect('/48 彙總的 bucket 也只存加鹽雜湊(ip48:16 位雜
   (SELECT (count(*) > 0 AND bool_and(bucket ~ '^ip48:[0-9a-f]{16}[|](1h|day)$'))::text
      FROM public.market_rate_counters WHERE bucket LIKE 'ip48%'),
   'true');
+-- 5-6 拿不到 IP 時的保底額度:全站共用一格 noip(每小時 60、每天 300,回 RATE_LIMITED);被擋的不吃 B 段額度
+--     (先清掉第 2 節「拿不到 IP」那一筆留下的 noip 計數,從 0 開始數;Email 用新的,第 2 節那筆已經吃過 noip@ 的額度)
+DELETE FROM public.market_rate_counters WHERE bucket LIKE 'noip|%';
+INSERT INTO _ctx VALUES ('g1', to_jsonb(COALESCE((SELECT hits FROM public.market_rate_counters WHERE bucket = 'global|day'), 0)));
+SELECT pg_temp.expect('沒有 IP 標頭:同一個 Email 連送 61 次(缺貨),前 60 次照常檢查、第 61 次 RATE_LIMITED',
+  (SELECT string_agg(COALESCE(pg_temp.place(pg_temp.anon(), NULL, pg_temp.co('noip-flood@market-test.invalid',
+            jsonb_build_array(pg_temp.item('b1', 99)), '{"a9200000-0000-4000-8000-00000000000b":"cod"}')) ->> 'code', 'ok'), ',' ORDER BY n)
+     FROM generate_series(1, 61) AS n),
+  repeat('OUT_OF_STOCK,', 60) || 'RATE_LIMITED');
+SELECT pg_temp.expect('……noip 計數 60(被擋的那次不算);不吃 B 段額度(Email、電話沒有計數,全站沒加)',
+  concat_ws('|',
+    COALESCE((SELECT hits::text FROM public.market_rate_counters WHERE bucket = 'noip|1h'), '0'),
+    COALESCE((SELECT hits::text FROM public.market_rate_counters
+               WHERE bucket = public.market_rate_key('email', 'noip-flood@market-test.invalid',
+                                                     (SELECT value FROM public.app_config WHERE key = 'market_rate_salt')) || '|1h'), '0'),
+    COALESCE((SELECT hits::text FROM public.market_rate_counters
+               WHERE bucket = public.market_rate_key('phone', '09' || lpad((abs(hashtext('noip-flood@market-test.invalid')) % 100000000)::text, 8, '0'),
+                                                     (SELECT value FROM public.app_config WHERE key = 'market_rate_salt')) || '|day'), '0'),
+    ((SELECT hits FROM public.market_rate_counters WHERE bucket = 'global|day') - (SELECT v::text::integer FROM _ctx WHERE k = 'g1'))::text),
+  '60|0|0|0');

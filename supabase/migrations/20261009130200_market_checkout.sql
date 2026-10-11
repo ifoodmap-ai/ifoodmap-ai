@@ -16,9 +16,12 @@
 --   開關擋下的嘗試不寫任何計數。🔴 改成 'true' = 對外開放,待業主核准。
 --
 -- 防灌單(market_rate_take,不沿用 ai_rate_take —— 理由見計畫「關鍵技術決定」第 1 點);平台管理員(業主實測)不限流:
---   A 段:同一個網路的嘗試次數,失敗的嘗試也算(回 RATE_LIMITED);拿不到 IP 就跳過整段
+--   A 段:同一個網路的嘗試次數,失敗的嘗試也算(回 RATE_LIMITED)
 --     同一個 IP(IPv4 用完整位址、IPv6 取 /64):每小時 5 次、每天 20 次
 --     IPv6 另外彙總到 /48(bucket 種類 ip48):每小時 20 次、每天 80 次 —— 一個用戶端常拿到整段 /48,換 /64 繞不過
+--     拿不到 IP:改用全站共用的一格 noip,每小時 60 次、每天 300 次(拿得到 IP 時不加這條)。
+--       正常情況一定拿得到 IP(計畫 Task 57 Step 8-2 會驗);這條只是 IP 取不到時的保險 ——
+--       被觸發代表 IP 取得壞了(所有拿不到 IP 的請求共用這一格,正常買家也會被擋),要去查。
 --   B 段:所有檢查都通過、準備建單時才扣,一次結帳不論幾家店都算 1;缺貨、價格變了、超過金額上限、配送不到、
 --     未達最低金額等失敗都不吃這段
 --     同一個 Email(去 +tag、gmail 去點,沿用 supplier_mail_email_key):每小時 3 次、每天 10 次
@@ -316,7 +319,7 @@ BEGIN
     RETURN jsonb_build_object('ok', false, 'code', 'MARKET_CLOSED');
   END IF;
 
-  -- 4. 限流 A 段:同一個網路的嘗試次數(失敗的嘗試也算);拿不到 IP 就跳過。平台管理員(業主實測)不限流
+  -- 4. 限流 A 段:同一個網路的嘗試次數(失敗的嘗試也算);拿不到 IP 就算進全站共用的 noip。平台管理員(業主實測)不限流
   IF NOT v_admin THEN
     v_salt := COALESCE((SELECT c.value FROM public.app_config c WHERE c.key = 'market_rate_salt'), 'ifoodmap-market-rate-fallback');
     v_ip := public.market_client_ip();
@@ -333,10 +336,17 @@ BEGIN
           jsonb_build_object('bucket', public.market_rate_key('ip48', v_ip48, v_salt), 'window', 'day', 'limit', 80)
         );
       END IF;
-      v_rate := public.market_rate_take(v_rules);
-      IF NOT COALESCE((v_rate->>'ok')::boolean, false) THEN
-        RETURN jsonb_build_object('ok', false, 'code', v_rate->>'code', 'retry_after', (v_rate->>'retry_after')::integer);
-      END IF;
+    ELSE
+      -- 拿不到 IP 時的保險:全站共用一格 noip(每小時 60、每天 300)。正常情況一定拿得到 IP(Task 57 Step 8-2 會驗),
+      -- 這一格被用到就代表 IP 取得壞了,要去查
+      v_rules := jsonb_build_array(
+        jsonb_build_object('bucket', 'noip', 'window', '1h', 'limit', 60),
+        jsonb_build_object('bucket', 'noip', 'window', 'day', 'limit', 300)
+      );
+    END IF;
+    v_rate := public.market_rate_take(v_rules);
+    IF NOT COALESCE((v_rate->>'ok')::boolean, false) THEN
+      RETURN jsonb_build_object('ok', false, 'code', v_rate->>'code', 'retry_after', (v_rate->>'retry_after')::integer);
     END IF;
   END IF;
 
