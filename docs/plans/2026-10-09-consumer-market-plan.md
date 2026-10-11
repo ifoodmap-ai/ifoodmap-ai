@@ -17412,3 +17412,24 @@ Supabase 在 2026-10-10 23:48(台北)自動更新 Storage schema(storage migrati
    - 45 項沒有測到 system 身分(service_role / 資料庫直連)與沒有 sub 的 authenticated JWT(第 1 階段第 2 輪複審的同類問題);實測行為正確(service_role 接轉帳單 OK、兩筆都記 `system`;沒有 sub → `ERR 42501:not_order_party`),但測試沒有釘住。
    - 乾跑 130000 會在線上的 `market_stores` / `market_products` 拿 SHARE ROW EXCLUSIVE 鎖(建外鍵),擋寫不擋讀,到 ROLLBACK 為止(每次幾秒)。
    - `market_*` 測試的 fixture 共用同一組 UUID / Email:兩支乾跑同時送會在唯一鍵上互等,超過 3 秒(`lock_timeout`)就失敗 —— 依序跑,不要並行。
+
+### 2026-10-11:Task 40–42 `market-notify` 寄信閘門、通知信、主程式(commit `3d36ed6`、`83408a0`、`6407d44`、`4c2d56c`,分支 `market`)
+
+gate / render / handler / index 與 `config.toml` 先照計畫的程式碼區塊抽出(依行號 sed,不重打);`render.ts` 與 `config.toml` 新增的那段跟計畫逐字相同。以下是不一樣的地方,每一項都先寫測試、看到失敗才改。**以 repo 為準。** 這三個 Task 沒有乾跑、沒有部署、沒有設定任何 secret。
+
+1. **閘門的接線改成測得到**(派工要求把閘門用測試釘死):
+   - `gate.ts` 多 `MARKET_LIVE_ENV`(= `"MARKET_NOTIFY_LIVE"`)與 `marketLiveFromEnv(get)`;`index.ts` 那一行從 `isLive(Deno.env.get("MARKET_NOTIFY_LIVE"))` 改成 `isLive: () => marketLiveFromEnv((k) => Deno.env.get(k))`(每次請求重讀)。index.ts 是 Deno 入口、vitest 跑不到,`handler.test.ts` 逐字比對這一行,而且 `isLive:` 只能出現一次。
+   - 計畫原本只驗 notify 的 `isLive` 五個值,主旨也是拿常數比。`gate.test.ts` +3、`handler.test.ts` +4:沒設、空字串、`TRUE`、`True`、`1`、`" true"`、`"true "`、`"\ttrue"`、`"true\n"`、`yes`、`false`(gate 另驗 `on`、`0`)走完整條路徑 —— 下單確認、新訂單、接單、平台取消共 5 封,全部 `to` = `["ifoodmaptw@gmail.com"]`、主旨用字面值比對以「[測試轉寄] 」開頭、回信是平台信箱、純文字開頭列原收件人、`notifications.recipient` 全是內部信箱;餐廳訂單的 `NOTIFY_LIVE=true` 打不開零售;剛好 `"true"` 才寄本人(對照組);每次請求重讀、不快取。
+   - 突變驗證:改成寬鬆比對(trim + 不分大小寫)、讀錯成 `NOTIFY_LIVE`、沒開時主旨不加前綴,各自 2 項紅;寬鬆比對只有新增的測試抓得到。
+2. **token 進 log 之前先遮掉**:`handler.ts` 新增 `redactLog` —— `placed` 帶了格式正確的 token 時,這次請求的每一筆 log(含寄信失敗的 `r.error`、500 的 `e.message`)先把 token 換成 `***`。照抄版會把 Resend 的回應內文(`createResendSender` 取前 300 字)原樣寫進 log,內文夾帶信件連結時 token 就進了 log(照抄版實測這項紅,log 裡是完整 token)。`handler.test.ts` 再 +4:閘門關 / 開時 token 只在信裡的連結(html 與純文字);token 對不上(403)、讀資料庫失敗(500)、寄信失敗、買家 Email 不能寄時,回應內文、每一筆 log、每一次資料庫讀寫(條件與內容)、資料表內容都沒有 token。
+3. **待匯款那筆的身分**:Task 32–34 一節「自查發現」第一點(跟接單的人同一個身分)已被 commit `f04df17` 改掉 —— migration 130000 現在一律記成 `system`、不記 actor_id。計畫 fixture 的 EV(4) `actor_role: "system"` 跟 migration 一致,沒有改。`render.test.ts` +1:`awaiting_payment` 不論 supplier / admin / system 都寄匯款資訊(之後 migration 再改也不影響寄信)。
+4. **函式的 tsc strict 型別檢查**(DEPLOY.md 與先前的勘誤都沒寫做法;沿用 2026-10-07 ai / notify-lead 在 scratchpad 的做法):
+   - compilerOptions:`target` ES2022、`module` ESNext、`moduleResolution` Bundler、`lib` [ES2022, DOM, DOM.Iterable]、`strict`、`noUnusedLocals`、`noFallthroughCasesInSwitch`、`allowImportingTsExtensions`、`skipLibCheck`、`noEmit`、`baseUrl` = repo 根目錄、`paths` `{"npm:@supabase/supabase-js@2": ["node_modules/@supabase/supabase-js"]}`、`types` []。
+   - files:Deno shim(`declare const Deno: { env: { get(key: string): string | undefined }; serve(handler: (req: Request) => Response | Promise<Response>): void };`)+ `supabase/functions/market-notify/index.ts`(連帶檢查 handler / gate / render、`_shared/db.ts`、`_shared/supplier-mail.ts`、`notify/gate.ts`、`ai/crypto.ts`、`src/lib/order-number.ts`);三支測試另一份設定(同上,`types` 改 ["node"]、`typeRoots` 指 repo 的 `node_modules/@types`、不用 shim 與 paths)。
+   - 結果:兩份都 0 error;另放一支故意寫錯的檔確認 strictNullChecks(TS2322)、noImplicitAny(TS7006)、noUnusedLocals(TS6133)都會報。ai / notify-lead 原本那兩份設定重跑也還是 0 error。`npx eslint supabase/functions/market-notify/` 沒有輸出。
+5. **數字**:Task 42 Step 4 的 Expected `Tests  30 passed (30)` → **`Tests  42 passed (42)`**(gate 8 + render 9 + handler 25);Task 40 Step 4 `5` → **8**、Task 41 Step 4 `8` → **9**。`4c2d56c` 的乾淨副本(`git archive`)全套 **105 檔 / 1619 項**全過(含其他實作者同時 commit 的檔);同一時間的工作目錄(含別人還沒 commit 的檔)106 檔 / 1634 項全過。「F. 共用指令與基準數字」第 2、3 階段的總數,在其他各節的調整之外再**多 12 項**(檔數不變)。
+6. **自查發現、沒有處理(記錄)**:
+   - `notifications` 寫入失敗不會被發現(insert 的 error 沒檢查,跟 notify 一樣):信照常寄,只是後台少一筆紀錄。
+   - 主旨直接放店名(純文字、不跳脫是對的),但店名裡的換行、Tab 沒有壓成空白(供應商申請通知信有壓);Resend 走 JSON API 不會變成標頭注入,只是主旨可能斷行。
+   - `NOTIFY_SECRET` 跟 notify 共用:拿到密鑰的人可以重送同一個 `event_id`,讓消費者重複收到同一封信(`placed` 要 token 雜湊對得上,偽造不了查詢連結);密鑰比對不是常數時間(同 notify)。
+   - 部署(Task 57)時 `--use-api` 要把 `../ai/crypto.ts`、`../notify/gate.ts`、`../../../src/lib/order-number.ts` 一起上傳(notify 已經用同樣的方式 import order-number);部署後的驗收要看到確認信真的寄到內部信箱、連結打得開。
