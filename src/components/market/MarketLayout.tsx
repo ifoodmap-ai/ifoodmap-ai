@@ -1,4 +1,4 @@
-// 消費者食材市集(/market/*)的共用版面:頁首(logo、導覽)、主內容(<Outlet/>)、頁尾(平台角色說明)。
+// 消費者食材市集(/market/*)的共用版面:頁首(logo、購物車)、主內容(<Outlet/>)、頁尾(平台角色說明、條款連結)。
 //
 // 手機優先;≤ 880px 是手機(跟形象站同一個分界),桌機用 Tailwind 任意斷點 min-[881px]:。
 // 無障礙:第一個 Tab 到的是「跳到主要內容」;<main id="market-main"> 可以接收焦點(scroll-mt-16:跳過去時不會被固定的頁首蓋住);
@@ -6,6 +6,8 @@
 // 換頁:點連結進到市集的另一頁會捲回頂端;離開市集時把分頁標題還原成進市集之前的。
 import { useEffect } from "react";
 import { Link, Outlet, useLocation, useNavigationType } from "react-router-dom";
+import { ShoppingCart } from "lucide-react";
+import { useCart } from "@/lib/market/useCart";
 
 export const MARKET_FOCUS_RING =
   "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-700 focus-visible:ring-offset-2";
@@ -29,6 +31,7 @@ export const useMarketTitle = (title: string | null | undefined) => {
 };
 
 export default function MarketLayout() {
+  const { count } = useCart();
   const { pathname } = useLocation();
   const navigationType = useNavigationType();
 
@@ -64,7 +67,21 @@ export default function MarketLayout() {
             <span className="text-base font-bold text-emerald-800">食材市集</span>
             <span className="sr-only">首頁</span>
           </Link>
-          <nav aria-label="市集" className="ml-auto flex items-center gap-1" />
+          <nav aria-label="市集" className="ml-auto flex items-center gap-1">
+            <Link
+              to="/market/cart"
+              aria-label={`購物車,${count} 件`}
+              className={`relative inline-flex min-h-11 min-w-11 items-center justify-center gap-1 rounded-md px-2 text-slate-800 hover:bg-slate-100 ${MARKET_FOCUS_RING}`}
+            >
+              <ShoppingCart className="h-5 w-5" aria-hidden="true" />
+              <span className="text-sm">購物車</span>
+              {count > 0 ? (
+                <span aria-hidden="true" className="rounded-full bg-emerald-700 px-1.5 text-xs font-semibold text-white">
+                  {count > 99 ? "99+" : count}
+                </span>
+              ) : null}
+            </Link>
+          </nav>
         </div>
       </header>
 
@@ -75,6 +92,14 @@ export default function MarketLayout() {
       <footer className="border-t border-slate-200 bg-white">
         <div className="mx-auto max-w-6xl space-y-2 px-4 py-6 text-sm text-slate-600">
           <p>iFoodmap 食材市集是媒合平台:商品由各店家販售、出貨與收款,發票由店家開立。</p>
+          <p className="flex flex-wrap gap-x-4 gap-y-1">
+            <Link to="/market/terms" className={`underline-offset-2 hover:underline ${MARKET_FOCUS_RING}`}>
+              服務條款
+            </Link>
+            <Link to="/market/privacy" className={`underline-offset-2 hover:underline ${MARKET_FOCUS_RING}`}>
+              隱私權政策
+            </Link>
+          </p>
         </div>
       </footer>
     </div>

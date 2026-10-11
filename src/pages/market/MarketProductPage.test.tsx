@@ -1,7 +1,7 @@
 // /market/p/:productId:商品資訊、店家卡、照片切換;沒上架的顯示預覽;找不到、壞網址。
 import { cleanup, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/integrations/supabase/client", () => ({ supabase: {} }));
 vi.mock("@/lib/market/catalog", async (importOriginal) => ({
@@ -10,7 +10,9 @@ vi.mock("@/lib/market/catalog", async (importOriginal) => ({
 }));
 
 import { fetchMarketProduct } from "@/lib/market/catalog";
-import { CABBAGE, STORE_A } from "@/lib/market/testFixtures";
+import { CABBAGE, SALMON, STORE_A } from "@/lib/market/testFixtures";
+import { cartStore } from "@/lib/market/useCart";
+import { createMemoryStorage } from "@/test/memory-storage";
 import MarketProductPage from "./MarketProductPage";
 import { renderMarketRoute } from "./testUtils";
 // 檔尾「離線與背景重抓失敗」那組測試用。分開寫、不併進上面幾行:第 2 階段 Task 46 會在上面那幾行做「找到 → 換成」
@@ -22,7 +24,14 @@ const PHOTO = (n: number) =>
   `${STORE_A.supplier_id}/${CABBAGE.id}/a9900000-0000-4000-8000-00000000000${n}.jpg`;
 const renderAt = (id: string) => renderMarketRoute(`/market/p/${id}`, [{ path: "/market/p/:productId", element: <MarketProductPage /> }]);
 
-afterEach(cleanup);
+beforeEach(() => {
+  vi.stubGlobal("localStorage", createMemoryStorage());
+  cartStore.resetForTests();
+});
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
 
 describe("MarketProductPage", () => {
   it("品名、規格、價格、溫層、庫存、產地,店家卡連到店家頁", async () => {
@@ -36,7 +45,7 @@ describe("MarketProductPage", () => {
     expect(within(card).getByRole("link", { name: "市集測試 A 店" })).toHaveAttribute("href", `/market/s/${STORE_A.supplier_id}`);
     expect(within(card).getByText("運費 NT$ 120,滿 NT$ 1,000 免運")).toBeInTheDocument();
     expect(screen.getByRole("navigation", { name: "麵包屑" })).toHaveTextContent("市集›蔬菜›有機高麗菜");
-    expect(screen.queryByRole("status")).toBeNull();
+    expect(screen.queryByText(/預覽:/)).toBeNull();
     expect(document.title).toBe("有機高麗菜｜iFoodmap 食材市集");
   });
 
@@ -49,10 +58,37 @@ describe("MarketProductPage", () => {
     expect(screen.getByRole("button", { name: "看第 2 張照片" })).toHaveAttribute("aria-pressed", "true");
   });
 
-  it("還沒上架(供應商預覽自己的商品)顯示預覽提示", async () => {
+  it("還沒上架(供應商預覽自己的商品)顯示預覽提示,不能加入購物車", async () => {
     vi.mocked(fetchMarketProduct).mockResolvedValue({ ...CABBAGE, review_status: "pending" });
     renderAt(CABBAGE.id);
-    expect(await screen.findByRole("status")).toHaveTextContent("預覽:消費者目前看不到這個商品(審核狀態:待審)");
+    expect(await screen.findByText(/預覽:消費者目前看不到這個商品/)).toHaveTextContent("預覽:消費者目前看不到這個商品(審核狀態:待審)");
+    expect(screen.queryByRole("button", { name: "加入購物車" })).toBeNull();
+  });
+
+  it("加入購物車:選數量、存進購物車、告訴使用者已加入", async () => {
+    vi.mocked(fetchMarketProduct).mockResolvedValue(CABBAGE);
+    renderAt(CABBAGE.id);
+    const stepper = await screen.findByRole("group", { name: "有機高麗菜 數量" });
+    await userEvent.click(within(stepper).getByRole("button", { name: "增加一件" }));
+    await userEvent.click(screen.getByRole("button", { name: "加入購物車" }));
+    expect(cartStore.get()).toEqual([{ productId: CABBAGE.id, qty: 2 }]);
+    expect(screen.getByText(/已加入購物車/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "看購物車" })).toHaveAttribute("href", "/market/cart");
+  });
+
+  it("數量上限是庫存(鮭魚剩 3 件);已售完不能按", async () => {
+    vi.mocked(fetchMarketProduct).mockResolvedValue(SALMON);
+    renderAt(SALMON.id);
+    const stepper = await screen.findByRole("group", { name: "挪威鮭魚 數量" });
+    const plus = within(stepper).getByRole("button", { name: "增加一件" });
+    await userEvent.click(plus);
+    await userEvent.click(plus);
+    expect(within(stepper).getByRole("spinbutton", { name: "數量" })).toHaveValue(3);
+    expect(plus).toBeDisabled();
+    cleanup();
+    vi.mocked(fetchMarketProduct).mockResolvedValue({ ...SALMON, stock: 0 });
+    renderAt(SALMON.id);
+    expect(await screen.findByRole("button", { name: "已售完" })).toBeDisabled();
   });
 
   it("載入失敗:有 h1、重新載入(重抓)與回市集首頁", async () => {

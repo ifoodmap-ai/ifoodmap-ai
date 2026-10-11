@@ -7,6 +7,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 vi.mock("@/integrations/supabase/client", () => ({ supabase: {} }));
 
 import { BEEF, CABBAGE, STORE_A } from "@/lib/market/testFixtures";
+import { cartStore } from "@/lib/market/useCart";
+import { createMemoryStorage } from "@/test/memory-storage";
 import CategoryChips from "./CategoryChips";
 import MarketImage from "./MarketImage";
 import MarketLayout, { useMarketTitle } from "./MarketLayout";
@@ -36,6 +38,27 @@ describe("MarketLayout", () => {
     expect(screen.getByRole("main")).toHaveAttribute("id", "market-main");
     expect(screen.getByRole("contentinfo")).toHaveTextContent("商品由各店家販售、出貨與收款");
     expect(document.title).toBe("測試頁｜iFoodmap 食材市集");
+  });
+
+  it("頁首的購物車連結念出件數;頁尾有服務條款與隱私權政策", () => {
+    vi.stubGlobal("localStorage", createMemoryStorage());
+    cartStore.resetForTests();
+    cartStore.add(CABBAGE.id, 2);
+    render(
+      <MemoryRouter initialEntries={["/market"]}>
+        <Routes>
+          <Route path="/market" element={<MarketLayout />}>
+            <Route index element={<TitleProbe title="測試頁" />} />
+          </Route>
+        </Routes>
+      </MemoryRouter>,
+    );
+    expect(screen.getByRole("link", { name: "購物車,2 件" })).toHaveAttribute("href", "/market/cart");
+    const footer = within(screen.getByRole("contentinfo"));
+    expect(footer.getByRole("link", { name: "服務條款" })).toHaveAttribute("href", "/market/terms");
+    expect(footer.getByRole("link", { name: "隱私權政策" })).toHaveAttribute("href", "/market/privacy");
+    vi.unstubAllGlobals();
+    cartStore.resetForTests();
   });
 });
 
