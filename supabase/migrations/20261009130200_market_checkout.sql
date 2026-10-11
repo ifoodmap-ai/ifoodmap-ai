@@ -41,6 +41,11 @@
 --   量變大時怎麼調:另開一支 migration,用 CREATE OR REPLACE FUNCTION public.market_place_order 改 A 段、B 段的數字
 --     (計數表與 market_rate_take 不用動)。窗格是整點與台北日:數字改小時,目前窗格裡已經有的計數照算,
 --     下一個窗格起完全生效;要加新的一條,bucket 種類取新名字,不要跟另一段重疊。
+--   刻意的取捨(審查後決定,不是漏掉):
+--     同一個 token 的重送(duplicate、TOKEN_REUSED)在開關與限流之前就回傳、不吃任何額度 —— 重送不能被擋
+--       (網路斷線後重按的人會被拒),每次只花一次 advisory lock 加一次索引查詢;拿到 token 的人可以一直重送,但成本很低。
+--     格式錯的請求(INVALID_INPUT,含購物車超過 50 行的 TOO_MANY_ITEMS 與每行的格式)也在限流之前回傳、不算進 A 段 ——
+--       它們不鎖任何商品或計數列;空購物車(EMPTY_CART)照樣在 A 段之後、算進 A 段。
 --
 -- 前端:src/lib/market/checkout.ts(結帳)、src/lib/market/lookup.ts(查單)。
 -- 還原:supabase/rollbacks/20261009130200_market_checkout.down.sql
