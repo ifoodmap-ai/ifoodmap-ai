@@ -17850,3 +17850,25 @@ gate / render / handler / index 與 `config.toml` 先照計畫的程式碼區塊
 - 被擋的請求都會更新同一列(今天, 種類),要等前一個交易 commit 才寫得進去:同一種規則大量擋下(灌爆)時,這一列會變成排隊點,每個被擋的請求多佔一次 commit(含 WAL flush)的時間。目前的量不是問題;要調的話,被擋時加 `set_config('synchronous_commit', 'off', true)` 就能把排隊時間縮到微秒(被擋的交易不建單,當機時掉幾筆計數無妨),交給協調者決定。
 - 乾跑是一整個交易:開放之後跑的那幾秒內若剛好有真的請求被擋或下單,比增量的那幾項(含原本的「限流計數總和不變」)仍可能差 1,重跑即可。其他測試檔(`market_orders` 等)沒有用假線上資料檢查過。
 - DEPLOY.md 由協調者另外派人寫;查詢範例在 130200 檔頭。
+
+### 2026-10-11:Task 40–42 第 3 輪審查補測試(commit `877b268`、`4f4ad96`、`60052de`、`a5cf3a8`、`d215327`、`95548b3`,分支 `market`)
+
+接上面「Task 40–42 審查修正」一節。第 3 輪審查結論是程式行為正確、可以部署,但有 3 個 Important 的測試缺口加 2 個小地方,另列幾個小缺口;全部做完。改程式的(第 4 點)先寫測試看到紅才改;補測試的(第 1–3、5 點)用它要抓的突變證明會紅。只動 `supabase/functions/market-notify/` 與本勘誤。**以 repo 為準。**
+
+1. **已收款取消信的跳脫**(`877b268`):跳脫測試原本都是「還沒收款」、已收款的測試電話又沒有特殊字元,把 `p(esc(refund))` 改成 `p(refund)` 72 項照樣全綠。補:已收款取消、店名與店家電話都帶 HTML,斷言退款那一句(含電話)是跳脫後的樣子。
+2. **退款句的 handler 層測試**(`4f4ad96`):fixture 的訂單加 `paid_at: null`(正式庫回來的是 null,不是沒有這個欄位);補貨到付款(店家 / 平台)取消、轉帳單在 pending / confirmed / awaiting_payment 取消(都不能有退款句)、paid → cancelled(要有)。突變:`order.paid_at !== undefined`、`"paid_at" in order`、轉帳一律算已收款、待匯款算已收款,現在都紅。
+3. **假資料庫照 select 回傳欄位**(`60052de`):
+   - `handler.test.ts` 包一層 `SelectingQuery`:跟 PostgREST 一樣只回傳選到的欄位,資料列沒有的是 null;別名、巢狀查詢直接丟錯(提醒先改包裝)。**沒有改共用的 `supabase/tests/fake-supabase.ts`**(notify-lead、approve-supplier 的測試也在用)。
+   - `handler.ts` 把 suppliers / market_stores / market_store_transfer 讀的欄位抽成 `SUPPLIER_COLUMNS`、`STORE_COLUMNS`、`TRANSFER_COLUMNS`。「讀取的欄位都存在於 migration」補這三張表(`20260528233000_core_supply_schema.sql`、`20261009120000_market_catalog.sql`;之後的 migration 沒有改名或刪欄位),另外檢查寫進 notifications 的欄位(`20260704140000`)。
+   - 突變:少讀 total、line_total、paid_at、phone、contact_email、transfer_info、buyer_email、ship_days,與欄位名打錯(total、phone、ship_days、transfer_info),現在全部紅;接單信的出貨天數(N 天 / 當天 / 沒設定)補測試 —— 少讀 ship_days 原本也全綠。
+4. **小地方**:
+   - 主旨拿掉 Unicode 格式字元(`a5cf3a8`):`oneLine` 先把 `\p{Cf}`(RLO U+202E、零寬空白、BOM、軟連字號…)拿掉,再把控制字元與 U+2028 / U+2029 換成空白;店名帶 RLO 時主旨不再顯示成反過來的字。
+   - Email 遮罩(`d215327`):`maskEmail`(改成 export,有單元測試)原本保留 @ 之後最多 100 字;店家的 contact_email 沒有格式限制,填成地址、電話會整段留在 log 與 notifications。改成帳號只留第一個字、網域只留前 3 個字加「…」(`王***@exa…`)。
+5. **其他小缺口**(`95548b3`),全部補上:N-L4(notifications 寫入失敗的 log 沒有 Email)、V10(閘門關時 Email 不合格也不轉寄測試信箱、照樣留「沒寄」紀錄)、V12(跳過的回應不帶出買家 Email)、C4(B 店也有 contact_email,待匯款信一併檢查)、G11 / G12(閘門關的測試走過已收款取消、沒填匯款資訊的待匯款)、T13(checkout_id 格式錯的 400 回應與 log 沒有 token)。沒有處理的:無。
+- 另外確認:結帳改成瀏覽器產生查詢 token 之後,130200 仍用 `^[A-Za-z0-9_-]{43}$` 驗、用同一個 sha256 hex 存,通知內容仍是 `{kind:'placed', checkout_id, token}`,market-notify 不用改。
+
+**數字**
+
+- market-notify vitest:**4 檔 / 85 項**(gate 8、send 3、render 25、handler 49;上一節 72 項)→ Task 42 Step 4 的 Expected 改成 **`Tests  85 passed (85)`**;「F. 共用指令與基準數字」第 2、3 階段的總數比計畫多 **55 項、1 檔**(取代上一節的 42 項)。
+- 全套:`95548b3` 的乾淨副本(`git archive`)連跑兩次 **115 檔 / 1800 項**全過(含其他實作者同時 commit 的檔);tsc strict 兩份設定 0 error,eslint 沒有輸出。
+- 突變:審查員的 `scratchpad/review-notify-r3/mutate3.mjs` 複製到 `review-notify-r3-rerun/`(pristine 換成 `95548b3`,審查員原本的資料夾沒動)。這一輪改寫的 5 處 find 字串(V7、F4、F5、F6、X12)照新寫法改寫,另加 3 處(O10 不拿掉 `\p{Cf}`、V14 網域留 100 字、F8 少讀 ship_days),共 199 處:**182 殺、17 存活**,存活的 17 處全是審查員標成等價或良性的(E-ESC-apos、E-HREF、M-H6、A5、A8、A9、A10、O2、O5、O7、K17、R9、T9、T11、T12、T15、X15)。原本存活、該被殺的 18 處(E-P3、N-L4、V10、V12、R5、R6、R10、R10b、C4、G11、G12、T13、F1、F2、F4、F5、F6、F7)**18 處全殺**;等價清單裡的 K10、F3 也被殺(測試釘住 key 的格式、只靠 paid_at 也算已收款)。
