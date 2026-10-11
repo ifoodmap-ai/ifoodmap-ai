@@ -150,6 +150,9 @@ SELECT pg_temp.expect('開關關閉:平台管理員可以下單(業主實測用)
   pg_temp.place(pg_temp.jwt('a9100000-0000-4000-8000-000000000003', true), '198.51.100.1',
     pg_temp.co('owner-test@market-test.invalid', jsonb_build_array(pg_temp.item('a2', 1)), '{"a9200000-0000-4000-8000-00000000000a":"cod"}')) ->> 'ok',
   'true');
+-- 開關檢查在限流之前:開關關著時被擋的嘗試不寫任何計數(管理員本來就不限流;第 1 節的單元測試只寫 test: 開頭的 bucket)
+SELECT pg_temp.expect('開關關閉被擋的嘗試不寫任何計數(沒有 IP / Email / 電話 / 全站的列)',
+  (SELECT count(*)::text FROM public.market_rate_counters WHERE bucket NOT LIKE 'test:%'), '0');
 
 SELECT pg_temp.expect('開關狀態:關閉時 anon 不能下單、管理員可以',
   pg_temp.as_val('anon', pg_temp.anon(), 'SELECT public.market_checkout_status()::text') || '|' ||
@@ -478,3 +481,64 @@ SELECT pg_temp.expect('剛好 1,000,000(滿額免運)可以下單',
      FROM (SELECT pg_temp.place(pg_temp.anon(), '198.51.107.3', pg_temp.co('big2@market-test.invalid',
              '[{"product_id":"a9300000-0000-4000-8000-000000d00001","qty":1}]', '{"a9200000-0000-4000-8000-00000000000a":"cod"}')) AS r) x),
   'ok|1000000');
+-- 5-5 限流重排:欄位檢查 → 開關 → A 段(同一個網路的嘗試次數,失敗的也算)→ 購物車、商品、店家檢查與算錢
+--     → B 段(Email / 電話 / 全站,只在準備建單時扣、一次結帳算 1)→ 建單
+-- (a) 失敗的嘗試不吃 Email、電話、全站額度;同一個 IP 照算
+INSERT INTO _ctx VALUES ('g0', to_jsonb(COALESCE((SELECT hits FROM public.market_rate_counters WHERE bucket = 'global|day'), 0)));
+SELECT pg_temp.expect('同一個 Email 先失敗 3 次(缺貨、價格變了、未達最低金額),第 4 次照樣能下單',
+  (SELECT string_agg(COALESCE(pg_temp.place(pg_temp.anon(), '198.51.108.1', c) ->> 'code', 'ok'), ',' ORDER BY n)
+     FROM (VALUES
+       (1, pg_temp.co('fails@market-test.invalid', jsonb_build_array(pg_temp.item('b1', 99)), '{"a9200000-0000-4000-8000-00000000000b":"cod"}')),
+       (2, pg_temp.co('fails@market-test.invalid', jsonb_build_array(pg_temp.item('a2', 1)), '{"a9200000-0000-4000-8000-00000000000a":"cod"}',
+                      '臺北市', '{"a9200000-0000-4000-8000-00000000000a": 1}')),
+       (3, pg_temp.co('fails@market-test.invalid', jsonb_build_array(pg_temp.item('a1', 1)), '{"a9200000-0000-4000-8000-00000000000a":"cod"}')),
+       (4, pg_temp.co('fails@market-test.invalid', jsonb_build_array(pg_temp.item('a2', 1)), '{"a9200000-0000-4000-8000-00000000000a":"cod"}'))
+     ) AS v(n, c)),
+  'OUT_OF_STOCK,PRICE_CHANGED,BELOW_MINIMUM,ok');
+SELECT pg_temp.expect('……計數:Email 1、電話 1、全站 +1(只有成功那次);同一個 IP 4(失敗的嘗試也算)',
+  concat_ws('|',
+    COALESCE((SELECT hits::text FROM public.market_rate_counters
+               WHERE bucket = public.market_rate_key('email', 'fails@market-test.invalid',
+                                                     (SELECT value FROM public.app_config WHERE key = 'market_rate_salt')) || '|1h'), '0'),
+    COALESCE((SELECT hits::text FROM public.market_rate_counters
+               WHERE bucket = public.market_rate_key('phone', '09' || lpad((abs(hashtext('fails@market-test.invalid')) % 100000000)::text, 8, '0'),
+                                                     (SELECT value FROM public.app_config WHERE key = 'market_rate_salt')) || '|day'), '0'),
+    ((SELECT hits FROM public.market_rate_counters WHERE bucket = 'global|day') - (SELECT v::text::integer FROM _ctx WHERE k = 'g0'))::text,
+    COALESCE((SELECT hits::text FROM public.market_rate_counters
+               WHERE bucket = public.market_rate_key('ip', '198.51.108.1',
+                                                     (SELECT value FROM public.app_config WHERE key = 'market_rate_salt')) || '|1h'), '0')),
+  '1|1|1|4');
+SELECT pg_temp.expect('B 段一次結帳只算 1(happy 一次結帳兩家店:Email 計數 1)',
+  COALESCE((SELECT hits::text FROM public.market_rate_counters
+             WHERE bucket = public.market_rate_key('email', 'happy@market-test.invalid',
+                                                   (SELECT value FROM public.app_config WHERE key = 'market_rate_salt')) || '|1h'), '0'),
+  '1');
+-- (b) B 段超額:不建單、不動庫存;A 段已經扣的照算(bcap 先成功 3 次,第 4 次買有庫存的高麗菜:商品、金額都過關,卡在 B 段)
+SELECT pg_temp.place(pg_temp.anon(), '198.51.109.' || n, pg_temp.co('bcap@market-test.invalid',
+  jsonb_build_array(pg_temp.item('a2', 1)), '{"a9200000-0000-4000-8000-00000000000a":"cod"}'))
+  FROM generate_series(1, 3) AS n;
+INSERT INTO _ctx VALUES ('bcap_stock', to_jsonb((SELECT stock FROM public.market_products WHERE id = 'a9300000-0000-4000-8000-0000000000a1')));
+INSERT INTO _ctx VALUES ('bcap4', pg_temp.place(pg_temp.anon(), '198.51.109.4', pg_temp.co('bcap@market-test.invalid',
+  jsonb_build_array(pg_temp.item('a1', 3)), '{"a9200000-0000-4000-8000-00000000000a":"cod"}')));
+SELECT pg_temp.expect('B 段超額(同一個 Email 第 4 次):RATE_LIMITED、不建單、庫存不變;這個 IP 的 A 段照算 1 次',
+  concat_ws('|',
+    (SELECT v ->> 'code' FROM _ctx WHERE k = 'bcap4'),
+    (SELECT count(*)::text FROM public.market_orders WHERE buyer_email = 'bcap@market-test.invalid'),
+    ((SELECT stock FROM public.market_products WHERE id = 'a9300000-0000-4000-8000-0000000000a1')
+       = (SELECT v::text::integer FROM _ctx WHERE k = 'bcap_stock'))::text,
+    COALESCE((SELECT hits::text FROM public.market_rate_counters
+               WHERE bucket = public.market_rate_key('ip', '198.51.109.4',
+                                                     (SELECT value FROM public.app_config WHERE key = 'market_rate_salt')) || '|1h'), '0')),
+  'RATE_LIMITED|3|true|1');
+-- (c) IPv6:同一個 /48 的不同 /64 輪流送,每小時第 21 次被 /48 彙總擋下(前 20 次都是缺貨:失敗的嘗試也算數);別的 /48 不受影響
+SELECT pg_temp.expect('同一個 IPv6 /48 的 21 個不同 /64:第 21 次 RATE_LIMITED;另一個 /48 照常',
+  (SELECT string_agg(COALESCE(pg_temp.place(pg_temp.anon(),
+                                            CASE WHEN n <= 21 THEN '2001:db8:48:' || to_hex(n) || '::1' ELSE '2001:db8:49:1::1' END,
+            pg_temp.co('v6-' || n || '@market-test.invalid', jsonb_build_array(pg_temp.item('b1', 99)),
+                       '{"a9200000-0000-4000-8000-00000000000b":"cod"}')) ->> 'code', 'ok'), ',' ORDER BY n)
+     FROM generate_series(1, 22) AS n),
+  repeat('OUT_OF_STOCK,', 20) || 'RATE_LIMITED,OUT_OF_STOCK');
+SELECT pg_temp.expect('/48 彙總的 bucket 也只存加鹽雜湊(ip48:16 位雜湊)',
+  (SELECT (count(*) > 0 AND bool_and(bucket ~ '^ip48:[0-9a-f]{16}[|](1h|day)$'))::text
+     FROM public.market_rate_counters WHERE bucket LIKE 'ip48%'),
+  'true');

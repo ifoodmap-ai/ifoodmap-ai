@@ -6,18 +6,26 @@
 --   配送範圍、最低訂購金額、付款方式(轉帳要店家已填轉帳資訊);算運費(固定運費,小計 ≥ 免運門檻就 0)、扣庫存、
 --   每家店建一張單 + 明細快照 + 第一筆紀錄(pending),同一次結帳共用一組查詢 token(DB 只存 sha256 hex)。
 --   可選的 expected_totals:跟伺服器算的不一樣就回 PRICE_CHANGED(價格在你看購物車之後變了),不建單。
---   商業上的錯誤一律回 200 + {ok:false, code},不 raise —— 這樣「被擋的嘗試」也會留下限流計數。
+--   商業上的錯誤一律回 200 + {ok:false, code},不 raise —— 這樣「被擋的嘗試」也會留下 A 段的限流計數。
 -- market_get_orders(p_token text):用 token 換這次結帳的訂單(電話、Email 遮罩);待匯款時附上轉帳資訊。
 --
--- 防灌單(market_rate_take,不沿用 ai_rate_take —— 理由見計畫「關鍵技術決定」第 1 點):
---   同一個 IP:每小時 5 次、每天 20 次(拿不到 IP 就不算這兩條)
---   同一個 Email(去 +tag、gmail 去點,沿用 supplier_mail_email_key):每小時 3 次、每天 10 次
---   同一支電話:每天 10 次;全站:每天 500 次(DAILY_CAP)
---   IP / Email / 電話只以「加鹽 sha256 前 16 hex」落地(鹽 = app_config.market_rate_salt,migration 產生,不印出來)
---   被擋的請求不吃額度;平台管理員(業主實測)不限流。
+-- market_place_order 的順序:欄位檢查 → 開關 → 限流 A 段 → 購物車、商品、店家檢查與算錢 → 限流 B 段 → 建單。
+--   鎖的順序因此固定:A 段的計數列 → 依 id 鎖商品(FOR UPDATE)→ B 段的計數列;A、B 的 bucket 不重疊,所有結帳同一個順序。
 --
--- 下單開關 app_config.market_checkout_open(預設 'false'):對外開放前只有平台管理員能下單,其他人拿到 MARKET_CLOSED。
---   🔴 改成 'true' = 對外開放,待業主核准。
+-- 下單開關 app_config.market_checkout_open(預設 'false'):對外開放前只有平台管理員能下單,其他人拿到 MARKET_CLOSED;
+--   開關擋下的嘗試不寫任何計數。🔴 改成 'true' = 對外開放,待業主核准。
+--
+-- 防灌單(market_rate_take,不沿用 ai_rate_take —— 理由見計畫「關鍵技術決定」第 1 點);平台管理員(業主實測)不限流:
+--   A 段:同一個網路的嘗試次數,失敗的嘗試也算(回 RATE_LIMITED);拿不到 IP 就跳過整段
+--     同一個 IP(IPv4 用完整位址、IPv6 取 /64):每小時 5 次、每天 20 次
+--     IPv6 另外彙總到 /48(bucket 種類 ip48):每小時 20 次、每天 80 次 —— 一個用戶端常拿到整段 /48,換 /64 繞不過
+--   B 段:所有檢查都通過、準備建單時才扣,一次結帳不論幾家店都算 1;缺貨、價格變了、超過金額上限、配送不到、
+--     未達最低金額等失敗都不吃這段
+--     同一個 Email(去 +tag、gmail 去點,沿用 supplier_mail_email_key):每小時 3 次、每天 10 次
+--     同一支電話:每天 10 次;全站:每天 500 次(DAILY_CAP)
+--     B 段被擋時不建單、不動庫存;A 段已經扣的照算
+--   同一段裡任何一條超過就整段退回(被擋的那次不吃那一段的額度)。
+--   IP / Email / 電話只以「加鹽 sha256 前 16 hex」落地(鹽 = app_config.market_rate_salt,migration 產生,不印出來)
 --
 -- 前端:src/lib/market/checkout.ts(結帳)、src/lib/market/lookup.ts(查單)。
 -- 還原:supabase/rollbacks/20261009130200_market_checkout.down.sql
@@ -232,6 +240,7 @@ DECLARE
   v_terms     text;
   v_salt      text;
   v_ip        text;
+  v_ip48      text;
   v_email_key text;
   v_rules     jsonb;
   v_rate      jsonb;
@@ -301,32 +310,34 @@ BEGIN
     RETURN jsonb_build_object('ok', false, 'code', 'INVALID_INPUT', 'field', 'terms_version');
   END IF;
 
-  -- 3. 防灌單(平台管理員實測不限流)。放在開關之前:開放前的嘗試一樣會被計數
+  -- 3. 開關:對外開放前只有平台管理員能下單(app_config.market_checkout_open,待業主核准才改成 'true')。
+  --    放在限流之前:開關關著時被擋的嘗試不寫任何計數
+  IF NOT v_admin AND COALESCE((SELECT c.value FROM public.app_config c WHERE c.key = 'market_checkout_open'), '') <> 'true' THEN
+    RETURN jsonb_build_object('ok', false, 'code', 'MARKET_CLOSED');
+  END IF;
+
+  -- 4. 限流 A 段:同一個網路的嘗試次數(失敗的嘗試也算);拿不到 IP 就跳過。平台管理員(業主實測)不限流
   IF NOT v_admin THEN
     v_salt := COALESCE((SELECT c.value FROM public.app_config c WHERE c.key = 'market_rate_salt'), 'ifoodmap-market-rate-fallback');
     v_ip := public.market_client_ip();
-    v_email_key := public.supplier_mail_email_key(v_email);
-    v_rules := jsonb_build_array(
-      jsonb_build_object('bucket', public.market_rate_key('email', v_email_key, v_salt), 'window', '1h', 'limit', 3),
-      jsonb_build_object('bucket', public.market_rate_key('email', v_email_key, v_salt), 'window', 'day', 'limit', 10),
-      jsonb_build_object('bucket', public.market_rate_key('phone', v_phone, v_salt), 'window', 'day', 'limit', 10),
-      jsonb_build_object('bucket', 'global', 'window', 'day', 'limit', 500, 'code', 'DAILY_CAP')
-    );
     IF v_ip IS NOT NULL THEN
-      v_rules := v_rules || jsonb_build_array(
+      v_rules := jsonb_build_array(
         jsonb_build_object('bucket', public.market_rate_key('ip', v_ip, v_salt), 'window', '1h', 'limit', 5),
         jsonb_build_object('bucket', public.market_rate_key('ip', v_ip, v_salt), 'window', 'day', 'limit', 20)
       );
+      -- IPv6 另外彙總到 /48(market_client_ip 已經把 IPv6 正規化成 /64 的網段位址)
+      IF position(':' IN v_ip) > 0 THEN
+        v_ip48 := host(network(set_masklen(v_ip::inet, 48)));
+        v_rules := v_rules || jsonb_build_array(
+          jsonb_build_object('bucket', public.market_rate_key('ip48', v_ip48, v_salt), 'window', '1h', 'limit', 20),
+          jsonb_build_object('bucket', public.market_rate_key('ip48', v_ip48, v_salt), 'window', 'day', 'limit', 80)
+        );
+      END IF;
+      v_rate := public.market_rate_take(v_rules);
+      IF NOT COALESCE((v_rate->>'ok')::boolean, false) THEN
+        RETURN jsonb_build_object('ok', false, 'code', v_rate->>'code', 'retry_after', (v_rate->>'retry_after')::integer);
+      END IF;
     END IF;
-    v_rate := public.market_rate_take(v_rules);
-    IF NOT COALESCE((v_rate->>'ok')::boolean, false) THEN
-      RETURN jsonb_build_object('ok', false, 'code', v_rate->>'code', 'retry_after', (v_rate->>'retry_after')::integer);
-    END IF;
-  END IF;
-
-  -- 4. 開關:對外開放前只有平台管理員能下單(app_config.market_checkout_open,待業主核准才改成 'true')
-  IF NOT v_admin AND COALESCE((SELECT c.value FROM public.app_config c WHERE c.key = 'market_checkout_open'), '') <> 'true' THEN
-    RETURN jsonb_build_object('ok', false, 'code', 'MARKET_CLOSED');
   END IF;
 
   -- 5. 購物車
@@ -444,7 +455,24 @@ BEGIN
     END IF;
   END IF;
 
-  -- 7. 建單:同一次結帳的訂單共用一組查詢 token(32 bytes 隨機值的 base64url,43 字;DB 只存 sha256 hex)
+  -- 7. 限流 B 段:所有檢查都通過、準備建單時才扣(上面的缺貨、價格變了、超過金額上限、配送不到、未達最低金額都不吃),
+  --    一次結帳不論幾家店都算 1。商品已經在第 5 步依 id 鎖住,這裡才鎖計數列(所有結帳同一個順序)。
+  --    被擋時直接回傳:不建單、不動庫存;A 段已經扣的照算(兩段各自一次 market_rate_take,只退回被擋的那一段)
+  IF NOT v_admin THEN
+    v_email_key := public.supplier_mail_email_key(v_email);
+    v_rules := jsonb_build_array(
+      jsonb_build_object('bucket', public.market_rate_key('email', v_email_key, v_salt), 'window', '1h', 'limit', 3),
+      jsonb_build_object('bucket', public.market_rate_key('email', v_email_key, v_salt), 'window', 'day', 'limit', 10),
+      jsonb_build_object('bucket', public.market_rate_key('phone', v_phone, v_salt), 'window', 'day', 'limit', 10),
+      jsonb_build_object('bucket', 'global', 'window', 'day', 'limit', 500, 'code', 'DAILY_CAP')
+    );
+    v_rate := public.market_rate_take(v_rules);
+    IF NOT COALESCE((v_rate->>'ok')::boolean, false) THEN
+      RETURN jsonb_build_object('ok', false, 'code', v_rate->>'code', 'retry_after', (v_rate->>'retry_after')::integer);
+    END IF;
+  END IF;
+
+  -- 8. 建單:同一次結帳的訂單共用一組查詢 token(32 bytes 隨機值的 base64url,43 字;DB 只存 sha256 hex)
   v_token := rtrim(translate(encode(extensions.gen_random_bytes(32), 'base64'), '+/', '-_'), '=');
   v_hash  := encode(sha256(convert_to(v_token, 'UTF8')), 'hex');
 
