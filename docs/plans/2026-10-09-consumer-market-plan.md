@@ -18125,3 +18125,17 @@ gate / render / handler / index 與 `config.toml` 先照計畫的程式碼區塊
 7. **審查員的 atk_hardening**:複製到 `scratchpad/atk-adapted/atk_hardening.test.sql`,只改 E5 的 proconfig 期待值(加上 `lock_timeout=5s`),**13 / 13**;原檔沒動。
 
 **數字**(`802e1a8`;乾跑只帶 20261012100000,每支之後殘留五個 0):`market_hardening` **41**、`market_orders` 67、`market_notify` 9、`market_checkout` 93、`market_hardening_rollback` 4,審查員副本 13。vitest:`802e1a8` 的乾淨副本 116 檔 / 1853 項全過(這次只改 SQL)。🔴 DEPLOY.md 第 3 階段的乾跑項數要改成 41,另外照協調者的決定寫上「量變大時改成每張單各自 commit 的 procedure」(由寫文件的人改)。
+
+### 2026-10-12:寄信重試的總等待改成 5 秒,壓在 pg_net 的 8 秒逾時以內(commit `432f9aa`,分支 `market`)
+
+接上面「market-notify 寄信遇到限速、伺服器錯誤會重試」一節。派工選了第二個做法:資料庫不改,把等待壓在 pg_net 呼叫這支函式的 8 秒逾時(`20261009130100` 的 `timeout_milliseconds := 8000`)以內。**以 repo 為準;那一節第 1 點的等待數字、第 3 點風險第 8 點的文字、第 4 點的待確認問題,都改以這一節為準。**
+
+1. **新的數字**:一封信所有重試的等待加起來不超過 **5 秒**(預算用完就停,最後一次只等剩下的額度);`retry-after` 最多照 **3 秒**等;沒有 `retry-after` 時依序等 **0.7、1.5、2.5 秒**,再加最多 0.25 秒的抖動。重試次數(3 次)、哪些情況重試(429、5xx、連線失敗)、同一個 Idempotency-Key、重試的 log 都不變。Resend 的限速以秒計算,等 1–2 秒就夠讓同一次結帳的 4 封信都寄出。
+2. **風險第 8 點**(第 17063 行)改成:**寄信遇到限速或伺服器錯誤會重試 3 次**:Resend 回 429 / 5xx 或連線失敗時,用同一個 Idempotency-Key 最多重試 3 次(retry-after 最多 3 秒,沒有就 0.7 / 1.5 / 2.5 秒加抖動,一封信總等待不超過 5 秒,在 pg_net 的 8 秒逾時以內做完),其他 4xx 不重試;重試後還是失敗才在 `notifications` 記 `failed`,要看後台「通知紀錄」手動處理。資料庫到函式那一段(pg_net)失敗仍然不會重送。
+3. **待確認問題改寫**:等待總和壓在 5 秒,加上請求本身與寫 notifications,一般會在 pg_net 的 8 秒逾時以內做完,不必再靠「pg_net 斷線之後函式繼續跑」。但 Resend 每個請求本身要多久、Edge Function 冷啟動要多久,本機量不到 —— 🔴 **部署後還是要實測一次:一次結帳 3 家店,通知紀錄(`/admin/notifications`)要有 4 筆 sent**(1 封下單確認加 3 封新訂單信;閘門沒開時 4 筆都是寄到 ifoodmaptw@gmail.com 的「[測試轉寄]」)。少了或記成 failed 時,先看 Edge Function 的 log 有沒有 `send-retry` 與 `send` 的錯誤,再看 `net._http_response` 有沒有逾時。
+4. **測試**:上限數字跟著改(429 兩次後成功等 0.7 / 1.5 秒;一直 429、抖動最大時等 0.949 / 1.749 / 2.302 秒,總和剛好 5 秒;retry-after 30 秒只等 3 秒、第二次只剩 2 秒額度、之後不再重試;沒注入 sleep 時假的 timer 推 0.95 秒)。新增「同一刻 4 封信、假的 Resend 每秒只收 2 封」(假的 timer,不真的等):寄信包裝那一層三種抖動(0、0.5、0.999)各一項,handler 那一層用一次結帳 3 家店(下單確認加 3 封新訂單信同時送),都是 4 封都寄出 / 記成 sent、每個 key 只寄一次、每封總等待不超過 5 秒。突變:不重試、總等待只有 0.5 秒、退避都在同一秒內,這幾項都紅;連跑 5 次都穩定。
+
+**數字**
+
+- market-notify vitest:**4 檔 / 121 項**(gate 8、send 14、render 46、handler 53;上一節 117 項)→ Task 42 Step 4 的 Expected 改成 **`Tests  121 passed (121)`**;「F. 共用指令與基準數字」第 2、3 階段的總數比計畫多 **91 項、1 檔**。
+- 全套:`432f9aa` 的乾淨副本(`git archive`)連跑兩次 **116 檔 / 1857 項**全過;tsc strict 兩份設定 0 error,eslint 沒有輸出。
