@@ -7,7 +7,7 @@
 --   pending → confirmed → shipped → completed                                  ← 貨到付款(cod)
 --   pending → confirmed →(自動)awaiting_payment → paid → shipped → completed     ← 銀行轉帳(transfer)
 --   pending → rejected(要原因)
---   pending / confirmed / awaiting_payment → cancelled(要原因;供應商或管理員)
+--   pending / confirmed / awaiting_payment / paid → cancelled(要原因;供應商或管理員;已收款的轉帳單由店家自行退款)
 --
 -- 寫入規則(全部在伺服器端):
 --   - market_orders / market_order_items 只能由 market_place_order()(SECURITY DEFINER,20261009130200)建立;
