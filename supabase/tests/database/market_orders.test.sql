@@ -439,3 +439,11 @@ SELECT pg_temp.expect('下單時沒扣庫存的明細,取消不會憑空補回�
 SELECT pg_temp.expect('拒單 / 取消補庫存先依商品 id 排序鎖列(FOR UPDATE)再 UPDATE',
   (pg_get_functiondef('public.market_apply_event()'::regprocedure) ~ 'ORDER BY p\.id\s+FOR UPDATE;\s+UPDATE public\.market_products')::text,
   'true');
+-- 5-6 單張訂單總額上限 1,000,000(第二道;下單 RPC 先用 bigint 算、超過就回 ORDER_TOO_LARGE)
+SELECT pg_temp.expect('訂單總額超過 1,000,000 存不進去',
+  pg_temp.as_exec('postgres', '', $q$
+    INSERT INTO public.market_orders (checkout_id, supplier_id, buyer_name, buyer_phone, buyer_email, ship_city, ship_address,
+                                      subtotal, shipping_fee, total, payment_method, lookup_token_hash, terms_version)
+    VALUES (gen_random_uuid(), 'a9200000-0000-4000-8000-00000000000a', '買家', '0912345678', 'a@market-test.invalid', '臺北市',
+            '測試路 1 號', 1000000, 1, 1000001, 'cod', repeat('d', 64), 'v1')$q$),
+  'ERR 23514');

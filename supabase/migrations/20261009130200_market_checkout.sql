@@ -208,6 +208,7 @@ SELECT cron.schedule(
 --   成功 → {ok:true, token, checkout_id, orders:[{id, supplier_id, total}]}
 --   失敗 → {ok:false, code, …}:MARKET_CLOSED / INVALID_INPUT(field)/ RATE_LIMITED、DAILY_CAP(retry_after)/
 --          EMPTY_CART / TOO_MANY_ITEMS / PRODUCT_UNAVAILABLE(products)/ OUT_OF_STOCK(products)/ TOO_MANY_STORES /
+--          ORDER_TOO_LARGE(stores:任一家店「小計 + 運費」超過 1,000,000)/
 --          NOT_DELIVERABLE(stores)/ BELOW_MINIMUM(stores)/ PAYMENT_NOT_ACCEPTED(stores)/ PRICE_CHANGED(stores)
 -- ---------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION public.market_place_order(p_checkout jsonb)
@@ -388,7 +389,8 @@ BEGIN
                               OR EXISTS (SELECT 1 FROM public.market_store_transfer t WHERE t.supplier_id = s.supplier_id))
          ) ORDER BY s.supplier_id)
     INTO v_stores
-    FROM (SELECT p.supplier_id, sum(p.price * q.qty)::integer AS subtotal
+    -- 小計用 bigint(sum(integer) 的型別):百萬元商品 ×99 × 好幾項會超過 integer,轉回 integer 會丟例外
+    FROM (SELECT p.supplier_id, sum(p.price * q.qty) AS subtotal
             FROM jsonb_to_recordset(v_req) AS q(product_id uuid, qty integer)
             JOIN public.market_products p ON p.id = q.product_id
            GROUP BY p.supplier_id) g
@@ -396,6 +398,17 @@ BEGIN
 
   IF jsonb_array_length(v_stores) > 10 THEN
     RETURN jsonb_build_object('ok', false, 'code', 'TOO_MANY_STORES');
+  END IF;
+
+  -- 金額上限:任一家店「小計 + 運費」超過 1,000,000 → ORDER_TOO_LARGE(bigint 比較,不丟例外;
+  -- 要放在下面任何 ::integer 轉型之前。market_orders 另有 total <= 1000000 的 CHECK 當第二道)
+  SELECT jsonb_agg(jsonb_build_object('supplier_id', x.value->'supplier_id',
+                                      'total', (x.value->>'subtotal')::bigint + (x.value->>'shipping_fee')::bigint))
+    INTO v_bad
+    FROM jsonb_array_elements(v_stores) AS x(value)
+   WHERE (x.value->>'subtotal')::bigint + (x.value->>'shipping_fee')::bigint > 1000000;
+  IF v_bad IS NOT NULL THEN
+    RETURN jsonb_build_object('ok', false, 'code', 'ORDER_TOO_LARGE', 'stores', v_bad);
   END IF;
 
   SELECT jsonb_agg(x.value->'supplier_id') INTO v_bad

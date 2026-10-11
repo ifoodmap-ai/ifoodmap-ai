@@ -458,3 +458,23 @@ SELECT pg_temp.expect('下單記下每一項真的扣掉的庫存:高麗菜 2、
      FROM public.market_order_items i
     WHERE i.order_id IN (SELECT (o ->> 'id')::uuid FROM _ctx, jsonb_array_elements(v -> 'orders') o WHERE k = 'happy')),
   '有機高麗菜=2,挪威鮭魚=1,牛肉片=0');
+-- 5-4 金額用 bigint 算:任一家店「小計 + 運費」超過 1,000,000 → ORDER_TOO_LARGE(不丟例外、不建單、庫存不變)
+SELECT pg_temp.exec_with_claims(pg_temp.jwt('a9100000-0000-4000-8000-000000000003', true), $q$
+  INSERT INTO public.market_products (id, supplier_id, name, category, spec, price, stock, review_status)
+  SELECT ('a9300000-0000-4000-8000-000000d00' || lpad(n::text, 3, '0'))::uuid, 'a9200000-0000-4000-8000-00000000000a',
+         '高價品 ' || n, 'meat', '1 份', 1000000, 100, 'approved'
+    FROM generate_series(1, 22) AS n$q$);
+INSERT INTO _ctx VALUES ('too_large', pg_temp.place(pg_temp.anon(), '198.51.107.2', pg_temp.co('big@market-test.invalid',
+  (SELECT jsonb_agg(jsonb_build_object('product_id', 'a9300000-0000-4000-8000-000000d00' || lpad(n::text, 3, '0'), 'qty', 99))
+     FROM generate_series(1, 22) AS n),
+  '{"a9200000-0000-4000-8000-00000000000a":"cod"}')));
+SELECT pg_temp.expect('22 件百萬元商品各 99 個 → ORDER_TOO_LARGE(帶店家)、不建單、庫存不變',
+  (SELECT (v ->> 'code') || '|' || (v -> 'stores' -> 0 ->> 'supplier_id') FROM _ctx WHERE k = 'too_large') || '|' ||
+  (SELECT count(*)::text FROM public.market_orders WHERE buyer_email = 'big@market-test.invalid') || '|' ||
+  (SELECT bool_and(stock = 100)::text FROM public.market_products WHERE id::text LIKE 'a9300000-0000-4000-8000-000000d00%'),
+  'ORDER_TOO_LARGE|a9200000-0000-4000-8000-00000000000a|0|true');
+SELECT pg_temp.expect('剛好 1,000,000(滿額免運)可以下單',
+  (SELECT COALESCE(r ->> 'code', 'ok') || '|' || COALESCE(r -> 'orders' -> 0 ->> 'total', '')
+     FROM (SELECT pg_temp.place(pg_temp.anon(), '198.51.107.3', pg_temp.co('big2@market-test.invalid',
+             '[{"product_id":"a9300000-0000-4000-8000-000000d00001","qty":1}]', '{"a9200000-0000-4000-8000-00000000000a":"cod"}')) AS r) x),
+  'ok|1000000');
