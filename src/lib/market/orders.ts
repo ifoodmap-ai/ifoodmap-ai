@@ -103,8 +103,8 @@ export interface MarketOrderRow {
   created_at: string;
   updated_at: string;
   market_order_items: MarketOrderItemRow[];
-  /** 只有管理員的查詢會帶 */
-  market_stores?: { suppliers: { name: string } | null } | null;
+  /** 只有管理員的查詢會帶(店家電話與 contact_email 給管理員處理客訴用;供應商、消費者的查詢都不帶 contact_email) */
+  market_stores?: { suppliers: { name: string; phone?: string | null; contact_email?: string | null } | null } | null;
   market_order_events?: MarketOrderEventRow[];
 }
 
@@ -148,7 +148,7 @@ export const ORDER_COLUMNS =
   "subtotal, shipping_fee, total, payment_method, status_note, shipped_carrier, shipped_tracking_no, created_at, updated_at, " +
   "market_order_items(product_name, spec, temperature, unit_price, qty, line_total)";
 
-const ADMIN_ORDER_COLUMNS = `${ORDER_COLUMNS}, market_stores(suppliers(name)), market_order_events(to_status, actor_role, note, created_at)`;
+const ADMIN_ORDER_COLUMNS = `${ORDER_COLUMNS}, market_stores(suppliers(name, phone, contact_email)), market_order_events(to_status, actor_role, note, created_at)`;
 
 /** 一次最多抓幾張(訂單多到這個數字時要加分頁 —— 見計畫「風險」) */
 export const ORDER_LIST_LIMIT = 200;

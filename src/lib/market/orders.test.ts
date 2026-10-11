@@ -4,16 +4,19 @@ import { resolve } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const { calls } = vi.hoisted(() => ({
-  calls: [] as Array<{ table: string; op: string; payload?: unknown; filters: Array<[string, string, unknown]> }>,
+  calls: [] as Array<{ table: string; op: string; columns?: string; payload?: unknown; filters: Array<[string, string, unknown]> }>,
 }));
 
 vi.mock("@/integrations/supabase/client", () => ({
   supabase: {
     from: (table: string) => {
-      const call = { table, op: "select", payload: undefined as unknown, filters: [] as Array<[string, string, unknown]> };
+      const call = { table, op: "select", columns: undefined as string | undefined, payload: undefined as unknown, filters: [] as Array<[string, string, unknown]> };
       calls.push(call);
       const b = {
-        select: () => b,
+        select: (columns?: string) => {
+          call.columns = columns;
+          return b;
+        },
         insert: (v: unknown) => {
           call.op = "insert";
           call.payload = v;
@@ -40,7 +43,9 @@ import {
   addOrderEvent,
   adminActions,
   fetchAdminOrders,
+  fetchSupplierOrders,
   MARKET_TRANSITIONS,
+  ORDER_COLUMNS,
   ORDER_STATUS_LABEL,
   ORDER_STATUSES,
   supplierActions,
@@ -157,5 +162,14 @@ describe("寫入與查詢", () => {
     expect(calls[0].filters).toEqual([["in", "status", ["pending", "confirmed", "awaiting_payment", "paid"]]]);
     await fetchAdminOrders("all");
     expect(calls[1].filters).toEqual([]);
+  });
+
+  it("店家的電話與 contact_email 只有管理員的查詢會帶(處理客訴用);供應商的查詢不碰店家資料", async () => {
+    await fetchAdminOrders("all");
+    expect(calls[0].columns).toContain("market_stores(suppliers(name, phone, contact_email))");
+    await fetchSupplierOrders("a9200000-0000-4000-8000-00000000000a");
+    expect(calls[1].columns).toBe(ORDER_COLUMNS);
+    expect(calls[1].columns).not.toMatch(/contact_email|market_stores|suppliers/);
+    expect(calls[1].filters).toEqual([["eq", "supplier_id", "a9200000-0000-4000-8000-00000000000a"]]);
   });
 });
