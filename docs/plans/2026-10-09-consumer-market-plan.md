@@ -17981,8 +17981,8 @@ gate / render / handler / index 與 `config.toml` 先照計畫的程式碼區塊
 
 **業主的決定(2026-10-12,派工者轉達)**:核准對外開放 —— 第 3 階段做完就打開下單、打開寄信閘門、合併形象站入口,條款用查證後的版本直接定稿;
 開放的操作由派工者另外指定的人執行。業主接受三項風險:條款沒有經過律師審閱、業主還沒完整實測過、Supabase 仍是免費方案(升級 Pro 改成業主要盡快自己處理的事)。
-同一天決定做 72 小時自動取消,跟 IP 退路、被擋的請求非同步 commit 一起放進 `20261012100000_market_hardening.sql`(另一位實作者在寫;寫這一節時是草稿 `fc25de1`,
-`market_hardening.test.sql`、`market_hardening_rollback.test.sql` 與還原檔還在寫、沒有 commit)。
+同一天決定做 72 小時自動取消,跟 IP 退路、被擋的請求非同步 commit 一起放進 `20261012100000_market_hardening.sql`(另一位實作者在寫;migration 是 `fc25de1`,
+測試與還原檔是 `9aa90d2`:乾跑只帶加固 31 / 67 / 9 / 93、還原 4 —— DEPLOY.md「部署(第 3 階段)」的項數照它)。
 
 **跟計畫 Task 58 不一樣的地方**
 
@@ -18036,8 +18036,8 @@ gate / render / handler / index 與 `config.toml` 先照計畫的程式碼區塊
 
 **發現、沒有處理(記錄;都沒有改程式)**:
 
-- `market_checkout.test.sql` 第 86–87 行原本驗「再沒有才用 x-forwarded-for 第一段」(期待 `1.1.1.1`):加固之後 `market_client_ip()` 回 NULL,帶加固乾跑這一項會紅。
-  寫這一節時加固的實作者正在把它改成「只有 XFF 回 NULL」(還沒 commit);改好之後這支在加固套用前要帶 `--with-migration` 20261012100000 跑。
+- `market_checkout.test.sql` 的 XFF 那一項原本驗「再沒有才用 x-forwarded-for 第一段」(期待 `1.1.1.1`),加固之後會紅;`9aa90d2` 已改成期待 NULL(第 86–88 行),
+  所以這支在加固套用前要帶 `--with-migration` 20261012100000 跑,不帶的話那一項紅屬預期(DEPLOY.md 寫了)。
 - 第 2 階段待辦第 6 條原本的空購物車請求同時帶了偽造的 `CF-Connecting-IP`:第 2 階段部署時實測,用戶端自己帶這個標頭會被 Cloudflare 整個請求回 403 `error code: 1000`,
   照原樣做會看不到結果。DEPLOY.md 改成只帶 `X-Forwarded-For`、`X-Real-IP`,候選清單拿掉 `cf-connecting-ip`。
 - 加固之後 `noip` 的意義變了:原本拿不到 cf / x-real-ip 時會退回 XFF,現在直接算 `noip`(全站共用每小時 60、每天 300)。正式請求都經過 Cloudflare,正常不會發生;

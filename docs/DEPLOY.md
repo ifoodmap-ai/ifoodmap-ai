@@ -1646,10 +1646,9 @@ where jobid = (select jobid from cron.job where jobname = 'ifoodmap-market-expir
    node scripts/supabase-sql.mjs dry supabase/tests/database/market_hardening_rollback.test.sql --with-migration $H --with-rollback $RH
    node scripts/supabase-sql.mjs ro supabase/tests/database/market_residue.sql
    ```
-   Expected:全部 `失敗 0 項`、每次殘留五個 `0`;項數以計畫檔尾勘誤「20261012100000」那一節為準。
-   🔴 2026-10-12 寫這一步時,`market_hardening.test.sql`、`market_hardening_rollback.test.sql` 與還原檔還在寫、沒有 commit(檔名照 migration 檔頭);
-   `market_checkout.test.sql` 第 86–87 行的「再沒有才用 x-forwarded-for 第一段」也正在改成「只有 XFF 回 NULL」—— 改好之後這支要帶加固跑(不帶的話那一項會紅,屬預期),
-   沒改到的話帶加固跑那一項會紅,不能跳過。
+   Expected:依序 `共 31 項` / `共 67 項` / `共 9 項` / `共 93 項` / `共 4 項`(`9aa90d2` 加固的實作者實測;之後有變以計畫檔尾勘誤最新一節為準),
+   全部 `失敗 0 項`、每次殘留五個 `0`。`market_checkout.test.sql` 的 XFF 那一項(第 86–88 行)`9aa90d2` 起期待 NULL,所以套用前一定要帶 `--with-migration $H`
+   (不帶的話那一項會紅,屬預期);套用之後不帶也會過。
 3. **重新部署 `market-notify`**(先於 migration,理由見本節開頭):同第 2 階段「部署」第 6 步的兩段指令
    (🔴 一定要 `--no-verify-jwt --use-api`;部署後 `verify_jwt=false`、沒帶密鑰的 POST 回 `401`)。不用設定任何 secret,🔴 不要設 `MARKET_NOTIFY_LIVE`。
 4. **套 migration**:
@@ -1713,7 +1712,8 @@ where jobid = (select jobid from cron.job where jobname = 'ifoodmap-market-expir
 3. **資料庫**:用第 2 階段還原第 2-3 步的 `send_sql` 送 `supabase/rollbacks/20261012100000_market_hardening.down.sql`,回 `[]` 才算成功。
    還原之後 `market_client_ip()`、`market_rate_take`、`market_guard_event` 回到 130000 / 130200 的樣子,自動取消的函式與排程拆掉
    (開放前檢查的 `expire_orders_cron` 變回 `null`、`client_ip_ignores_xff` 與 `blocked_async_commit` 變回 `false`)。
-   已經被自動取消的單照樣是已取消(紀錄只能新增)。🔴 還原檔進 repo 之後先讀它的檔頭,以檔頭寫的為準。
+   已經被自動取消的單照樣是已取消(紀錄只能新增);還原之後沒有逾時取消,待接單、待匯款會一直留著。還原檔換回的三支函式是照抄原檔
+   (`market_hardening_rollback.test.sql` 用 md5 比對線上套用前的定義),也會刪掉 ledger 的 `20261012100000` 那一列。
 4. **repo**:`git revert --no-commit <推之前的版本>..<這次上線的版本> && git commit -m "revert: 消費者食材市集第 3 階段"` 再 push
    (同第 2 階段還原第 3 步的寫法;migration 跟前端一起退,`check-migrations` 才不會一直紅)。
 
