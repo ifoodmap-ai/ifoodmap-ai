@@ -319,3 +319,46 @@ SELECT pg_temp.expect('anon 讀不到訂單、明細、紀錄、計數',
   'ERR 42501|ERR 42501|ERR 42501|ERR 42501');
 SELECT pg_temp.expect('下單 RPC 有鎖商品列(FOR UPDATE),兩張單搶最後一件不會超賣',
   (position('FOR UPDATE' IN pg_get_functiondef('public.market_place_order(jsonb)'::regprocedure)) > 0)::text, 'true');
+
+-- ---------------------------------------------------------------------
+-- 3. token 查單
+-- ---------------------------------------------------------------------
+CREATE FUNCTION pg_temp.lookup(p_token text) RETURNS jsonb LANGUAGE sql AS $f$
+  SELECT pg_temp.as_val('anon', pg_temp.anon(), format('SELECT public.market_get_orders(%L)::text', p_token))::jsonb
+$f$;
+
+SELECT pg_temp.expect('anon 可以呼叫查單 RPC;遮罩函式不開放',
+  has_function_privilege('anon', 'public.market_get_orders(text)', 'EXECUTE')::text || '|' ||
+  has_function_privilege('anon', 'public.market_mask_phone(text)', 'EXECUTE')::text,
+  'true|false');
+SELECT pg_temp.expect('anon 用 token 查到這次結帳的兩張單',
+  (SELECT jsonb_array_length(pg_temp.lookup(v ->> 'token') -> 'orders')::text FROM _ctx WHERE k = 'happy'), '2');
+SELECT pg_temp.expect('電話、Email 遮罩',
+  (SELECT (o ->> 'buyer_phone') || '|' || (o ->> 'buyer_email')
+     FROM _ctx, jsonb_array_elements(pg_temp.lookup(v ->> 'token') -> 'orders') o
+    WHERE k = 'happy' LIMIT 1),
+  '0912***678|h***@market-test.invalid');
+SELECT pg_temp.expect('A 店那張:明細 2 項、紀錄 1 筆、店名',
+  (SELECT jsonb_array_length(o -> 'items')::text || '|' || jsonb_array_length(o -> 'events')::text || '|' || (o -> 'store' ->> 'name')
+     FROM _ctx, jsonb_array_elements(pg_temp.lookup(v ->> 'token') -> 'orders') o
+    WHERE k = 'happy' AND o -> 'store' ->> 'supplier_id' = 'a9200000-0000-4000-8000-00000000000a'),
+  '2|1|市集測試 A 店');
+SELECT pg_temp.expect('還沒接單:不給轉帳資訊',
+  (SELECT COALESCE(o ->> 'transfer_info', '∅')
+     FROM _ctx, jsonb_array_elements(pg_temp.lookup(v ->> 'token') -> 'orders') o
+    WHERE k = 'happy' AND o ->> 'payment_method' = 'transfer'),
+  '∅');
+SELECT pg_temp.expect('B 店接單(轉帳 → 自動待匯款)',
+  (SELECT pg_temp.as_exec('authenticated', pg_temp.jwt('a9100000-0000-4000-8000-000000000002'), format($q$
+     INSERT INTO public.market_order_events (order_id, from_status, to_status) VALUES (%L, 'pending', 'confirmed')$q$, o ->> 'id'))
+     FROM _ctx, jsonb_array_elements(v -> 'orders') o
+    WHERE k = 'happy' AND o ->> 'supplier_id' = 'a9200000-0000-4000-8000-00000000000b'),
+  'OK');
+SELECT pg_temp.expect('待匯款時才看得到轉帳資訊',
+  (SELECT (o ->> 'status') || '|' || (o ->> 'transfer_info')
+     FROM _ctx, jsonb_array_elements(pg_temp.lookup(v ->> 'token') -> 'orders') o
+    WHERE k = 'happy' AND o ->> 'payment_method' = 'transfer'),
+  'awaiting_payment|郵局(700) 帳號 0001234-5678901 戶名 市集測試 B');
+SELECT pg_temp.expect('亂填、格式不對、空的 token 都是 NOT_FOUND',
+  concat_ws('|', pg_temp.lookup(repeat('A', 43)) ->> 'code', pg_temp.lookup('short') ->> 'code', pg_temp.lookup('') ->> 'code'),
+  'NOT_FOUND|NOT_FOUND|NOT_FOUND');

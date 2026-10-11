@@ -490,3 +490,95 @@ $$;
 
 REVOKE ALL ON FUNCTION public.market_checkout_status() FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.market_checkout_status() TO anon, authenticated, service_role;
+
+-- ---------------------------------------------------------------------
+-- 3. token 查單(免登入;token 格式不對、找不到都回 NOT_FOUND,不區分)
+-- ---------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION public.market_mask_phone(p text)
+RETURNS text
+LANGUAGE sql
+IMMUTABLE
+SET search_path = ''
+AS $$
+  SELECT CASE WHEN p IS NULL OR char_length(p) < 8 THEN '***'
+              ELSE left(p, 4) || repeat('*', char_length(p) - 7) || right(p, 3) END
+$$;
+
+CREATE OR REPLACE FUNCTION public.market_mask_email(p text)
+RETURNS text
+LANGUAGE sql
+IMMUTABLE
+SET search_path = ''
+AS $$
+  SELECT CASE WHEN p IS NULL OR position('@' IN p) < 2 THEN '***'
+              ELSE left(p, 1) || '***' || substr(p, position('@' IN p)) END
+$$;
+
+CREATE OR REPLACE FUNCTION public.market_get_orders(p_token text)
+RETURNS jsonb
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_result jsonb;
+BEGIN
+  IF p_token IS NULL OR p_token !~ '^[A-Za-z0-9_-]{43}$' THEN
+    RETURN jsonb_build_object('ok', false, 'code', 'NOT_FOUND');
+  END IF;
+
+  SELECT jsonb_agg(jsonb_build_object(
+           'id', o.id,
+           'status', o.status,
+           'payment_method', o.payment_method,
+           'subtotal', o.subtotal,
+           'shipping_fee', o.shipping_fee,
+           'total', o.total,
+           'created_at', o.created_at,
+           'status_note', o.status_note,
+           'shipped_carrier', o.shipped_carrier,
+           'shipped_tracking_no', o.shipped_tracking_no,
+           'buyer_name', o.buyer_name,
+           'buyer_phone', public.market_mask_phone(o.buyer_phone),
+           'buyer_email', public.market_mask_email(o.buyer_email),
+           'ship_city', o.ship_city,
+           'ship_address', o.ship_address,
+           'buyer_note', o.buyer_note,
+           'store', jsonb_build_object('supplier_id', s.supplier_id, 'name', sp.name, 'phone', sp.phone,
+                                       'contact_email', sp.contact_email, 'ship_days', s.ship_days,
+                                       'return_policy', s.return_policy),
+           'items', (SELECT COALESCE(jsonb_agg(jsonb_build_object(
+                              'product_name', i.product_name, 'spec', i.spec, 'unit_price', i.unit_price,
+                              'qty', i.qty, 'line_total', i.line_total, 'temperature', i.temperature)
+                            ORDER BY i.created_at, i.id), '[]'::jsonb)
+                       FROM public.market_order_items i WHERE i.order_id = o.id),
+           'events', (SELECT COALESCE(jsonb_agg(jsonb_build_object('to_status', e.to_status, 'created_at', e.created_at, 'note', e.note)
+                                      ORDER BY e.created_at, e.id), '[]'::jsonb)
+                        FROM public.market_order_events e WHERE e.order_id = o.id),
+           -- 店家接單後、還沒收款前才給轉帳資訊
+           'transfer_info', CASE WHEN o.status = 'awaiting_payment' AND o.payment_method = 'transfer'
+                                 THEN (SELECT t.transfer_info FROM public.market_store_transfer t WHERE t.supplier_id = o.supplier_id) END
+         ) ORDER BY o.created_at, o.id)
+    INTO v_result
+    FROM public.market_orders o
+    JOIN public.market_stores s ON s.supplier_id = o.supplier_id
+    JOIN public.suppliers sp ON sp.id = o.supplier_id
+   WHERE o.lookup_token_hash = encode(sha256(convert_to(p_token, 'UTF8')), 'hex');
+
+  IF v_result IS NULL THEN
+    RETURN jsonb_build_object('ok', false, 'code', 'NOT_FOUND');
+  END IF;
+  RETURN jsonb_build_object('ok', true, 'orders', v_result);
+END;
+$$;
+
+COMMENT ON FUNCTION public.market_get_orders(text) IS
+  '用下單時拿到的 token 查那一次結帳的訂單(電話、Email 遮罩;待匯款時附轉帳資訊)。anon 可呼叫;anon 不能直接讀 market_orders。';
+
+REVOKE ALL ON FUNCTION public.market_mask_phone(text) FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.market_mask_email(text) FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.market_get_orders(text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.market_get_orders(text) TO anon, authenticated, service_role;
+
+NOTIFY pgrst, 'reload schema';
