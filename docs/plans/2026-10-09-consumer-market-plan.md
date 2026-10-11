@@ -17952,3 +17952,27 @@ gate / render / handler / index 與 `config.toml` 先照計畫的程式碼區塊
 - market-notify vitest:**4 檔 / 107 項**(gate 8、send 3、render 46、handler 50;上一節是 85 項)→ Task 42 Step 4 的 Expected 改成 **`Tests  107 passed (107)`**;「F. 共用指令與基準數字」第 2、3 階段的總數比計畫多 **77 項、1 檔**(取代上一節的 55 項)。
 - 全套:`c4f8da7` 的乾淨副本(`git archive`)連跑兩次 **116 檔 / 1843 項**全過;tsc strict 兩份設定 0 error,eslint 沒有輸出。
 - 🔴 部署:這兩個 commit 要重新部署 market-notify 才生效。函式可以比 `20261012100000` 先部署(還沒有 auto_expire 時照一般文案,待匯款信本來就讀得到 `created_at`);migration 先套的話,函式重新部署之前的自動取消會寄成一般的「平台已取消」信。
+
+### 2026-10-12:前端的 72 小時自動取消(commit `cf8645c`、`3e26e88`、`dcff0d6`、`c6e76ef`、`4e1f79b`、`c4f8da7`,分支 `market`)
+
+接 migration `20261012100000_market_hardening.sql`(`fc25de1`)與 market-notify(`c7fab76`、`5a6f0d3`)。照協調者的規格做,每一項都先寫測試、看到失敗才改。**以 repo 為準。** `legal.ts` 沒動(等法規查證的報告出來,再一起定稿 `LEGAL_DRAFT` / `TERMS_VERSION`)。
+
+1. **`src/lib/market/autoCancel.ts`**(`cf8645c`、`3e26e88`):
+   - `MARKET_AUTO_CANCEL_HOURS = 72`。測試解析 migration 的 `-- @market-auto-cancel-hours 72`(全檔剛好一處)與它下一行的 `c_hours CONSTANT integer := 72;` 比對。migration 進來之前用 `skipIf`;`fc25de1` 之後改成一定要跑,檔案改名或刪掉會紅。突變驗證:改成 48 → 對照那項紅。
+   - `autoCancelDeadline(order, events)`:待接單 = 訂單的 `created_at` + 72h;待匯款 = 最後一筆 `to_status = 'awaiting_payment'` 紀錄 + 72h(跟 `market_expire_orders` 的 `max(e.created_at)` 一樣;用 `lookup.ts` 的 `sortEvents` 比到微秒,回傳的期限也保留微秒);其他狀態、待匯款卻查不到紀錄、時間看不懂 → null。
+   - `formatAutoCancelDeadline`:台北時間「M/D HH:mm」(月、日不補零);`hoursUntilAutoCancel`:剩幾個完整小時(無條件捨去,不到 1 小時 → 0)。
+2. **查單頁**(`dcff0d6`):待接單「店家 72 小時內沒有接單,訂單會自動取消(期限 M/D HH:mm)」;待匯款在匯款資訊框裡「請在 M/D HH:mm 前完成匯款,逾期訂單會自動取消」(沒有匯款資訊時單獨寫在單上);其他狀態不寫,系統取消的原因照樣在「原因:」顯示。
+3. **供應商零售訂單頁**(`c6e76ef`、`4e1f79b`):
+   - 查詢:還沒結束的單多帶 `market_order_events(to_status, created_at)`(`SUPPLIER_ACTIVE_ORDER_COLUMNS`;不帶 actor_role、note;已結束的照 `ORDER_COLUMNS`)。`orders.test.ts`「供應商的查詢就是 ORDER_COLUMNS」那項跟著改寫。
+   - 待接單的卡片「N 小時內沒接單會自動取消」(無條件捨去:店家在 N 小時內接單一定來得及),不到 1 小時(含已經過了、排程還沒跑到)「即將自動取消」;待匯款「消費者需在 M/D HH:mm 前匯款,逾期自動取消」。
+   - 頁首加「待接單超過 72 小時沒有接單、轉帳單進入待匯款超過 72 小時沒有收到款項,系統會自動取消訂單。」;頁面開著時每分鐘更新一次倒數。
+4. **結帳頁**(`c4f8da7`):送出鈕正上方「送出後,店家會在 72 小時內確認訂單;超過時間沒有接單,訂單會自動取消。」
+5. **用字**:協調者給的句子用全形逗號與括號,照 repo 慣例改成半形(跟資料庫寫的取消原因一樣)。
+6. **數字**:
+   - 新增 `autoCancel.test.ts` 10 項;`MarketOrderLookupPage.test.tsx` 15 → 19、`orders.test.ts` 14 → 15、`SupplierMarketOrdersPage.test.tsx` 22 → 27、`MarketCheckoutPage.test.tsx` 24 → 25:共 +1 檔 / +21 項(先紅:autoCancel 的 import 失敗;查單 3 項、orders 2 項、供應商 5 項、結帳 1 項)。
+   - `c4f8da7` 的乾淨副本全套 vitest 連跑 2 次都是 **116 檔 / 1843 項**全過(含其他實作者同時 commit 的檔);tsc **72**(市集檔案 0)、eslint **10**(這幾個檔沒有 error 也沒有 warning);兩種 build 都 exit 0(前台站 bundle 有倒數與匯款期限的字,管理員站沒有)。
+   - 畫面實測(同前幾節的腳本):多 3 個情境 —— 查單頁待接單、查單頁待匯款(期限在匯款資訊框裡)、供應商零售訂單(假的登入 session 放在 supabase-js 的 localStorage key,假 Supabase 回 `supplier_accounts` 與訂單,時間都相對於「現在」:還剩 23.5 小時、0.4 小時、待匯款)。15 個情境 × 390 / 360 / 1280 共 45 組全過;所有請求只到本機、console 沒有錯誤。
+7. **沒有處理(記錄)**:
+   - 供應商後台(`SupplierLayout`)的手機抽屜關著時移到畫面左邊外面,但裡面的連結還在 Tab 順序裡、螢幕閱讀器也讀得到(沒有 `inert` / `aria-hidden`),鍵盤使用者會 Tab 到看不見的連結;畫面實測時把它排除在檢查外。不是這次的範圍。
+   - 倒數用瀏覽器的時鐘:使用者電腦的時間不準時,畫面上的時數會跟著偏(真正取消以資料庫為準,排程每 10 分鐘一次)。
+   - 管理員的零售訂單總覽沒有加期限(這次沒有要求)。
