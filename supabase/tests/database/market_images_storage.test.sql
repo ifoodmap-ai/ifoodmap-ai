@@ -43,12 +43,20 @@ SELECT pg_temp.expect('A 上傳縮圖',
   pg_temp.put(pg_temp.ua(), 'a9200000-0000-4000-8000-00000000000a/a9300000-0000-4000-8000-000000000001/a9900000-0000-4000-8000-000000000001_t.jpg'), 'OK');
 SELECT pg_temp.expect('A 上傳店家封面(webp)',
   pg_temp.put(pg_temp.ua(), 'a9200000-0000-4000-8000-00000000000a/store/a9900000-0000-4000-8000-000000000002.webp'), 'OK');
+-- Supabase 2026-10-10 的 Storage 更新拿掉了 storage.objects 的 (bucket_id, name) unique index,只剩帶條件的
+-- idx_objects_current_version (bucket_id, name COLLATE "C") WHERE archived_at IS NULL;upsert 照 Storage API 現在的寫法。
 SELECT pg_temp.expect('A 用 upsert(x-upsert)覆寫同一個檔被拒(沒有 UPDATE policy;已核准的照片換不掉)',
   pg_temp.as_exec('authenticated', pg_temp.ua(), $q$
     INSERT INTO storage.objects (bucket_id, name, owner)
     VALUES ('market-images', 'a9200000-0000-4000-8000-00000000000a/a9300000-0000-4000-8000-000000000001/a9900000-0000-4000-8000-000000000001.jpg', auth.uid())
-    ON CONFLICT (bucket_id, name) DO UPDATE SET owner = EXCLUDED.owner$q$),
+    ON CONFLICT (bucket_id, name COLLATE "C") WHERE archived_at IS NULL DO UPDATE SET owner = EXCLUDED.owner$q$),
   'ERR 42501');
+-- 不綁 ON CONFLICT 的寫法(Supabase 再改 index 也不怕):同一路徑直接再 INSERT 一次要被擋(unique 23505 或 RLS 42501 都算)
+SELECT pg_temp.expect('A 同一路徑直接再傳一次被擋(23505 或 42501 都算擋住)',
+  (SELECT CASE WHEN x.r IN ('ERR 23505', 'ERR 42501') THEN '擋住' ELSE x.r END
+     FROM (SELECT pg_temp.put(pg_temp.ua(),
+             'a9200000-0000-4000-8000-00000000000a/a9300000-0000-4000-8000-000000000001/a9900000-0000-4000-8000-000000000001.jpg') AS r) AS x),
+  '擋住');
 SELECT pg_temp.expect('A 傳到 B 的資料夾被擋',
   pg_temp.put(pg_temp.ua(), 'a9200000-0000-4000-8000-00000000000b/a9300000-0000-4000-8000-000000000001/a9900000-0000-4000-8000-000000000003.jpg'), 'ERR 42501');
 SELECT pg_temp.expect('gif 被擋',
