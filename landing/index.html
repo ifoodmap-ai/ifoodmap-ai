@@ -973,6 +973,7 @@
         <div class="mc-cathead" style="display:flex;align-items:baseline;justify-content:space-between;gap:18px;flex-wrap:wrap">
           <h2 style="font-size:clamp(26px,3.4vw,38px)">{{ L.home.categoriesTitle }}</h2>
           <p class="mc-catsub" style="font-size:14px;color:#4B5A52;font-weight:300">{{ L.home.categoriesSub }}</p>
+          <a href="{{ marketUrl }}" class="mc-catmarket" style="font-size:14.5px;font-weight:700;color:#0E6B40;text-decoration:underline;text-underline-offset:3px">{{ L.home.marketCta }}</a>
         </div>
         <div class="mc-catgrid" style="margin-top:34px;display:grid;grid-template-columns:repeat(auto-fill,minmax(168px,1fr));gap:0;border-top:1px solid #E1E7E3;border-left:1px solid #E1E7E3;border-radius:12px;overflow:hidden">
           <sc-for list="{{ categories }}" as="c" hint-placeholder-count="12">
@@ -2605,6 +2606,8 @@ class Component extends DCLogic {
       restaurantRegistrationUrl: productBaseUrl + '/register/restaurant',
       supplierApplicationUrl: productBaseUrl + '/join',
       loginUrl: productBaseUrl + '/',
+      // 消費者食材市集(2026-10,產品站 /market):一般消費者直接向供應商下單
+      marketUrl: productBaseUrl + '/market',
     };
 
     const g = (key) => this.go(key);

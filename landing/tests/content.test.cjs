@@ -328,6 +328,13 @@ test('product links derive from one canonical product base URL', () => {
   assertMobileLogin(footer);
 });
 
+test('home links to the consumer food market on the product site (/market)', () => {
+  // 消費者食材市集(2026-10):入口在首頁「食材分類」標題旁,網址一樣從 IFM_PRODUCT_BASE_URL 推出來
+  assert.match(source, /marketUrl:\s*productBaseUrl \+ '\/market'/);
+  assert.match(home, /<a href="\{\{ marketUrl \}\}" class="mc-catmarket"[^>]*>個人也能買：逛食材市集 →<\/a>/);
+  assert.equal(dict('en').home.marketCta, 'Buying for home? Visit the Food Market →');
+});
+
 test('homepage retains design metrics and explains the six-step workflow', () => {
   assertHomeMetricsAndWorkflow(component, homeData);
   assert.match(home, /<sc-for list="\{\{\s*flowA\s*\}\}"/);

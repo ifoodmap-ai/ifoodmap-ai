@@ -341,7 +341,8 @@ test('internal links are language-aware bindings, never hard-coded paths', () =>
       // 它會落進這條檢查只是因為 markup 上寫的是綁定而不是字面網址,不是寫死的內部路徑。
       // d.href 是法律文件在 sc-for 裡逐份算出來的網址(pageToPath 產的,已帶語系前綴);
       // t.href 是同一頁目錄的 #錨點,不跨頁也不跨語系。
-      /^\{\{ (href[A-Za-z]*|langHref|loginUrl|restaurantRegistrationUrl|supplierApplicationUrl|a\.href|lk\.href|q\.linkHref|d\.href|t\.href) \}\}$/,
+      // marketUrl 跟 loginUrl 一樣是產品站的網址(產品站沒有語系前綴,中英兩版都連到同一個 /market)。
+      /^\{\{ (href[A-Za-z]*|langHref|loginUrl|restaurantRegistrationUrl|supplierApplicationUrl|marketUrl|a\.href|lk\.href|q\.linkHref|d\.href|t\.href) \}\}$/,
       `internal link must be a binding, got ${href}`,
     );
   }
