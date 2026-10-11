@@ -395,3 +395,30 @@ SELECT pg_temp.expect('system 自己帶的時間也不算(資料庫擁有者帶 
                                                WHERE x.order_id = 'a9600000-0000-4000-8000-000000000009' AND x.to_status = 'paid'))::text
       FROM e$q$),
   'system|true');
+-- 5-2 market_phone_ok / market_email_ok 收回 API 角色的執行權(只有 CHECK 與 SECURITY DEFINER 的下單 RPC 用得到)
+SELECT pg_temp.expect('電話、Email 檢查函式不開給 API 角色',
+  (has_function_privilege('anon', 'public.market_phone_ok(text)', 'EXECUTE')
+   OR has_function_privilege('anon', 'public.market_email_ok(text)', 'EXECUTE')
+   OR has_function_privilege('authenticated', 'public.market_phone_ok(text)', 'EXECUTE')
+   OR has_function_privilege('authenticated', 'public.market_email_ok(text)', 'EXECUTE'))::text,
+  'false');
+-- 5-3 出貨的物流、單號:market_visible 判斷有沒有填、market_trim 去頭尾(跟拒單原因一致;只填全形空白要擋)
+SELECT pg_temp.mk_order('a9600000-0000-4000-8000-000000000011', 'a9200000-0000-4000-8000-00000000000a', 'cod');
+SELECT pg_temp.as_exec('authenticated', pg_temp.ua(), $q$
+  INSERT INTO public.market_order_events (order_id, from_status, to_status)
+  VALUES ('a9600000-0000-4000-8000-000000000011', 'pending', 'confirmed')$q$);
+SELECT pg_temp.expect('出貨的物流只填全形空白:算沒填',
+  pg_temp.as_exec('authenticated', pg_temp.ua(), $q$
+    INSERT INTO public.market_order_events (order_id, from_status, to_status, payload)
+    VALUES ('a9600000-0000-4000-8000-000000000011', 'confirmed', 'shipped', jsonb_build_object('carrier', chr(12288) || chr(12288)))$q$),
+  'ERR 22023:carrier_required');
+SELECT pg_temp.as_exec('authenticated', pg_temp.ua(), $q$
+  INSERT INTO public.market_order_events (order_id, from_status, to_status, payload)
+  VALUES ('a9600000-0000-4000-8000-000000000011', 'confirmed', 'shipped',
+          jsonb_build_object('carrier', chr(12288) || '黑貓宅急便' || chr(8203), 'tracking_no', chr(8203) || '9001' || chr(12288)))$q$);
+SELECT pg_temp.expect('物流、單號頭尾的全形空白、零寬字元去掉(訂單與紀錄都是去掉後的字)',
+  (SELECT o.status || '|' || o.shipped_carrier || '|' || o.shipped_tracking_no || '|' || e.payload::text
+     FROM public.market_orders o
+     JOIN public.market_order_events e ON e.order_id = o.id AND e.to_status = 'shipped'
+    WHERE o.id = 'a9600000-0000-4000-8000-000000000011'),
+  'shipped|黑貓宅急便|9001|{"carrier": "黑貓宅急便", "tracking_no": "9001"}');

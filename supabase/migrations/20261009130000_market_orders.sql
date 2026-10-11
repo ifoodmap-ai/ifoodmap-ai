@@ -264,6 +264,10 @@ CREATE POLICY "market order events party insert" ON public.market_order_events
 
 REVOKE ALL ON FUNCTION public.market_transition_rules() FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION public.market_order_status_label(text) FROM PUBLIC, anon, authenticated;
+-- 電話、Email 檢查只給 market_orders 的 CHECK 與下單 RPC(SECURITY DEFINER,以擁有者身分執行)用;
+-- API 角色寫不進 market_orders,不需要執行權(前端有自己的同一組正規式,vitest 比對)
+REVOKE ALL ON FUNCTION public.market_phone_ok(text) FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.market_email_ok(text) FROM PUBLIC, anon, authenticated;
 
 -- ---------------------------------------------------------------------
 -- 4. 狀態紀錄寫入前的檢查(guard)、只能新增、同一個 INSERT 同一張單只能一筆
@@ -354,8 +358,9 @@ BEGIN
   END IF;
 
   IF NEW.to_status = 'shipped' THEN
-    v_carrier  := NULLIF(btrim(COALESCE(NEW.payload->>'carrier', '')), '');
-    v_tracking := NULLIF(btrim(COALESCE(NEW.payload->>'tracking_no', '')), '');
+    -- 物流、單號跟拒單原因同一套:market_trim 去頭尾(連全形空白、零寬字元),market_visible 看不到字就當成沒填
+    v_carrier  := CASE WHEN public.market_visible(NEW.payload->>'carrier') THEN public.market_trim(NEW.payload->>'carrier') END;
+    v_tracking := CASE WHEN public.market_visible(NEW.payload->>'tracking_no') THEN public.market_trim(NEW.payload->>'tracking_no') END;
     IF v_carrier IS NULL OR char_length(v_carrier) > 50 THEN
       RAISE EXCEPTION '出貨要填寫物流(50 字以內)' USING ERRCODE = '22023', HINT = 'carrier_required';
     END IF;
