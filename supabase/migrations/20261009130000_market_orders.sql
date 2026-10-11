@@ -395,3 +395,56 @@ FOR EACH STATEMENT EXECUTE FUNCTION public.market_events_one_per_order();
 REVOKE ALL ON FUNCTION public.market_guard_event() FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION public.market_events_immutable() FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION public.market_events_one_per_order() FROM PUBLIC, anon, authenticated;
+
+-- ---------------------------------------------------------------------
+-- 5. 狀態紀錄寫入後:套用狀態與時間、拒單 / 取消補庫存、轉帳訂單接單後自動待匯款
+-- ---------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION public.market_apply_event()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+DECLARE
+  v_payment text;
+BEGIN
+  UPDATE public.market_orders o
+     SET status              = NEW.to_status,
+         updated_at          = now(),
+         confirmed_at        = CASE WHEN NEW.to_status = 'confirmed' THEN NEW.created_at ELSE o.confirmed_at END,
+         paid_at             = CASE WHEN NEW.to_status = 'paid' THEN NEW.created_at ELSE o.paid_at END,
+         shipped_at          = CASE WHEN NEW.to_status = 'shipped' THEN NEW.created_at ELSE o.shipped_at END,
+         completed_at        = CASE WHEN NEW.to_status = 'completed' THEN NEW.created_at ELSE o.completed_at END,
+         closed_at           = CASE WHEN NEW.to_status IN ('rejected', 'cancelled') THEN NEW.created_at ELSE o.closed_at END,
+         status_note         = CASE WHEN NEW.to_status IN ('rejected', 'cancelled') THEN NEW.note ELSE o.status_note END,
+         shipped_carrier     = CASE WHEN NEW.to_status = 'shipped' THEN NEW.payload->>'carrier' ELSE o.shipped_carrier END,
+         shipped_tracking_no = CASE WHEN NEW.to_status = 'shipped' THEN NEW.payload->>'tracking_no' ELSE o.shipped_tracking_no END
+   WHERE o.id = NEW.order_id
+  RETURNING o.payment_method INTO v_payment;
+
+  -- 拒單 / 取消:有設庫存的商品把數量加回去(商品已刪除的就算了)
+  IF NEW.to_status IN ('rejected', 'cancelled') THEN
+    UPDATE public.market_products p
+       SET stock = LEAST(p.stock + i.qty, 100000)
+      FROM public.market_order_items i
+     WHERE i.order_id = NEW.order_id AND i.product_id = p.id AND p.stock IS NOT NULL;
+  END IF;
+
+  -- 轉帳訂單:接單後同一個交易、同一個身分自動進入「待匯款」(供應商畫面上只有一顆「接單」)
+  IF NEW.to_status = 'confirmed' AND v_payment = 'transfer' THEN
+    INSERT INTO public.market_order_events (order_id, from_status, to_status)
+    VALUES (NEW.order_id, 'confirmed', 'awaiting_payment');
+  END IF;
+
+  RETURN NULL;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_market_apply_event ON public.market_order_events;
+CREATE TRIGGER trg_market_apply_event
+AFTER INSERT ON public.market_order_events
+FOR EACH ROW EXECUTE FUNCTION public.market_apply_event();
+
+REVOKE ALL ON FUNCTION public.market_apply_event() FROM PUBLIC, anon, authenticated;
+
+NOTIFY pgrst, 'reload schema';

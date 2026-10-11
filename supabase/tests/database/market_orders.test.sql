@@ -179,3 +179,96 @@ SELECT pg_temp.expect('供應商連 UPDATE 紀錄的權限都沒有',
   pg_temp.as_exec('authenticated', pg_temp.ua(), $q$
     UPDATE public.market_order_events SET note = '竄改' WHERE order_id = 'a9600000-0000-4000-8000-000000000001'$q$),
   'ERR 42501');
+
+-- ---------------------------------------------------------------------
+-- 3. 套用狀態(apply)
+-- ---------------------------------------------------------------------
+SELECT pg_temp.expect('A 接單(貨到付款)',
+  pg_temp.as_exec('authenticated', pg_temp.ua(), $q$
+    INSERT INTO public.market_order_events (order_id, from_status, to_status)
+    VALUES ('a9600000-0000-4000-8000-000000000001', 'pending', 'confirmed')$q$),
+  'OK');
+SELECT pg_temp.expect('狀態與接單時間套上去;紀錄的身分是供應商、actor_id 是 A',
+  (SELECT o.status || '|' || (o.confirmed_at IS NOT NULL)::text || '|' || e.actor_role || '|' || e.actor_id::text
+     FROM public.market_orders o
+     JOIN public.market_order_events e ON e.order_id = o.id AND e.to_status = 'confirmed'
+    WHERE o.id = 'a9600000-0000-4000-8000-000000000001'),
+  'confirmed|true|supplier|a9100000-0000-4000-8000-000000000001');
+SELECT pg_temp.expect('出貨沒填物流被擋',
+  pg_temp.as_exec('authenticated', pg_temp.ua(), $q$
+    INSERT INTO public.market_order_events (order_id, from_status, to_status, payload)
+    VALUES ('a9600000-0000-4000-8000-000000000001', 'confirmed', 'shipped', '{"tracking_no":"9001"}')$q$),
+  'ERR 22023:carrier_required');
+SELECT pg_temp.expect('A 出貨(物流、單號)',
+  pg_temp.as_exec('authenticated', pg_temp.ua(), $q$
+    INSERT INTO public.market_order_events (order_id, from_status, to_status, payload)
+    VALUES ('a9600000-0000-4000-8000-000000000001', 'confirmed', 'shipped',
+            '{"carrier":" 黑貓宅急便 ","tracking_no":"9001","extra":"不該存"}')$q$),
+  'OK');
+SELECT pg_temp.expect('物流與單號寫進訂單;紀錄只留 carrier / tracking_no',
+  (SELECT o.shipped_carrier || '|' || o.shipped_tracking_no || '|' || e.payload::text
+     FROM public.market_orders o
+     JOIN public.market_order_events e ON e.order_id = o.id AND e.to_status = 'shipped'
+    WHERE o.id = 'a9600000-0000-4000-8000-000000000001'),
+  '黑貓宅急便|9001|{"carrier": "黑貓宅急便", "tracking_no": "9001"}');
+SELECT pg_temp.expect('A 完成訂單',
+  pg_temp.as_exec('authenticated', pg_temp.ua(), $q$
+    INSERT INTO public.market_order_events (order_id, from_status, to_status)
+    VALUES ('a9600000-0000-4000-8000-000000000001', 'shipped', 'completed')$q$),
+  'OK');
+SELECT pg_temp.expect('轉帳訂單接單 → 自動待匯款(三筆紀錄)',
+  pg_temp.as_val('authenticated', pg_temp.ua(), $q$
+    WITH e AS (INSERT INTO public.market_order_events (order_id, from_status, to_status)
+               VALUES ('a9600000-0000-4000-8000-000000000002', 'pending', 'confirmed') RETURNING 1)
+    SELECT count(*)::text FROM e$q$),
+  '1');
+SELECT pg_temp.expect('……訂單停在待匯款,紀錄 pending → confirmed → awaiting_payment',
+  (SELECT o.status || '|' || (SELECT string_agg(e.to_status, '>' ORDER BY e.created_at, e.to_status = 'awaiting_payment')
+                                FROM public.market_order_events e WHERE e.order_id = o.id)
+     FROM public.market_orders o WHERE o.id = 'a9600000-0000-4000-8000-000000000002'),
+  'awaiting_payment|pending>confirmed>awaiting_payment');
+SELECT pg_temp.expect('待匯款不能直接出貨',
+  pg_temp.as_exec('authenticated', pg_temp.ua(), $q$
+    INSERT INTO public.market_order_events (order_id, from_status, to_status, payload)
+    VALUES ('a9600000-0000-4000-8000-000000000002', 'awaiting_payment', 'shipped', '{"carrier":"黑貓"}')$q$),
+  'ERR 42501:transition_not_allowed');
+SELECT pg_temp.expect('標記已收款',
+  pg_temp.as_exec('authenticated', pg_temp.ua(), $q$
+    INSERT INTO public.market_order_events (order_id, from_status, to_status)
+    VALUES ('a9600000-0000-4000-8000-000000000002', 'awaiting_payment', 'paid')$q$),
+  'OK');
+SELECT pg_temp.expect('已收款後出貨',
+  pg_temp.as_exec('authenticated', pg_temp.ua(), $q$
+    INSERT INTO public.market_order_events (order_id, from_status, to_status, payload)
+    VALUES ('a9600000-0000-4000-8000-000000000002', 'paid', 'shipped', '{"carrier":"自行配送"}')$q$),
+  'OK');
+SELECT pg_temp.expect('……狀態已出貨、收款時間有填',
+  (SELECT status || '|' || (paid_at IS NOT NULL)::text FROM public.market_orders WHERE id = 'a9600000-0000-4000-8000-000000000002'),
+  'shipped|true');
+SELECT pg_temp.expect('取消(填原因)',
+  pg_temp.as_exec('authenticated', pg_temp.ua(), $q$
+    INSERT INTO public.market_order_events (order_id, from_status, to_status, note)
+    VALUES ('a9600000-0000-4000-8000-000000000004', 'pending', 'cancelled', '缺貨')$q$),
+  'OK');
+SELECT pg_temp.expect('……庫存加回去(8 + 2 = 10)、原因與結束時間寫進訂單',
+  (SELECT p.stock::text || '|' || o.status_note || '|' || (o.closed_at IS NOT NULL)::text
+     FROM public.market_products p, public.market_orders o
+    WHERE p.id = 'a9300000-0000-4000-8000-0000000000a1' AND o.id = 'a9600000-0000-4000-8000-000000000004'),
+  '10|缺貨|true');
+SELECT pg_temp.expect('已取消的單不能再接',
+  pg_temp.as_exec('authenticated', pg_temp.ua(), $q$
+    INSERT INTO public.market_order_events (order_id, from_status, to_status)
+    VALUES ('a9600000-0000-4000-8000-000000000004', 'cancelled', 'confirmed')$q$),
+  'ERR 42501:transition_not_allowed');
+SELECT pg_temp.expect('管理員取消 B 的單,紀錄的身分是管理員',
+  pg_temp.as_val('authenticated', pg_temp.uadmin(), $q$
+    WITH e AS (INSERT INTO public.market_order_events (order_id, from_status, to_status, note)
+               VALUES ('a9600000-0000-4000-8000-000000000003', 'pending', 'cancelled', '客訴:重複下單') RETURNING actor_role)
+    SELECT actor_role FROM e$q$),
+  'admin');
+SELECT pg_temp.expect('前端送的 actor_role 不算(A 冒充管理員 → 記成 supplier)',
+  pg_temp.as_val('authenticated', pg_temp.ua(), $q$
+    WITH e AS (INSERT INTO public.market_order_events (order_id, from_status, to_status, actor_role)
+               VALUES ('a9600000-0000-4000-8000-000000000005', 'pending', 'confirmed', 'admin') RETURNING actor_role)
+    SELECT actor_role FROM e$q$),
+  'supplier');
