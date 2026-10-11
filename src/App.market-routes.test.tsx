@@ -31,9 +31,11 @@ describe("市集路由(前台站)", () => {
   it("購物車、條款、隱私權政策都在市集版面裡", async () => {
     renderAt("/market/cart");
     expect(await screen.findByText("購物車是空的。")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "跳到主要內容" })).toBeInTheDocument();
     cleanup();
     renderAt("/market/terms");
     expect(await screen.findByRole("heading", { level: 1, name: "食材市集服務條款" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "跳到主要內容" })).toBeInTheDocument();
     cleanup();
     renderAt("/market/privacy");
     expect(await screen.findByRole("heading", { level: 1, name: "食材市集隱私權政策" })).toBeInTheDocument();
