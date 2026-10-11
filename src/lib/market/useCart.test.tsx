@@ -1,5 +1,5 @@
 // useCart:存進 localStorage、重新整理讀得回來、別的分頁改了會同步;localStorage 壞掉也不會讓頁面掛掉。
-import { act, renderHook } from "@testing-library/react";
+import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createMemoryStorage } from "@/test/memory-storage";
 
@@ -16,6 +16,8 @@ beforeEach(() => {
   cartStore.resetForTests();
 });
 afterEach(() => {
+  // vitest 沒開 globals,Testing Library 不會自動 cleanup:上一個測試的 hook 沒卸載的話會一直訂閱,「沒有人在看」的情境測不到
+  cleanup();
   vi.unstubAllGlobals();
 });
 
@@ -47,6 +49,46 @@ describe("useCart", () => {
       window.dispatchEvent(new StorageEvent("storage", { key: CART_STORAGE_KEY }));
     });
     expect(result.current.count).toBe(3);
+  });
+
+  it("沒有畫面在看購物車時(離開市集)別的分頁改了:回來時讀到新的,再加入也不會蓋掉別的分頁加的", () => {
+    const first = renderHook(() => useCart());
+    act(() => first.result.current.add(CABBAGE.id, 1));
+    first.unmount(); // 沒有人訂閱 → 不聽 storage 事件
+    // 別的分頁加了牛肉;這個分頁沒有人在聽,事件等於沒收到
+    storage.setItem(
+      CART_STORAGE_KEY,
+      JSON.stringify([
+        { productId: CABBAGE.id, qty: 1 },
+        { productId: BEEF.id, qty: 2 },
+      ]),
+    );
+    window.dispatchEvent(new StorageEvent("storage", { key: CART_STORAGE_KEY }));
+    const again = renderHook(() => useCart());
+    expect(again.result.current.lines).toEqual([
+      { productId: CABBAGE.id, qty: 1 },
+      { productId: BEEF.id, qty: 2 },
+    ]);
+    act(() => again.result.current.add(CABBAGE.id, 1));
+    expect(JSON.parse(storage.getItem(CART_STORAGE_KEY) ?? "[]")).toEqual([
+      { productId: CABBAGE.id, qty: 2 },
+      { productId: BEEF.id, qty: 2 },
+    ]);
+  });
+
+  it("localStorage 寫不進去時,離開市集再回來,記憶體裡的購物車還在(不被 localStorage 裡舊的那份蓋掉)", () => {
+    vi.stubGlobal("localStorage", {
+      getItem: () => null,
+      setItem: () => {
+        throw new Error("QuotaExceededError");
+      },
+    });
+    cartStore.resetForTests();
+    const first = renderHook(() => useCart());
+    act(() => first.result.current.add(CABBAGE.id, 1));
+    first.unmount();
+    const again = renderHook(() => useCart());
+    expect(again.result.current.lines).toEqual([{ productId: CABBAGE.id, qty: 1 }]);
   });
 
   it("localStorage 一碰就丟例外(無痕、封鎖):當成空的,加入照樣有效(只在記憶體)", () => {
