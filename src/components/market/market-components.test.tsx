@@ -276,6 +276,16 @@ describe("QtyStepper", () => {
     expect(input).toHaveValue(10);
     expect(screen.getByTestId("qty")).toHaveTextContent(/^10$/);
   });
+
+  it("打字之後直接按 +(iOS 點按鈕不會讓數字框失去焦點):框裡顯示按完的數量,不是剛剛打的字", async () => {
+    render(<Harness max={10} />);
+    const input = screen.getByRole("spinbutton", { name: "數量" });
+    await userEvent.clear(input);
+    await userEvent.type(input, "5");
+    fireEvent.click(screen.getByRole("button", { name: "增加一件" })); // fireEvent 不移動焦點
+    expect(screen.getByTestId("qty")).toHaveTextContent(/^6$/);
+    expect(input).toHaveValue(6);
+  });
 });
 
 describe("StoreInfoList", () => {
