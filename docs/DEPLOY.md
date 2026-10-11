@@ -1434,7 +1434,7 @@ where jobid = (select jobid from cron.job where jobname = 'ifoodmap-market-expir
 
 - `notifications` 是 `failed`:Resend 回錯誤(原因在 Dashboard → Edge Functions → `market-notify` → Logs,token 已遮掉)、同一個 Idempotency-Key 內容不同(409),
   或收件 Email 不合格(message 寫了原因)。第 3 階段的 `market-notify` 遇到 429、5xx 或連線失敗,會在同一次呼叫裡用同一個 Idempotency-Key 重試最多 3 次
-  (總等待不超過 5 秒);還是失敗才記 `failed`,之後不會再自動重送。
+  (同一次呼叫裡的所有信共用 5 秒的等待額度);還是失敗才記 `failed`,之後不會再自動重送。
 - `net._http_response`:`status_code` 200 = `market-notify` 收到並處理了(內容 `"live":false` = 閘門沒開;有 `"kinds"` 的是狀態信、有 `"orders"` 的是下單確認);
   401 = 密鑰對不上(`NOTIFY_SECRET` 跟 `app_config.notify_service_key` 不一致)或 function 的 JWT 驗證被打開了(見「部署」第 6 步);
   404 = function 沒部署、或那筆紀錄找不到;`status_code` 是空的而 `timed_out` / `error_msg` 有值 = 連不上或超過 8 秒。
@@ -1609,8 +1609,8 @@ where jobid = (select jobid from cron.job where jobname = 'ifoodmap-market-expir
     `auto_expire` 只有系統的取消能帶,供應商、管理員帶了會被 guard 擋(22023 `auto_expire_invalid`)。
     時數 72 只定義在 `market_expire_orders` 的常數,旁邊的 `-- @market-auto-cancel-hours 72` 由前端 `src/lib/market/autoCancel.ts` 與 `market-notify` 的測試對照。
     對應第 2 階段待辦第 5 條。
-  - **自動取消的批次**:每次最多看 50 張候選單(常數 `c_scan`),成功取消 5 張就停(`c_per_run`)—— 每張取消都會寄信,Resend 預設每秒只收 2 個請求;
-    所以每 10 分鐘最多取消 5 張,也就是**每小時最多 30 張**,其餘排到下一輪。沒有任何狀態紀錄的訂單不會被選為候選單(guard 一定擋,排在前面只會卡住後面的單)。
+  - **自動取消的批次**:每次最多看 50 張候選單(常數 `c_scan`),成功取消 3 張就停(`c_per_run`)—— 每張取消都會寄 2 封信,Resend 預設每秒只收 2 個請求
+    (審查員模擬過:一輪取消 5 張會有 1–2 封信寄不出去,3 張則 0 封失敗);所以每 10 分鐘最多取消 3 張,也就是**每小時最多 18 張**,其餘排到下一輪。沒有任何狀態紀錄的訂單不會被選為候選單(guard 一定擋,排在前面只會卡住後面的單)。
     函式設 `lock_timeout = 5s`:拿不到鎖的單(有人正在操作,或商品列被長時間鎖住)跳過,下一輪再處理。
   - **pg_cron 執行紀錄的清理**:每天的 `ifoodmap-market-rate-cleanup`(時間不變、用 `cron.alter_job` 換指令)多刪 jobname 開頭是 `ifoodmap-market-` 的工作
     超過 14 天的 `cron.job_run_details`(自動取消每 10 分鐘一次,一天多 144 列);別的工作的紀錄不碰。
@@ -1621,9 +1621,11 @@ where jobid = (select jobid from cron.job where jobname = 'ifoodmap-market-expir
   - **被擋的請求用非同步 commit**:`market_rate_take` 擋下時先 `set_config('synchronous_commit', 'off', true)` 再寫擋下紀錄;建單的路不動。對應待辦第 11 條。
 - **跟 migration 一起上線的前端與通知信**:查單頁、供應商零售訂單頁、結帳頁寫出 72 小時的期限;`market-notify` 的新訂單、下單確認、待匯款信寫明期限,
   自動取消信分得出是逾時取消。`market-notify` 改了,這次要重新部署(「部署(第 3 階段)」第 3 步)。
-  - **寄信重試**:遇到 429(限速)、5xx 或連線失敗會重試,**最多 3 次、一封信的總等待不超過 5 秒**(回應有 `retry-after` 照它等、最多 3 秒;沒有就等 0.7 / 1.5 / 2.5 秒
-    加一點隨機抖動),每次重試的 **Idempotency-Key 不變**(Resend 自己去重,不會寄出兩封);其他 4xx(422、409…)不重試。總等待壓在 pg_net 呼叫的 8 秒逾時以內。
-    為什麼:Resend 預設每秒只收 2 個請求,一次結帳 3 家店會同時送出 1 封下單確認 + 3 封新訂單信。部署後的實測見「開放當天的順序」第 1 步。
+  - **寄信重試**:遇到 429(限速)、5xx 或連線失敗會重試,每封信**最多 3 次**(回應有 `retry-after` 照它等、最多 3 秒;沒有就等 0.7 / 1.5 / 2.5 秒加一點隨機抖動),
+    每次重試的 **Idempotency-Key 不變**(Resend 自己去重,不會寄出兩封);其他 4xx(422、409…)不重試。
+    **同一次呼叫裡的所有信共用 5 秒的等待額度**(一筆狀態紀錄或一次下單確認是一次呼叫):一筆取消紀錄要寄 2 封信(消費者、店家),每封各給 5 秒的話,
+    加起來可能超過 pg_net 呼叫的 8 秒逾時。為什麼要重試:Resend 預設每秒只收 2 個請求,一次結帳 3 家店會同時送出 1 封下單確認 + 3 封新訂單信。
+    部署後的實測見「開放當天的順序」第 1 步。(共用額度由通知信的實作者在改,寫這段時 repo 的 `send.ts` 還是每封各 5 秒;以 repo 為準。)
 
 **第 2 階段「對外開放前待辦」11 條的現況**(內容見那一節,這裡只寫狀態):
 
@@ -1643,11 +1645,11 @@ where jobid = (select jobid from cron.job where jobname = 'ifoodmap-market-expir
 
 **營運注意**:
 
-- `market_expire_orders` 是**單一交易**:pg_cron 每 10 分鐘呼叫一次(`SELECT public.market_expire_orders()`),每次最多看 50 張候選、成功取消 5 張就停,
-  整批到最後才一起 commit(每張單包在自己的子交易裡,一張失敗只跳過那一張)。每小時最多取消 30 張:同一段時間逾時的單比這個多,會一輪一輪排隊。
+- `market_expire_orders` 是**單一交易**:pg_cron 每 10 分鐘呼叫一次(`SELECT public.market_expire_orders()`),每次最多看 50 張候選、成功取消 3 張就停,
+  整批到最後才一起 commit(每張單包在自己的子交易裡,一張失敗只跳過那一張)。每小時最多取消 18 張:同一段時間逾時的單比這個多,會一輪一輪排隊。
   **量變大時調高 `c_per_run`**(先確認 Resend 的寄信限速),**並考慮改成每張單各自 commit 的 procedure**(`CREATE PROCEDURE`,pg_cron 的指令改成 `CALL …`)。
   函式裡的 `RAISE WARNING`(某張單取消失敗)**不會**出現在 pg_cron 的執行紀錄(`cron.job_run_details`)裡 —— 監控要看「開放前檢查」的
-  `orders_pending_over_72h` 與 `orders_awaiting_payment_over_72h`,正常應該是 0(排程每 10 分鐘、每次最多 5 張,一次逾時很多張時會暫時 > 0)。
+  `orders_pending_over_72h` 與 `orders_awaiting_payment_over_72h`,正常應該是 0(排程每 10 分鐘、每次最多 3 張,一次逾時很多張時會暫時 > 0)。
 - `market_hardening.test.sql` 會在乾跑交易裡對線上資料執行自動取消(先把線上本來就該取消的單清掉)、暫時換掉 guard:交易最後一定 ROLLBACK,
   但跑的那幾秒會鎖住被取消的訂單與商品。**對外開放之後只在離峰時段跑**(migration 20261012100000 檔頭的營運注意)。
 
@@ -1692,7 +1694,7 @@ where jobid = (select jobid from cron.job where jobname = 'ifoodmap-market-expir
    `SUPABASE_PROJECT_REF=cwvpehqcvbfuynabpqop node scripts/check-migrations.mjs`(✅,repo 47 個、線上 47 個)。
    (這幾個「加固之後」的值,2026-10-12 在本機一次性的 Postgres 載入 120000–130200 與 20261012100000(`fc25de1`、`e9121e3`、最終版 `802e1a8` 各一次)實測過;
    同時實測了兩張逾時的單被取消、原因與 `auto_expire` 照上面寫的、庫存補回、通知排進 pg_net、再跑一次取消 0 張、供應商冒充 `auto_expire` 被擋;
-   `802e1a8` 另外實測:7 張逾時的單第一輪取消 5 張、第二輪 2 張、第三輪 0 張,沒有狀態紀錄的舊單不會被取消,函式設定帶 `lock_timeout=5s`。)
+   `802e1a8` 另外實測:沒有狀態紀錄的舊單不會被取消,函式設定帶 `lock_timeout=5s`;每輪上限改成 3 張的 `f459e04` 實測 7 張逾時的單依序取消 3、3、1、0 張。)
 6. **用線上 schema 再跑一次測試**(不帶 `--with-migration`)與還原檔的乾跑(`market_hardening.test.sql` 會在交易裡對線上資料執行自動取消、鎖住那幾張單幾秒;
    現在開關還關著沒關係,對外開放之後只在離峰時段跑,見「第 3 階段」的營運注意):
    ```bash
@@ -1790,7 +1792,7 @@ cd /Users/aimand/.gemini/File/ifoodmap && SUPABASE_ACCESS_TOKEN="$(cat <token �
 | `products_pending_review`、`products_pending_over_2_days` | 待審的商品、等超過 2 天的 | 照實 | 超過 2 天的 > 0 = 提醒管理員到「零售市集 › 商品審核」 |
 | `orders_total`、`orders_by_status` | 訂單總數、各狀態幾張 | 照實 | — |
 | `orders_pending_over_1_day` | 超過 1 天還沒接單 | 0 為佳 | > 0 = 提醒店家接單(滿 72 小時會被自動取消) |
-| `orders_pending_over_72h`、`orders_awaiting_payment_over_72h` | 該被自動取消、還沒取消的單 | 0(排程每 10 分鐘、每次最多 5 張;一次逾時很多張時會暫時 > 0) | 持續 > 0、一小時內沒有往下降 = 自動取消沒在跑,或有幾張一直取消失敗(函式的 WARNING 不會進排程執行紀錄,見「第 3 階段」的營運注意):先看排程執行紀錄(「怎麼查(第 2 階段)」),排程有在跑就回報 |
+| `orders_pending_over_72h`、`orders_awaiting_payment_over_72h` | 該被自動取消、還沒取消的單 | 0(排程每 10 分鐘、每次最多 3 張;一次逾時很多張時會暫時 > 0) | 持續 > 0、一小時內沒有往下降 = 自動取消沒在跑,或有幾張一直取消失敗(函式的 WARNING 不會進排程執行紀錄,見「第 3 階段」的營運注意):先看排程執行紀錄(「怎麼查(第 2 階段)」),排程有在跑就回報 |
 | `orders_paid_unshipped_over_3_days` | 已收款超過 3 天還沒出貨 | 0 | > 0 = 收了錢沒出貨,客訴風險最高:聯絡店家 |
 | `notify_failed_7_days` | 7 天內零售通知寄失敗(含 Email 格式不對沒寄的) | 0 | > 0 = 管理後台「通知紀錄」或「怎麼查(第 2 階段)」看原因 |
 | `rate_blocks_7_days` | 今天與前 6 天,依規則加總的擋下次數 | `{}` 為佳 | `ipo` / `ip48o` 多 = 共用網路擋到真人,考慮調高(待辦第 7 條);`global` 有 = 那天 500 單滿了;`noip` 有 = 見下一列 |
