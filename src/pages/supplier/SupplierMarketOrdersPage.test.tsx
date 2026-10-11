@@ -426,3 +426,74 @@ describe("SupplierMarketOrdersPage", () => {
     expect(screen.queryByText(/每一步/)).toBeNull();
   });
 });
+
+describe("SupplierMarketOrdersPage:72 小時自動取消", () => {
+  // PENDING 下單 2026-10-09T04:05Z → 2026-10-12T04:05Z(台北 10/12 12:05)自動取消
+  const card = (o: MarketOrderRow) => within(screen.getByRole("article", { name: `訂單 ${formatOrderNo(o.id)}` }));
+  const AWAIT_WITH_EVENTS = makeOrder({
+    status: "awaiting_payment",
+    payment_method: "transfer",
+    market_order_events: [
+      { to_status: "pending", created_at: "2026-10-09T04:05:00Z" },
+      { to_status: "confirmed", created_at: "2026-10-09T05:00:00Z" },
+      { to_status: "awaiting_payment", created_at: "2026-10-09T05:00:00.000001Z" },
+    ],
+  });
+  const useClock = (iso: string) => {
+    // 只換 Date 與 setInterval(頁面每分鐘更新倒數用);setTimeout 照常,React Query 與 Testing Library 不受影響
+    vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
+    vi.setSystemTime(new Date(iso));
+  };
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("待接單:卡片寫「N 小時內沒接單會自動取消」(剩幾個完整小時,無條件捨去)", async () => {
+    useClock("2026-10-11T04:35:00Z"); // 還剩 23.5 小時
+    vi.mocked(fetchSupplierOrders).mockImplementation(serve([PENDING, AWAIT_WITH_EVENTS]));
+    renderPage();
+    expect(await screen.findByText("23 小時內沒接單會自動取消")).toBeInTheDocument();
+    expect(card(PENDING).getByText("23 小時內沒接單會自動取消")).toBeInTheDocument();
+  });
+
+  it("待接單不到 1 小時(含已經過了、排程還沒跑到):寫「即將自動取消」", async () => {
+    useClock("2026-10-12T03:30:00Z"); // 還剩 35 分鐘
+    vi.mocked(fetchSupplierOrders).mockImplementation(serve([PENDING]));
+    renderPage();
+    expect(await screen.findByText("即將自動取消")).toBeInTheDocument();
+    expect(screen.queryByText(/小時內沒接單/)).toBeNull();
+  });
+
+  it("待匯款:寫消費者的匯款期限(最後一筆「待匯款」紀錄 + 72 小時,台北時間);已接單、已收款不寫", async () => {
+    useClock("2026-10-10T00:00:00Z");
+    const PAID = makeOrder({ status: "paid", payment_method: "transfer" });
+    vi.mocked(fetchSupplierOrders).mockImplementation(serve([AWAIT_WITH_EVENTS, CONFIRMED, PAID]));
+    renderPage();
+    // 2026-10-09T05:00:00.000001Z + 72h = 2026-10-12T05:00Z = 台北 10/12 13:00
+    expect(await screen.findByText("消費者需在 10/12 13:00 前匯款,逾期自動取消")).toBeInTheDocument();
+    expect(card(AWAIT_WITH_EVENTS).getByText("消費者需在 10/12 13:00 前匯款,逾期自動取消")).toBeInTheDocument();
+    expect(card(CONFIRMED).queryByText(/自動取消/)).toBeNull();
+    expect(card(PAID).queryByText(/自動取消/)).toBeNull();
+  });
+
+  it("頁面開著時倒數會跟著走(每分鐘更新一次)", async () => {
+    useClock("2026-10-11T04:35:00Z");
+    vi.mocked(fetchSupplierOrders).mockImplementation(serve([PENDING]));
+    renderPage();
+    expect(await screen.findByText("23 小時內沒接單會自動取消")).toBeInTheDocument();
+    act(() => {
+      vi.advanceTimersByTime(60 * 60_000); // 一個小時
+    });
+    expect(screen.getByText("22 小時內沒接單會自動取消")).toBeInTheDocument();
+    act(() => {
+      vi.advanceTimersByTime(22 * 60 * 60_000 + 10 * 60_000); // 剩 20 分鐘
+    });
+    expect(screen.getByText("即將自動取消")).toBeInTheDocument();
+  });
+
+  it("頁首說明寫出 72 小時的規則", async () => {
+    renderPage();
+    const intro = await screen.findByText(/消費者會收到 Email 通知/);
+    expect(intro).toHaveTextContent("待接單超過 72 小時沒有接單、轉帳單進入待匯款超過 72 小時沒有收到款項,系統會自動取消訂單。");
+  });
+});

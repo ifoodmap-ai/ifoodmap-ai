@@ -5,7 +5,9 @@
 // 只看得到自家的單:fetchSupplierOrders 依 supplier_id 查,資料庫的 RLS 另外把關。
 // 清單分兩次查(在伺服器依狀態篩):還沒結束的(待處理 + 已出貨)一張都不漏;已結束的只抓最新 ORDER_LIST_LIMIT 張 ——
 // 共用一個上限的話,已結束的單一多,舊的「已收款、還沒出貨」會從待處理消失。快取的 key 帶 supplierId(換供應商登入不看到上一家的單)。
-import { useMemo, useState } from "react";
+// 72 小時自動取消(資料庫排程,autoCancel.ts):待接單寫「N 小時內沒接單會自動取消」(不到 1 小時「即將自動取消」),
+// 待匯款寫消費者的匯款期限;頁面開著時每分鐘更新一次倒數。
+import { useEffect, useMemo, useState } from "react";
 import { Loader2 } from "lucide-react";
 import { useQuery, type UseQueryResult } from "@tanstack/react-query";
 import { Badge } from "@/components/ui/badge";
@@ -13,6 +15,7 @@ import { Button } from "@/components/ui/button";
 import OrderActionDialog, { type OrderActionTarget } from "@/components/market/OrderActionDialog";
 import OrderItems from "@/components/market/OrderItems";
 import { useCurrentSupplier } from "@/hooks/use-current-supplier";
+import { autoCancelDeadline, formatAutoCancelDeadline, hoursUntilAutoCancel, MARKET_AUTO_CANCEL_HOURS } from "@/lib/market/autoCancel";
 import { PAYMENT_METHODS } from "@/lib/market/constants";
 import { friendlyDbError } from "@/lib/market/db";
 import { formatTaipei } from "@/lib/market/format";
@@ -44,6 +47,25 @@ const LOAD_FALLBACK = "請稍後再試一次";
 /** 跟供應商後台其他頁一樣自己留邊(SupplierLayout 的主內容區沒有 padding) */
 const PAGE = "mx-auto max-w-4xl p-4 md:p-6";
 
+/** 每分鐘更新一次「現在」:頁面一直開著時,自動取消的倒數也跟著走 */
+const useNow = (intervalMs = 60_000): number => {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), intervalMs);
+    return () => clearInterval(id);
+  }, [intervalMs]);
+  return now;
+};
+
+/** 卡片上的自動取消提示:待接單 → 剩幾個小時(不到 1 小時「即將自動取消」);待匯款 → 消費者的匯款期限;其他 → null */
+const autoCancelNote = (o: MarketOrderRow, now: number): string | null => {
+  const deadline = autoCancelDeadline(o, o.market_order_events ?? []);
+  if (!deadline) return null;
+  if (o.status === "awaiting_payment") return `消費者需在 ${formatAutoCancelDeadline(deadline)} 前匯款,逾期自動取消`;
+  const hours = hoursUntilAutoCancel(deadline, now);
+  return hours >= 1 ? `${hours} 小時內沒接單會自動取消` : "即將自動取消";
+};
+
 const useSupplierOrders = (supplierId: string | null, group: SupplierOrderGroup) =>
   useQuery({
     queryKey: ["market", "supplier-orders", supplierId, group],
@@ -57,6 +79,7 @@ export default function SupplierMarketOrdersPage() {
   const closed = useSupplierOrders(supplierId, "closed");
   const [tab, setTab] = useState<TabKey>("open");
   const [target, setTarget] = useState<OrderActionTarget | null>(null);
+  const now = useNow();
 
   const queryOf = (group: SupplierOrderGroup): UseQueryResult<MarketOrderRow[]> => (group === "closed" ? closed : active);
   const rowsOf = useMemo(() => {
@@ -83,6 +106,8 @@ export default function SupplierMarketOrdersPage() {
         消費者在食材市集下的訂單。貨款由你直接收(貨到付款 / 銀行轉帳),發票由你開立。
         {/* 寄信規則:supabase/functions/market-notify/render.ts 的 resolveEventMails(測試會對照) */}
         你接單、拒單、出貨、取消時,消費者會收到 Email 通知(轉帳單接單後寄的是匯款資訊);確認已收款、標記完成不寄信。
+        {/* 規則在資料庫的排程(migration 20261012100000 的 market_expire_orders),時數跟 autoCancel.ts 對照 */}
+        待接單超過 {MARKET_AUTO_CANCEL_HOURS} 小時沒有接單、轉帳單進入待匯款超過 {MARKET_AUTO_CANCEL_HOURS} 小時沒有收到款項,系統會自動取消訂單。
       </p>
     </>
   );
@@ -161,6 +186,7 @@ export default function SupplierMarketOrdersPage() {
           {shown.map((o) => {
             const no = formatOrderNo(o.id);
             const actions = supplierActions(o);
+            const expiry = autoCancelNote(o, now);
             return (
               <li key={o.id}>
                 <article aria-labelledby={`market-order-${o.id}`} className="rounded-lg border border-slate-200 bg-white p-4">
@@ -173,6 +199,7 @@ export default function SupplierMarketOrdersPage() {
                       {formatTaipei(o.created_at)}・{PAYMENT_METHODS[o.payment_method]}
                     </span>
                   </div>
+                  {expiry ? <p className="mt-2 text-sm font-medium text-amber-800">{expiry}</p> : null}
                   <div className="mt-3 grid gap-4 md:grid-cols-2">
                     <div className="min-w-0 space-y-1 text-sm text-slate-700">
                       <p className="font-medium text-slate-900">{o.buyer_name}</p>
