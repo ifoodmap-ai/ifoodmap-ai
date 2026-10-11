@@ -257,15 +257,24 @@ describe("金額:每個數字都在對的標籤旁(html 與 text)", () => {
 
 describe("主旨只有一行(店名等變數去掉 CR / LF / 控制字元 / U+2028 / U+2029,連續空白壓成一個)", () => {
   const NASTY = "A 店\r\nBcc: x@y\u{2028}\u{2029}\x00\x07\t  尾";
+  const NASTY_CF = `${NASTY}\u{202E}\u{200B}\u{FEFF}`; // 每一種信的檢查也帶格式字元
   const order = { ...ORDER, storeName: NASTY };
 
   it("店名帶 \\r\\nBcc: 這類字:主旨變成單行", () => {
     expect(renderEventMail("consumer_confirmed", { ...CTX, order }).subject).toBe(`A 店 Bcc: x@y 尾 已接單 — 零售訂單 ${formatOrderNo(ORDER.id)}`);
   });
 
+  // 第 3 輪審查:格式字元(\p{Cf})原本留在主旨 —— 店名帶 RLO(U+202E)時主旨會顯示成反過來的字
+  it("店名帶格式字元(RLO、零寬空白、BOM、軟連字號):主旨裡全部去掉,不會顯示成反過來的字", () => {
+    const order = { ...ORDER, storeName: "店\u{202E}evil\u{200B}\u{FEFF}\u{AD}名" };
+    const subject = renderEventMail("consumer_confirmed", { ...CTX, order }).subject;
+    expect(subject).toBe(`店evil名 已接單 — 零售訂單 ${formatOrderNo(ORDER.id)}`);
+    expect(subject).not.toMatch(/\p{Cf}/u);
+  });
+
   it("每一種信的主旨都沒有控制字元、換行類分隔字元或連續空白", () => {
     const subjects = [
-      placedMail({ buyerName: NASTY, orders: [order], lookupUrl: "https://app.ifoodmap.ai/market/orders/TOKEN123" }).subject,
+      placedMail({ buyerName: NASTY_CF, orders: [{ ...order, storeName: NASTY_CF }], lookupUrl: "https://app.ifoodmap.ai/market/orders/TOKEN123" }).subject,
       ...(
         [
           "supplier_new",
@@ -276,10 +285,10 @@ describe("主旨只有一行(店名等變數去掉 CR / LF / 控制字元 / U+20
           "consumer_cancelled",
           "supplier_cancelled_by_platform",
         ] as const
-      ).map((k) => renderEventMail(k, { ...CTX, order, buyerName: NASTY, reason: NASTY }).subject),
+      ).map((k) => renderEventMail(k, { ...CTX, order: { ...order, storeName: NASTY_CF }, buyerName: NASTY_CF, reason: NASTY_CF }).subject),
     ];
     for (const s of subjects) {
-      expect(s, JSON.stringify(s)).not.toMatch(/[\p{Cc}\p{Zl}\p{Zp}]/u);
+      expect(s, JSON.stringify(s)).not.toMatch(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u);
       expect(s, JSON.stringify(s)).not.toMatch(/\s{2,}/u);
       expect(s, JSON.stringify(s)).toBe(s.trim());
     }

@@ -41,15 +41,19 @@ export interface MailOrder {
 export const twd = (n: number) => `NT$ ${Number(n).toLocaleString("zh-TW")}`;
 
 /**
- * 主旨只能一行(Resend 的 subject 是純文字、不跳脫):控制字元(含 CR、LF)與 U+2028 / U+2029 換成空白,
- * 連續空白壓成一個 —— 同 _shared/supplier-mail.ts 申請通知信裡的 oneLine(那支沒有 export,這裡另寫一份)。
+ * 主旨只能一行(Resend 的 subject 是純文字、不跳脫):格式字元拿掉,控制字元(含 CR、LF)與 U+2028 / U+2029 換成空白,
+ * 連續空白壓成一個 —— 參考 _shared/supplier-mail.ts 申請通知信裡的 oneLine(那支沒有 export,這裡另寫一份)。
  * placedMail / renderEventMail 回傳前一律套用,店名等變數怎麼填都只會是一行。
  */
 export const oneLine = (v: unknown) =>
   String(v ?? "")
+    // 格式字元(\p{Cf}:RLO U+202E、零寬空白 U+200B、BOM U+FEFF、軟連字號…)本來就看不見,直接拿掉 ——
+    // 留著的話,店名帶 RLO 時主旨會顯示成反過來的字
+    .replace(/\p{Cf}/gu, "")
     .replace(/[\p{Cc}\p{Zl}\p{Zp}]/gu, " ")
     .replace(/\s+/gu, " ")
     .trim();
+
 export const orderLabel = (id: string) => `零售訂單 ${formatOrderNo(id)}`;
 const PAYMENT_LABEL = { cod: "貨到付款", transfer: "銀行轉帳" } as const;
 
