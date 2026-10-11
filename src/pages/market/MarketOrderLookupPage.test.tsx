@@ -67,6 +67,14 @@ beforeEach(() => {
   vi.mocked(fetchOrdersByToken).mockReset();
 });
 afterEach(cleanup);
+// 時鐘固定在 2026-10-09T06:00Z(假資料的期限都在 10/12):頁面會依「現在」判斷自動取消到期了沒,不能跟著真的時間走
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2026-10-09T06:00:00Z"));
+});
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 describe("MarketOrderLookupPage", () => {
   it("網址的 token 格式不對:直接顯示找不到,不查資料庫", () => {
@@ -297,5 +305,80 @@ describe("MarketOrderLookupPage:72 小時自動取消的期限", () => {
     expect(await screen.findByText("原因:店家超過 72 小時沒有接單,系統自動取消")).toBeInTheDocument();
     expect(screen.queryByText(/訂單會自動取消/)).toBeNull();
     expect(screen.queryByText(/逾期訂單會自動取消/)).toBeNull();
+  });
+});
+
+describe("MarketOrderLookupPage:過了自動取消的期限、排程還沒跑到", () => {
+  // A:待接單,下單 2026-10-09T04:05Z → 期限 2026-10-12T04:05Z;B:待匯款,待匯款紀錄 2026-10-09T05:00Z → 期限 2026-10-12T05:00Z
+  const clockAt = (iso: string, tick = false) => {
+    // 檔案開頭的 beforeEach 已經換過 Date;vitest 換第二次時不會套用新的 toFake,要先換回真的再換
+    vi.useRealTimers();
+    vi.useFakeTimers({ toFake: tick ? ["Date", "setInterval", "clearInterval"] : ["Date"] });
+    vi.setSystemTime(new Date(iso));
+  };
+  const regionOf = async (o: LookupOrder) => within(await screen.findByRole("region", { name: `${o.store.name} 訂單 ${formatOrderNo(o.id)}` }));
+  const EXPIRED = "已超過匯款期限,訂單即將自動取消,請不要再匯款。如果已經匯款,請直接聯絡店家";
+
+  it.each([
+    ["剛好到期", "2026-10-12T04:05:00Z"],
+    ["過期 30 分鐘", "2026-10-12T04:35:00Z"],
+  ])("待接單%s:改寫「訂單即將自動取消」,不再寫期限", async (_label, now) => {
+    clockAt(now);
+    vi.mocked(fetchOrdersByToken).mockResolvedValue([A]);
+    renderAt(`/market/orders/${TOKEN}`);
+    const a = await regionOf(A);
+    expect(a.getByText("店家超過 72 小時沒有接單,訂單即將自動取消")).toBeInTheDocument();
+    expect(a.queryByText(/期限/)).toBeNull();
+  });
+
+  it.each([
+    ["剛好到期", "2026-10-12T05:00:00Z"],
+    ["過期 30 分鐘", "2026-10-12T05:30:00Z"],
+  ])("待匯款%s:收起匯款帳號(DOM 裡完全沒有),改請消費者不要再匯款、已經匯款就聯絡店家(附電話)", async (_label, now) => {
+    clockAt(now);
+    vi.mocked(fetchOrdersByToken).mockResolvedValue([B]);
+    const { container } = renderAt(`/market/orders/${TOKEN}`);
+    const b = await regionOf(B);
+    const warning = b.getByText(/已超過匯款期限/);
+    expect(warning).toHaveTextContent(`${EXPIRED},電話 02-2345-6789。`);
+    expect(within(warning).getByRole("link", { name: "02-2345-6789" })).toHaveAttribute("href", "tel:02-2345-6789");
+    expect(container.textContent).not.toContain("0001234-5678901");
+    expect(container.textContent).not.toContain("郵局");
+    expect(container.innerHTML).not.toContain("0001234-5678901");
+    expect(b.queryByText(/店家已接單,請匯款/)).toBeNull();
+    expect(b.queryByText(/前完成匯款/)).toBeNull();
+  });
+
+  it("待匯款到期前 1 分鐘:照樣給匯款資訊與期限(過了才收)", async () => {
+    clockAt("2026-10-12T04:59:00Z");
+    vi.mocked(fetchOrdersByToken).mockResolvedValue([B]);
+    renderAt(`/market/orders/${TOKEN}`);
+    const b = await regionOf(B);
+    expect(b.getByText(/帳號 0001234-5678901/)).toBeInTheDocument();
+    expect(b.getByText("請在 10/12 13:00 前完成匯款,逾期訂單會自動取消")).toBeInTheDocument();
+    expect(b.queryByText(/已超過匯款期限/)).toBeNull();
+  });
+
+  it("待匯款過期、店家沒有電話:照樣請消費者聯絡店家,不留空的電話", async () => {
+    clockAt("2026-10-12T05:30:00Z");
+    vi.mocked(fetchOrdersByToken).mockResolvedValue([{ ...B, store: { ...B.store, phone: null } }]);
+    const { container } = renderAt(`/market/orders/${TOKEN}`);
+    const b = await regionOf(B);
+    expect(b.getByText(/已超過匯款期限/)).toHaveTextContent(`${EXPIRED}。`);
+    expect(b.queryByText(/電話/)).toBeNull();
+    expect(container.textContent).not.toContain("0001234-5678901");
+  });
+
+  it("頁面開著時過了期限:下一分鐘就收起匯款帳號(每分鐘更新的時鐘)", async () => {
+    clockAt("2026-10-12T04:59:30Z", true);
+    vi.mocked(fetchOrdersByToken).mockResolvedValue([B]);
+    const { container } = renderAt(`/market/orders/${TOKEN}`);
+    const b = await regionOf(B);
+    expect(b.getByText(/帳號 0001234-5678901/)).toBeInTheDocument();
+    act(() => {
+      vi.advanceTimersByTime(60_000);
+    });
+    expect(b.getByText(/已超過匯款期限/)).toBeInTheDocument();
+    expect(container.textContent).not.toContain("0001234-5678901");
   });
 });

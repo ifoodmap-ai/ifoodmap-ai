@@ -1,6 +1,9 @@
 // /market/orders/:token 訂單查詢(免登入):這次結帳的每張訂單 —— 店家、訂單編號、狀態與時間軸、明細、付款方式;
 // 轉帳訂單在店家接單後(待匯款)顯示匯款資訊;拒單 / 取消顯示原因(已收款後被取消也一樣);出貨顯示物流與單號。
 // 待接單、待匯款寫出 72 小時自動取消的期限(autoCancel.ts;台北時間),系統自動取消時的原因照樣在「原因:」顯示。
+// 🔴 過了期限、排程還沒跑到(平常最多晚 10 分鐘,積壓時更久):改寫「即將自動取消」;待匯款收起匯款帳號(DOM 裡完全不放),
+//    請消費者不要再匯款、已經匯款就直接聯絡店家 —— 不然消費者照著匯款,訂單接著被取消,只能自己找店家退款。
+//    「現在」用 useNow 每分鐘更新的瀏覽器時鐘,頁面開著時一到期就換。
 // ?new=1 = 剛下單:顯示「已送出」與這個網址(提醒加入書籤 —— 寄信閘門沒開時,消費者收不到確認信)。
 //   提示記在 state 裡,接著馬上把網址的 ?new=1 拿掉:消費者照提示加入書籤時,存到的是乾淨的網址(不會每次打開都說「已送出」)。
 // 🔴 這個網址就是查詢權限(token),頁面上不放任何外部連結,避免 token 經 Referer 外流(聯絡店家只有 tel:)。
@@ -13,11 +16,12 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { MARKET_FOCUS_RING, useMarketTitle } from "@/components/market/MarketLayout";
 import { MarketStaleNotice } from "@/components/market/MarketNotices";
 import OrderItems from "@/components/market/OrderItems";
-import { autoCancelDeadline, formatAutoCancelDeadline, MARKET_AUTO_CANCEL_HOURS } from "@/lib/market/autoCancel";
+import { autoCancelDeadline, formatAutoCancelDeadline, isAutoCancelDue, MARKET_AUTO_CANCEL_HOURS } from "@/lib/market/autoCancel";
 import { PAYMENT_METHODS } from "@/lib/market/constants";
 import { formatTaipei, formatTwd } from "@/lib/market/format";
 import { fetchOrdersByToken, sortEvents, TOKEN_PATTERN } from "@/lib/market/lookup";
 import { ORDER_STATUS_LABEL } from "@/lib/market/orders";
+import { useNow } from "@/lib/market/useNow";
 import { formatOrderNo } from "@/lib/order-number";
 import MarketLoadError from "./MarketLoadError";
 import MarketNotFound from "./MarketNotFound";
@@ -50,6 +54,7 @@ export default function MarketOrderLookupPage() {
   useMarketTitle(notFound ? "找不到訂單" : offline ? "目前離線" : isLoadingError ? "訂單載入失敗" : "訂單查詢");
   const [copied, setCopied] = useState<boolean | null>(null);
   const urlInput = useRef<HTMLInputElement>(null);
+  const now = useNow();
   const pageUrl = typeof window === "undefined" ? "" : `${window.location.origin}/market/orders/${token}`;
 
   if (notFound) return <MarketNotFound message="找不到這筆訂單。請確認網址完整(從確認信裡的連結打開最保險)。" title="找不到訂單" />;
@@ -121,7 +126,9 @@ export default function MarketOrderLookupPage() {
 
       {orders.map((o) => {
         const deadline = autoCancelDeadline(o, o.events);
-        const payBy = o.status === "awaiting_payment" && deadline ? `請在 ${formatAutoCancelDeadline(deadline)} 前完成匯款,逾期訂單會自動取消` : null;
+        const due = deadline !== null && isAutoCancelDue(deadline, now);
+        const payExpired = o.status === "awaiting_payment" && due;
+        const payBy = o.status === "awaiting_payment" && deadline && !due ? `請在 ${formatAutoCancelDeadline(deadline)} 前完成匯款,逾期訂單會自動取消` : null;
         return (
           <section key={o.id} aria-labelledby={`lookup-${o.id}`} className="space-y-3 rounded-xl border border-slate-200 bg-white p-4">
             <div className="flex flex-wrap items-baseline justify-between gap-2">
@@ -137,11 +144,27 @@ export default function MarketOrderLookupPage() {
             </p>
             {o.status === "pending" && deadline ? (
               <p className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
-                店家 {MARKET_AUTO_CANCEL_HOURS} 小時內沒有接單,訂單會自動取消(期限 {formatAutoCancelDeadline(deadline)})
+                {due
+                  ? `店家超過 ${MARKET_AUTO_CANCEL_HOURS} 小時沒有接單,訂單即將自動取消`
+                  : `店家 ${MARKET_AUTO_CANCEL_HOURS} 小時內沒有接單,訂單會自動取消(期限 ${formatAutoCancelDeadline(deadline)})`}
               </p>
             ) : null}
 
-            {o.transfer_info ? (
+            {payExpired ? (
+              // 過了匯款期限:匯款帳號整個不放(資料庫還沒取消前,查單 RPC 照樣回 transfer_info)
+              <p className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm font-semibold text-red-800">
+                已超過匯款期限,訂單即將自動取消,請不要再匯款。如果已經匯款,請直接聯絡店家
+                {o.store.phone ? (
+                  <>
+                    ,電話{" "}
+                    <a href={`tel:${o.store.phone}`} className={`text-red-900 underline ${MARKET_FOCUS_RING}`}>
+                      {o.store.phone}
+                    </a>
+                  </>
+                ) : null}
+                。
+              </p>
+            ) : o.transfer_info ? (
               <div className="rounded-lg border border-sky-300 bg-sky-50 p-3 text-sm text-sky-900">
                 <p className="font-semibold">店家已接單,請匯款 {formatTwd(o.total)}:</p>
                 <p className="mt-1 whitespace-pre-line break-words">{o.transfer_info}</p>
