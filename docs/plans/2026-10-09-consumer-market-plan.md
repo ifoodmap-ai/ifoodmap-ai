@@ -17797,3 +17797,23 @@ gate / render / handler / index 與 `config.toml` 先照計畫的程式碼區塊
 - **Task 57** Step 2(第 16560 行)的 Expected 改成依序 `共 67 項` / `共 9 項` / `共 88 項` / `共 4 項`,Step 5(第 16611 行)改成 `共 67 項` / `共 9 項` / `共 88 項`(上一節的 65 / 79 作廢);「F. 共用指令與基準數字」第 116 行同樣改成 67 / 9 / 88 / 4。
 - 每支乾跑之後殘留五個 0;第 1 階段 `market_catalog` 112、`market_images_storage` 20;唯讀查正式庫沒有任何第 2 階段的物件。vitest:`b0eb303` 的乾淨副本全套連跑 2 次都是 **115 檔 / 1772 項**全過;tsc 錯誤 72、eslint 錯誤 10,兩種 build 都 exit 0。
 - `b0eb303` 的過程中,我的腳本在 130200 寫進 `TOKEN_REUSED` 之後、`checkout.ts` 還沒改之前中止(fixture 的自我檢查擋下),「每一種代碼都有自己的一句話」在工作目錄紅了約一分鐘,已補上。
+
+### 2026-10-11:結帳頁接上下單冪等的查詢 token(commit `384e4a5`、`264c769`,分支 `market`)
+
+接上一節「審查修正補充(三)」第 2 點(`b0eb303`)。照協調者給的規格做,每一項都先寫測試、看到失敗才改。**以 repo 為準。**
+
+1. **`checkout.ts`**(`384e4a5`):
+   - `newCheckoutToken()`:`crypto.getRandomValues` 拿 32 bytes → base64url、不帶「=」→ 43 字。`CHECKOUT_TOKEN_PATTERN` 由測試解析 migration 130200 的 `(p_checkout->>'token') !~ '…'` 一字不差比對;另外驗 bytes 原樣轉碼(對照 Node 的 `Buffer.toString("base64url")`)、300 個都不重複。
+   - `checkoutTokenStore`(`peek` / `getOrCreate` / `clear`):第一次送出才產生;存在 sessionStorage(key `ifoodmap-market-checkout-token-v1`;同一個分頁重新整理還在、不同分頁各自一個),讀寫都包 try/catch,不能用時退回記憶體(重新整理就沒了);sessionStorage 裡格式不對的值不用。
+   - `buildCheckoutPayload` 多收必填的 `token`;`PlaceOrderResult` 的成功型別多 `duplicate`。
+   - `checkoutExceptionMessage(e)`:只有資料庫帶錯誤代碼的回絕(交易已經回滾、確定沒建單)照 `friendlyDbError`;其他(supabase-js 斷線時是沒有代碼的 `MarketDbError`、閘道回 HTML、回應壞掉)一律顯示 `CHECKOUT_NO_RESPONSE_MESSAGE`:「連線中斷,訂單可能已經送出。請再按一次「送出訂單」,同一筆結帳不會重複下單。」
+   - `TOKEN_REUSED` 的字從「這筆結帳剛才已經送出過了,請查看訂單。」改成「你剛才送出的訂單已經成立,請先查看訂單。如果還要另外下一張,再按一次「送出訂單」。」—— 協調者指定「你剛才送出的訂單已經成立」;換掉 token 之後再按就是另一張新訂單,所以講清楚。
+2. **結帳頁**(`264c769`):前端檢查都過、真的送出才拿 token;斷線、逾時、缺貨、價格變了…之後的重送都沿用;成功與 `duplicate:true` 一樣清掉 token、拿掉結帳的商品、replace 進查詢頁;`TOKEN_REUSED` 顯示上面那句加舊 token 的「查看訂單」連結,換掉 token、購物車不動、不自動重送;送出時丟例外走 `checkoutExceptionMessage`,token 留著。token 與送出內容在 `setSubmitting(true)` 之前組好(萬一丟錯,按鈕不會卡在「送出中」)。
+3. **跟上一節第 2 點最後一段不同**:那裡寫「購物車或收件資料改了就換新 token」,這次照協調者的規格不換 —— 只有成功(含 duplicate)與 `TOKEN_REUSED` 才換。理由:回應在路上斷掉、其實已經成單時,買家改了內容再送,沿用 token 會拿到 `TOKEN_REUSED`(畫面給「查看訂單」),換新 token 反而會建出第二張單;沒有成單過的 token,內容改了伺服器照常建單。
+4. **數字**:
+   - `checkout.test.ts` 19 → **27**(token 6 項、例外訊息 2 項;先紅 10 項,含 payload 與 `TOKEN_REUSED` 字串兩項改寫)。
+   - `MarketCheckoutPage.test.tsx` 17 → **24**(token 7 項:斷線後重送同一個且前端沒過不產生、商業錯誤後重送同一個、成功清掉且下一次換新、duplicate 當成功、`TOKEN_REUSED` 的連結與換新、sessionStorage 不能用、重新整理後同一個;先紅 8 項,含「成功」那項的 payload 多 token)。突變:斷線時清掉 token → 3 項紅;`TOKEN_REUSED` 不清 → 1 項紅。
+   - 「F. 共用指令與基準數字」第 2、3 階段的總數,在其他各節的調整之外再多 **15** 項。`264c769` 的乾淨副本全套 vitest 連跑 2 次都是 **115 檔 / 1787 項**全過;tsc **72**(市集檔案 0)、eslint **10**(這兩個檔沒有 error 也沒有 warning);兩種 build 都 exit 0(前台站 bundle 有 token 的 sessionStorage key 與斷線訊息,管理員站沒有)。
+   - 畫面實測(同 Task 48–52 一節的腳本;假 Supabase 的下單改成原樣回傳瀏覽器送的 token,另有「回 TOKEN_REUSED」與「切斷連線」兩種模式):多 3 個情境 —— `TOKEN_REUSED`(連結的 href = 送出的 token、sessionStorage 已清、沒有自動重送)、連線中斷(token 留在 sessionStorage)、斷線 → 重新整理 → 再送(每一次 `market_place_order` 的 token 都一樣,成功後進 `/market/orders/<同一個 token>`)。12 個情境 × 390 / 360 / 1280 共 36 組全過;所有請求只到本機、console 沒有錯誤。
+   - 實測發現:Chrome 在重複使用的連線被切斷、還沒收到任何回應時,會自己再送一次 POST(這個情境共 4 次呼叫、token 全部一樣)—— 瀏覽器自己的重送也是靠 token 才不會重複下單。
+5. **沒有處理**:sessionStorage 不能用時 token 只在記憶體,重新整理之後會換新的(斷線、又重新整理再送,而第一次其實成功了的話,會建出第二張);`INVALID_INPUT` `field: 'token'` 沒有專屬訊息,也不會自動換 token(token 由同一個正規式產生與檢查,正常不會發生)。
