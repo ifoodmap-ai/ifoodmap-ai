@@ -17433,3 +17433,45 @@ gate / render / handler / index 與 `config.toml` 先照計畫的程式碼區塊
    - 主旨直接放店名(純文字、不跳脫是對的),但店名裡的換行、Tab 沒有壓成空白(供應商申請通知信有壓);Resend 走 JSON API 不會變成標頭注入,只是主旨可能斷行。
    - `NOTIFY_SECRET` 跟 notify 共用:拿到密鑰的人可以重送同一個 `event_id`,讓消費者重複收到同一封信(`placed` 要 token 雜湊對得上,偽造不了查詢連結);密鑰比對不是常數時間(同 notify)。
    - 部署(Task 57)時 `--use-api` 要把 `../ai/crypto.ts`、`../notify/gate.ts`、`../../../src/lib/order-number.ts` 一起上傳(notify 已經用同樣的方式 import order-number);部署後的驗收要看到確認信真的寄到內部信箱、連結打得開。
+
+### 2026-10-11:migration 130000 自查修正、Task 35–39(commit `f04df17`、`a5174c1`、`a763553`、`5401c95`、`cb3cc27`、`c20e773`、`27650e0`、`4bf2141`、`4b54124`、`39a0651`,分支 `market`)
+
+接上面「Task 32–34 migration 130000」一節。130100、130200 三段與三支還原檔先照計畫的程式碼區塊抽出(依行號 sed,diff 過逐字相同),再做下面的修正;每一項都先寫測試、看到失敗才改(只補測試的項目用突變驗證)。乾跑一律不帶 120000 / 120100(同上一節第 1 點)。**以 repo 為準。**
+
+**A. 130000 自查修正**(上一節「自查發現」前四點的處理)
+
+1. **轉帳訂單接單後自動補的「待匯款」一律記成 `system`、actor_id 清空**(`f04df17`):guard 只在 `pg_trigger_depth() > 1`(由 apply trigger 送出)、目標是 `awaiting_payment`、訂單目前是 `confirmed` 時改記 system;API 角色只能直接 INSERT(深度 1),也沒有在這幾張表建 trigger 的權限(REVOKE ALL,第 1 節權限測試釘住),冒充不了。轉移表 30 條沒動(前端 `orders.ts` 逐字對照)。供應商、管理員接單各一項,修之前都紅。跟 Task 42 fixture 的 EV(4) 一致(上面 Task 40–42 一節第 3 點)。
+2. **拒單 / 取消補庫存先依商品加總明細數量**(`a5174c1`):同一個商品兩列(1 + 2)原本只加回 2,改成 `GROUP BY product_id` 後再 `UPDATE … FROM`。下單 RPC 本來就先合併同一個商品,這是防繞過下單 RPC 直接寫明細。
+3. **拒單 / 取消原因改用 `market_visible` 判斷有沒有填、`market_trim` 去頭尾**(`a763553`):只填全形空白 / 零寬字元 → `reason_required`;頭尾的全形空白、零寬字元去掉後才存進紀錄與訂單的 `status_note`。沒有另外粗擋長度:100 萬字的刻意輸入實測 `market_trim` 13–52ms、`market_visible` 33ms,`btrim` 37ms,同一個量級。
+4. **補 system 身分與沒有 sub 的 JWT**(`5401c95`,只補測試,行為本來就對):沒有 sub 的 authenticated JWT → `ERR 42501:not_order_party`;service_role 接單 → `system`、沒有 actor_id;資料庫擁有者直接寫(沒有 JWT)→ `system`。突變驗證:system 判斷改成只看 `v_uid IS NULL` →「沒有 sub」那項紅(RLS 仍會擋,但 guard 誤認成 system);只認 `auth.role() = 'service_role'` →「資料庫擁有者」那項紅。
+5. 測試字串用 `chr(12288)`(U+3000)、`chr(8203)`(U+200B)組,不寫跳脫序列(避免第 1 階段勘誤提到的工具把跳脫換成看不見的字元本身);改完掃過 Zs / Zl / Zp / Cf / Cc,檔案裡沒有看不見的字元。
+
+**B. Task 35–39 跟計畫不一樣的地方**
+
+6. 四支測試檔開頭的執行說明拿掉 120000(Task 39 的 runner 註解同樣),命令見上一節第 1 點。fixture 不用改(店家用資料庫擁有者身分建、商品都沒有照片)。
+7. **Task 36**:「計數表 anon / 登入者都碰不到」多驗 TRUNCATE / REFERENCES / TRIGGER / MAINTAIN(項數不變;anon 能 TRUNCATE 計數表就能把限流歸零)。突變驗證:REVOKE ALL 改成只收 S/I/U/D 時這項紅。
+8. **下單 RPC 收件資料擋看不見的字元,並釘住安全要求**(`4b54124`,接在 Task 38 之後;派工要求「每個文字欄位都有長度上限,並擋看不見的字元」):
+   - 姓名、地址、條款版本改成 `CASE WHEN market_visible(x) THEN market_trim(x) ELSE '' END`(只有看不見的字 → 長度檢查擋成 `INVALID_INPUT`,欄位 `buyer.name` / `buyer.address` / `terms_version`),備註看不到字當成沒填(NULL)。電話、Email、縣市照計畫(各自有只收數字 / ASCII / 22 縣市的檢查,看不見的字元本來就過不了)。照抄版這兩項紅:三個欄位都放行(`(沒有 field)`),訂單的姓名存成「U+3000 + 王小明 + U+200B」、備註存成只有看不見的字元。
+   - 另外釘住(行為本來就對):第 1 節那一項加驗開關預設 `'false'`(計畫的測試在測「關閉」之前自己設成 `'false'`,migration 預設寫錯也不會紅;業主核准對外開放之後再跑這支,這一項會是 `2|true`,屬預期);地址 201 字、條款版本 21 字、Email 超過 254 字都擋;店家被管理員停用、供應商帳號停用時商品都 `PRODUCT_UNAVAILABLE`。突變驗證:開關預設值改成別的字(刻意不用 `'true'`)、拿掉地址 200 字上限、拿掉 `market_store_is_open`,各自正好一項紅。
+   - 給 Task 43–47:伺服器現在會把只有看不見字元的姓名 / 地址回成 `INVALID_INPUT` + 欄位;結帳頁送出前可以用 `productForm.ts` 的 `hasVisibleText` 先擋(不擋也只是改由伺服器回欄位錯誤)。
+9. 開關:`market_checkout.test.sql` 照計畫在交易裡把 `market_checkout_open` 切成 `'true'` 測開放後的行為,跟著 ROLLBACK 消失;正式庫目前沒有這一列(130200 沒套用)。每次乾跑之後另外用唯讀端點查:ledger 沒有 `2026100913*`、第 2 階段的表 / 函式 0、清理排程 0、三個 app_config 設定 0。
+
+**C. 數字**
+
+| 乾跑 | 計畫 | 現在 |
+|---|---|---|
+| `market_orders` | 45(Task 32 之後 17、Task 33 之後 28) | **53**(17 / 28 / 45 跟計畫一樣,A 節依序 47 → 48 → 50 → 53) |
+| `market_notify` | 9 | 9 |
+| `market_checkout` | 56(Task 36 之後 17、Task 37 之後 48) | **60**(17 / 48 / 56 跟計畫一樣,第 8 點 +4) |
+| `market_phase2_rollback` | 4 | 4(確認失敗那次 3 項失敗:表 4 張、函式 19 支、排程與設定 `1|3`,跟計畫一樣) |
+
+- 要跟著改的 Expected:「F. 共用指令與基準數字」第 116 行;Task 57 Step 2(第 16560 行)與 Step 5(第 16611 行)的 `共 45 項` → **53**、`共 56 項` → **60**(Step 2 的 `$C` 照上一節拿掉)。
+- 第 1 階段沒有受影響:`market_catalog` **112**、`market_images_storage` **20**,不帶 migration、帶 130000、帶三支各跑一次都失敗 0;三支 migration + 三支還原檔之後 `market_catalog` 仍是 112。`market_orders` / `market_notify` 帶三支(= 部署後)也是 53 / 9。每次乾跑之後殘留五個 0。
+- vitest:這幾個 Task 沒有新增 vitest。`39a0651` 的乾淨副本(`git archive`)全套 **106 檔 / 1634 項**全過(含其他實作者同時 commit 的檔);工作目錄裡讀第 2 階段 migration 的 4 支測試(`constants`、`orders`、`checkout`、`market-notify/handler`,含別人還沒 commit 的改動)61 項全過。
+
+**D. 自查發現、沒有處理(記錄)**
+
+- 查單 RPC(Task 38)回給持 token 的買家的店家資料含 `suppliers.contact_email`(新訂單通知信箱);第 1 階段已從市集公開欄位拿掉它(上面「前端修正」一節第 2 點)。買家要聯絡店家用得到,維持計畫寫法,請審查決定要不要換成另外的客服信箱或拿掉。
+- 下單 RPC 的 Email 仍用 `btrim`:結尾夾全形空白的 Email 會回 `INVALID_INPUT` `buyer.email`,不會幫忙去掉(前端 JS 的 `trim()` 本來就會去掉 U+3000,正常流程不受影響)。
+- 帶 130100 跑 `market_orders.test.sql` 時,每筆狀態紀錄會在交易裡把通知排到真的 market-notify 網址(跟著 ROLLBACK 消失、不會送出;殘留檢查只看 `127.0.0.1:9`)—— Task 57 Step 5 套用後不帶 migration 重跑也是同一回事。
+- 「待匯款記成 system」靠 `pg_trigger_depth() > 1` 認 apply trigger;之後若有別的 trigger 也寫 `confirmed → awaiting_payment`,一樣會記成 system。
