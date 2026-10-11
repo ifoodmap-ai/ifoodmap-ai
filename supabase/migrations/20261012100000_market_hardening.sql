@@ -7,6 +7,9 @@
 --    部署時用探測函式驗過:正式請求一定帶 cf-connecting-ip,用戶端自己帶會被 Cloudflare 回 403;偽造的 X-Real-IP 會被
 --    中間的 proxy 改寫成真實 IP;只有 XFF 第一段偽造得了 —— 原本兩個都沒有時退回 XFF,等於讓請求自己挑 IP 繞過限流。
 --    擋下紀錄(market_rate_blocks_daily)出現 rule = 'noip' = 拿 IP 壞了(正式請求應該都有 cf-connecting-ip),要去查。
+--    Cloudflare 的 Pseudo IPv4:cf-connecting-ip 落在 240.0.0.0/4、而且 cf-connecting-ipv6 是合法的 IPv6 時,改用 cf-connecting-ipv6
+--    (照 /64 正規化,IPv6 的 /48 規則才接得上)。這種情形不一定會發生 —— 要看 Supabase 的 Cloudflare 有沒有開 Pseudo IPv4;
+--    IPv6 實測仍是開放前待辦。
 -- 2. 被擋的請求改成非同步 commit(market_rate_take):
 --    被灌爆時,被擋的請求都要更新 market_rate_blocks_daily 的同一列(今天, 種類),要等前一個交易 commit(含 WAL flush)
 --    才寫得進去,一個接一個排隊。擋下的那條路先 set_config('synchronous_commit', 'off', true) 再寫擋下紀錄:commit 不等
@@ -35,6 +38,12 @@ SET LOCAL lock_timeout = '3s';
 -- ---------------------------------------------------------------------
 -- PostgREST 把請求標頭放在 request.headers。cf-connecting-ip(Cloudflare 覆寫,用戶端自己帶會被回 403)優先,
 -- 其次 x-real-ip(中間的 proxy 會改寫成真實 IP);兩個都沒有回 NULL。
+-- Pseudo IPv4 的回退:Cloudflare 開了 Pseudo IPv4(覆寫標頭模式)時,IPv6 用戶的 cf-connecting-ip 會被換成 240.0.0.0/4
+-- (Class E,真的用戶端不可能是這個位址)的假 IPv4,真的位址放在 cf-connecting-ipv6。cf-connecting-ip 落在 240.0.0.0/4、
+-- 而且 cf-connecting-ipv6 是合法的 IPv6 位址時,兩個標頭都是 Cloudflare 自己設的(用戶端自帶 CF-Connecting-IP 會被 Cloudflare
+-- 擋掉,部署時實測 403 / 1000,造不出 240.x),改用 cf-connecting-ipv6、照 /64 正規化。cf-connecting-ip 是一般位址時,
+-- 就算帶了 cf-connecting-ipv6 也一律不理;只有 cf-connecting-ipv6、沒有 cf-connecting-ip 也不理。
+-- 這種情形不一定會發生:要看 Supabase 的 Cloudflare 有沒有開 Pseudo IPv4;IPv6 實測仍是開放前待辦。
 CREATE OR REPLACE FUNCTION public.market_client_ip()
 RETURNS text
 LANGUAGE plpgsql
@@ -43,17 +52,28 @@ SET search_path = ''
 AS $$
 DECLARE
   v_headers jsonb;
+  v_cf      text;
+  v_cf6     text;
 BEGIN
   BEGIN
     v_headers := NULLIF(current_setting('request.headers', true), '')::jsonb;
   EXCEPTION WHEN OTHERS THEN
     v_headers := NULL;
   END;
+  v_cf  := NULLIF(btrim(v_headers->>'cf-connecting-ip'), '');
+  v_cf6 := NULLIF(btrim(v_headers->>'cf-connecting-ipv6'), '');
+  -- Pseudo IPv4(見上面):兩個條件都成立才改用 cf-connecting-ipv6;任一個解析不了就當作不成立
+  IF v_cf IS NOT NULL AND v_cf6 IS NOT NULL THEN
+    BEGIN
+      IF v_cf::inet << '240.0.0.0/4'::inet AND family(v_cf6::inet) = 6 AND masklen(v_cf6::inet) = 128 THEN
+        RETURN public.market_normalize_ip(v_cf6);
+      END IF;
+    EXCEPTION WHEN OTHERS THEN
+      NULL;
+    END;
+  END IF;
   -- x-forwarded-for 不再用(第一段偽造得了,見檔頭);兩個都沒有回 NULL → 下單 RPC 算進全站共用的 noip
-  RETURN public.market_normalize_ip(COALESCE(
-    NULLIF(btrim(v_headers->>'cf-connecting-ip'), ''),
-    NULLIF(btrim(v_headers->>'x-real-ip'), '')
-  ));
+  RETURN public.market_normalize_ip(COALESCE(v_cf, NULLIF(btrim(v_headers->>'x-real-ip'), '')));
 END;
 $$;
 

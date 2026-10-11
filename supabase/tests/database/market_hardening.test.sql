@@ -96,7 +96,7 @@ UPDATE public.app_config SET value = 'true' WHERE key = 'market_checkout_open';
 INSERT INTO _ctx VALUES ('sc0', to_jsonb(current_setting('synchronous_commit')));
 
 -- ---------------------------------------------------------------------
--- 1. 呼叫者 IP:cf-connecting-ip → x-real-ip → NULL(不再退回 x-forwarded-for)
+-- 1. 呼叫者 IP:cf-connecting-ip → x-real-ip → NULL(不再退回 x-forwarded-for);Cloudflare 的 Pseudo IPv4 改用 cf-connecting-ipv6
 -- ---------------------------------------------------------------------
 SELECT set_config('request.headers', '{"x-forwarded-for":"1.1.1.1, 2.2.2.2"}', true);
 SELECT pg_temp.expect('只有 x-forwarded-for → NULL(不再退回第一段)', COALESCE(public.market_client_ip(), '∅'), '∅');
@@ -108,6 +108,36 @@ SELECT set_config('request.headers', '{"x-forwarded-for":"1.1.1.1","x-real-ip":"
 SELECT pg_temp.expect('三個都有 → 用 cf-connecting-ip', COALESCE(public.market_client_ip(), '∅'), '4.4.4.4');
 SELECT set_config('request.headers', '{"cf-connecting-ip":"2001:db8:1:2:3:4:5:6","x-forwarded-for":"1.1.1.1"}', true);
 SELECT pg_temp.expect('cf-connecting-ip 是 IPv6 → 照舊取 /64', COALESCE(public.market_client_ip(), '∅'), '2001:db8:1:2::');
+-- Cloudflare 的 Pseudo IPv4:cf-connecting-ip 落在 240.0.0.0/4(Class E,真的用戶端不會是這個位址)、而且 cf-connecting-ipv6
+-- 是合法的 IPv6 位址 → 用 cf-connecting-ipv6(照 /64 正規化);其他情況照 cf-connecting-ip → x-real-ip → NULL
+SELECT set_config('request.headers', '{"cf-connecting-ip":"240.1.2.3","cf-connecting-ipv6":"2001:db8:1:2::5","x-real-ip":"3.3.3.3"}', true);
+INSERT INTO _ctx VALUES ('ps0a', to_jsonb(COALESCE(public.market_client_ip(), '∅')));
+SELECT set_config('request.headers', '{"cf-connecting-ip":"255.255.255.254","cf-connecting-ipv6":"2001:db8:1:2::5"}', true);
+INSERT INTO _ctx VALUES ('ps0b', to_jsonb(COALESCE(public.market_client_ip(), '∅')));
+SELECT pg_temp.expect('Pseudo IPv4:cf-connecting-ip 在 240.0.0.0/4(240.1.2.3、255.255.255.254)、cf-connecting-ipv6 合法 → 用 IPv6 的 /64 網段位址(不看 x-real-ip)',
+  (SELECT string_agg(v #>> '{}', ',' ORDER BY k) FROM _ctx WHERE k IN ('ps0a', 'ps0b')),
+  '2001:db8:1:2::,2001:db8:1:2::');
+SELECT set_config('request.headers', '{"cf-connecting-ip":"240.1.2.3"}', true);
+INSERT INTO _ctx VALUES ('ps1', to_jsonb(COALESCE(public.market_client_ip(), '∅')));
+SELECT set_config('request.headers', '{"cf-connecting-ip":"240.1.2.3","cf-connecting-ipv6":"not-an-ip"}', true);
+INSERT INTO _ctx VALUES ('ps2', to_jsonb(COALESCE(public.market_client_ip(), '∅')));
+SELECT set_config('request.headers', '{"cf-connecting-ip":"240.1.2.3","cf-connecting-ipv6":"1.2.3.4"}', true);
+INSERT INTO _ctx VALUES ('ps3', to_jsonb(COALESCE(public.market_client_ip(), '∅')));
+SELECT set_config('request.headers', '{"cf-connecting-ip":"240.1.2.3","cf-connecting-ipv6":"2001:db8::/32"}', true);
+INSERT INTO _ctx VALUES ('ps4', to_jsonb(COALESCE(public.market_client_ip(), '∅')));
+SELECT pg_temp.expect('240.x 但沒有 cf-connecting-ipv6、或它不是合法的 IPv6 位址(亂填、IPv4、網段)→ 用 240.x 本身',
+  (SELECT string_agg(v #>> '{}', ',' ORDER BY k) FROM _ctx WHERE k IN ('ps1', 'ps2', 'ps3', 'ps4')),
+  '240.1.2.3,240.1.2.3,240.1.2.3,240.1.2.3');
+SELECT set_config('request.headers', '{"cf-connecting-ip":"203.0.113.5","cf-connecting-ipv6":"2001:db8:1:2::5"}', true);
+INSERT INTO _ctx VALUES ('ps5', to_jsonb(COALESCE(public.market_client_ip(), '∅')));
+SELECT set_config('request.headers', '{"cf-connecting-ip":"239.255.255.255","cf-connecting-ipv6":"2001:db8:1:2::5"}', true);
+INSERT INTO _ctx VALUES ('ps6', to_jsonb(COALESCE(public.market_client_ip(), '∅')));
+SELECT pg_temp.expect('一般 IPv4(203.0.113.5;240.0.0.0/4 外面緊鄰的 239.255.255.255)帶了偽造的 cf-connecting-ipv6 → 一律不理,用 cf-connecting-ip',
+  (SELECT string_agg(v #>> '{}', ',' ORDER BY k) FROM _ctx WHERE k IN ('ps5', 'ps6')),
+  '203.0.113.5,239.255.255.255');
+SELECT set_config('request.headers', '{"cf-connecting-ipv6":"2001:db8:1:2::5","x-real-ip":"3.3.3.3"}', true);
+SELECT pg_temp.expect('只有 cf-connecting-ipv6、沒有 cf-connecting-ip → 不理它,照 x-real-ip → NULL 的順序',
+  COALESCE(public.market_client_ip(), '∅'), '3.3.3.3');
 SELECT set_config('request.headers', '', true);
 SELECT pg_temp.expect('market_client_ip 簽章與屬性不變(沒有參數、回 text、STABLE),API 角色照樣不能執行',
   (SELECT pg_get_function_identity_arguments(p.oid) || '|' || pg_get_function_result(p.oid) || '|' || p.provolatile::text || '|' ||
@@ -128,6 +158,20 @@ SELECT pg_temp.expect('只帶 x-forwarded-for 的下單:照常成單,計數算�
       WHERE split_part(bucket, '|', 1) IN (public.market_rate_key('ip', '203.0.113.50', pg_temp.salt()),
                                            public.market_rate_key('ipo', '203.0.113.50', pg_temp.salt())))),
   'true|1|1|0');
+
+-- Pseudo IPv4 的下單:A 段算真正 IPv6 的 /64(ip)與 /48(ip48),B 段算 /48 的成單(ip48o);240.x 那個位址不算
+INSERT INTO _ctx VALUES ('pseudo', pg_temp.place_h(pg_temp.anon(), '{"cf-connecting-ip":"240.9.9.9","cf-connecting-ipv6":"2001:db8:77:1::5"}'::jsonb,
+  pg_temp.co('pseudo@market-test.invalid', jsonb_build_array(pg_temp.item('a2', 1)), '{"a9200000-0000-4000-8000-00000000000a":"cod"}')));
+SELECT pg_temp.expect('Pseudo IPv4 的下單:照常成單;計數算在真正的 IPv6(/64 的 ip、/48 的 ip48 與 ip48o 各 1),240.x 的 ip / ipo 沒有任何列',
+  concat_ws('|',
+    (SELECT v ->> 'ok' FROM _ctx WHERE k = 'pseudo'),
+    pg_temp.hits(public.market_rate_key('ip', '2001:db8:77:1::', pg_temp.salt()) || '|1h'),
+    pg_temp.hits(public.market_rate_key('ip48', '2001:db8:77::', pg_temp.salt()) || '|1h'),
+    pg_temp.hits(public.market_rate_key('ip48o', '2001:db8:77::', pg_temp.salt()) || '|day'),
+    (SELECT count(*) FROM public.market_rate_counters
+      WHERE split_part(bucket, '|', 1) IN (public.market_rate_key('ip', '240.9.9.9', pg_temp.salt()),
+                                           public.market_rate_key('ipo', '240.9.9.9', pg_temp.salt())))),
+  'true|1|1|1|0');
 
 -- ---------------------------------------------------------------------
 -- 2. 被擋的請求改成非同步 commit;沒被擋的路不動
