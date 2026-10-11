@@ -195,3 +195,298 @@ SELECT cron.schedule(
   '50 19 * * *',
   $cron$DELETE FROM public.market_rate_counters WHERE window_start < now() - interval '2 days'$cron$
 );
+
+-- ---------------------------------------------------------------------
+-- 2. 下單
+--   p_checkout = {
+--     buyer: {name, phone, email, city, address, note?},
+--     items: [{product_id, qty}](1–50 行,qty 1–99;同一商品合併,上限 99),
+--     payments: {<supplier_id>: 'cod' | 'transfer'},
+--     expected_totals?: {<supplier_id>: 畫面上的總額},
+--     terms_version: 同意的服務條款版本
+--   }
+--   成功 → {ok:true, token, checkout_id, orders:[{id, supplier_id, total}]}
+--   失敗 → {ok:false, code, …}:MARKET_CLOSED / INVALID_INPUT(field)/ RATE_LIMITED、DAILY_CAP(retry_after)/
+--          EMPTY_CART / TOO_MANY_ITEMS / PRODUCT_UNAVAILABLE(products)/ OUT_OF_STOCK(products)/ TOO_MANY_STORES /
+--          NOT_DELIVERABLE(stores)/ BELOW_MINIMUM(stores)/ PAYMENT_NOT_ACCEPTED(stores)/ PRICE_CHANGED(stores)
+-- ---------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION public.market_place_order(p_checkout jsonb)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, extensions, pg_temp
+AS $$
+DECLARE
+  v_admin     boolean := public.is_admin();
+  v_buyer     jsonb;
+  v_items     jsonb;
+  v_payments  jsonb;
+  v_expected  jsonb;
+  v_name      text;
+  v_phone     text;
+  v_email     text;
+  v_city      text;
+  v_address   text;
+  v_note      text;
+  v_terms     text;
+  v_salt      text;
+  v_ip        text;
+  v_email_key text;
+  v_rules     jsonb;
+  v_rate      jsonb;
+  v_req       jsonb;
+  v_stores    jsonb;
+  v_bad       jsonb;
+  v_store     jsonb;
+  v_order     uuid;
+  v_orders    jsonb := '[]'::jsonb;
+  v_checkout  uuid := gen_random_uuid();
+  v_token     text;
+  v_hash      text;
+BEGIN
+  -- 1. 形狀
+  IF p_checkout IS NULL OR jsonb_typeof(p_checkout) <> 'object' THEN
+    RETURN jsonb_build_object('ok', false, 'code', 'INVALID_INPUT', 'field', 'checkout');
+  END IF;
+  v_buyer    := p_checkout->'buyer';
+  v_items    := p_checkout->'items';
+  v_payments := COALESCE(p_checkout->'payments', '{}'::jsonb);
+  v_expected := p_checkout->'expected_totals';
+  IF jsonb_typeof(v_buyer) IS DISTINCT FROM 'object' THEN
+    RETURN jsonb_build_object('ok', false, 'code', 'INVALID_INPUT', 'field', 'buyer');
+  END IF;
+  IF jsonb_typeof(v_items) IS DISTINCT FROM 'array' THEN
+    RETURN jsonb_build_object('ok', false, 'code', 'INVALID_INPUT', 'field', 'items');
+  END IF;
+  IF jsonb_typeof(v_payments) <> 'object' THEN
+    RETURN jsonb_build_object('ok', false, 'code', 'INVALID_INPUT', 'field', 'payments');
+  END IF;
+  IF v_expected IS NOT NULL AND jsonb_typeof(v_expected) <> 'object' THEN
+    RETURN jsonb_build_object('ok', false, 'code', 'INVALID_INPUT', 'field', 'expected_totals');
+  END IF;
+
+  -- 2. 收件資料(長度與格式跟 src/lib/market/checkout.ts 一樣)
+  v_name    := btrim(COALESCE(v_buyer->>'name', ''));
+  v_phone   := regexp_replace(COALESCE(v_buyer->>'phone', ''), '[[:space:]()-]', '', 'g');
+  v_email   := lower(btrim(COALESCE(v_buyer->>'email', '')));
+  v_city    := btrim(COALESCE(v_buyer->>'city', ''));
+  v_address := btrim(COALESCE(v_buyer->>'address', ''));
+  v_note    := NULLIF(btrim(COALESCE(v_buyer->>'note', '')), '');
+  v_terms   := btrim(COALESCE(p_checkout->>'terms_version', ''));
+  IF char_length(v_name) NOT BETWEEN 1 AND 50 THEN
+    RETURN jsonb_build_object('ok', false, 'code', 'INVALID_INPUT', 'field', 'buyer.name');
+  END IF;
+  IF NOT public.market_phone_ok(v_phone) THEN
+    RETURN jsonb_build_object('ok', false, 'code', 'INVALID_INPUT', 'field', 'buyer.phone');
+  END IF;
+  IF NOT public.market_email_ok(v_email) THEN
+    RETURN jsonb_build_object('ok', false, 'code', 'INVALID_INPUT', 'field', 'buyer.email');
+  END IF;
+  IF NOT (v_city = ANY (public.market_tw_cities())) THEN
+    RETURN jsonb_build_object('ok', false, 'code', 'INVALID_INPUT', 'field', 'buyer.city');
+  END IF;
+  IF char_length(v_address) NOT BETWEEN 5 AND 200 THEN
+    RETURN jsonb_build_object('ok', false, 'code', 'INVALID_INPUT', 'field', 'buyer.address');
+  END IF;
+  IF v_note IS NOT NULL AND char_length(v_note) > 300 THEN
+    RETURN jsonb_build_object('ok', false, 'code', 'INVALID_INPUT', 'field', 'buyer.note');
+  END IF;
+  IF char_length(v_terms) NOT BETWEEN 1 AND 20 THEN
+    RETURN jsonb_build_object('ok', false, 'code', 'INVALID_INPUT', 'field', 'terms_version');
+  END IF;
+
+  -- 3. 防灌單(平台管理員實測不限流)。放在開關之前:開放前的嘗試一樣會被計數
+  IF NOT v_admin THEN
+    v_salt := COALESCE((SELECT c.value FROM public.app_config c WHERE c.key = 'market_rate_salt'), 'ifoodmap-market-rate-fallback');
+    v_ip := public.market_client_ip();
+    v_email_key := public.supplier_mail_email_key(v_email);
+    v_rules := jsonb_build_array(
+      jsonb_build_object('bucket', public.market_rate_key('email', v_email_key, v_salt), 'window', '1h', 'limit', 3),
+      jsonb_build_object('bucket', public.market_rate_key('email', v_email_key, v_salt), 'window', 'day', 'limit', 10),
+      jsonb_build_object('bucket', public.market_rate_key('phone', v_phone, v_salt), 'window', 'day', 'limit', 10),
+      jsonb_build_object('bucket', 'global', 'window', 'day', 'limit', 500, 'code', 'DAILY_CAP')
+    );
+    IF v_ip IS NOT NULL THEN
+      v_rules := v_rules || jsonb_build_array(
+        jsonb_build_object('bucket', public.market_rate_key('ip', v_ip, v_salt), 'window', '1h', 'limit', 5),
+        jsonb_build_object('bucket', public.market_rate_key('ip', v_ip, v_salt), 'window', 'day', 'limit', 20)
+      );
+    END IF;
+    v_rate := public.market_rate_take(v_rules);
+    IF NOT COALESCE((v_rate->>'ok')::boolean, false) THEN
+      RETURN jsonb_build_object('ok', false, 'code', v_rate->>'code', 'retry_after', (v_rate->>'retry_after')::integer);
+    END IF;
+  END IF;
+
+  -- 4. 開關:對外開放前只有平台管理員能下單(app_config.market_checkout_open,待業主核准才改成 'true')
+  IF NOT v_admin AND COALESCE((SELECT c.value FROM public.app_config c WHERE c.key = 'market_checkout_open'), '') <> 'true' THEN
+    RETURN jsonb_build_object('ok', false, 'code', 'MARKET_CLOSED');
+  END IF;
+
+  -- 5. 購物車
+  IF jsonb_array_length(v_items) = 0 THEN
+    RETURN jsonb_build_object('ok', false, 'code', 'EMPTY_CART');
+  END IF;
+  IF jsonb_array_length(v_items) > 50 THEN
+    RETURN jsonb_build_object('ok', false, 'code', 'TOO_MANY_ITEMS');
+  END IF;
+  IF EXISTS (
+    SELECT 1 FROM jsonb_array_elements(v_items) AS e(value)
+     WHERE jsonb_typeof(e.value) <> 'object'
+        OR COALESCE(e.value->>'product_id', '') !~ '^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$'
+        OR CASE WHEN jsonb_typeof(e.value->'qty') = 'number' AND (e.value->>'qty') ~ '^[0-9]{1,2}$'
+                THEN (e.value->>'qty')::integer NOT BETWEEN 1 AND 99
+                ELSE true END
+  ) THEN
+    RETURN jsonb_build_object('ok', false, 'code', 'INVALID_INPUT', 'field', 'items');
+  END IF;
+
+  SELECT jsonb_agg(jsonb_build_object('product_id', r.product_id, 'qty', r.qty) ORDER BY r.product_id)
+    INTO v_req
+    FROM (SELECT (e.value->>'product_id')::uuid AS product_id, LEAST(sum((e.value->>'qty')::integer), 99)::integer AS qty
+            FROM jsonb_array_elements(v_items) AS e(value)
+           GROUP BY 1) r;
+
+  -- 鎖住這些商品(固定照 id 排序,兩張單同時搶同一批商品不會互等),之後讀到的庫存不會被同時扣走
+  PERFORM 1 FROM public.market_products p
+   WHERE p.id IN (SELECT q.product_id FROM jsonb_to_recordset(v_req) AS q(product_id uuid, qty integer))
+   ORDER BY p.id
+     FOR UPDATE;
+
+  SELECT jsonb_agg(q.product_id ORDER BY q.product_id) INTO v_bad
+    FROM jsonb_to_recordset(v_req) AS q(product_id uuid, qty integer)
+    LEFT JOIN public.market_products p ON p.id = q.product_id
+   WHERE p.id IS NULL OR p.review_status <> 'approved' OR NOT p.is_listed OR NOT public.market_store_is_open(p.supplier_id);
+  IF v_bad IS NOT NULL THEN
+    RETURN jsonb_build_object('ok', false, 'code', 'PRODUCT_UNAVAILABLE', 'products', v_bad);
+  END IF;
+
+  SELECT jsonb_agg(jsonb_build_object('product_id', p.id, 'available', p.stock) ORDER BY p.id) INTO v_bad
+    FROM jsonb_to_recordset(v_req) AS q(product_id uuid, qty integer)
+    JOIN public.market_products p ON p.id = q.product_id
+   WHERE p.stock IS NOT NULL AND p.stock < q.qty;
+  IF v_bad IS NOT NULL THEN
+    RETURN jsonb_build_object('ok', false, 'code', 'OUT_OF_STOCK', 'products', v_bad);
+  END IF;
+
+  -- 6. 每家店:小計、運費(固定運費;小計 ≥ 免運門檻就 0)、配送範圍、最低金額、付款方式 —— 一律伺服器算
+  SELECT jsonb_agg(jsonb_build_object(
+           'supplier_id', s.supplier_id,
+           'subtotal', g.subtotal,
+           'shipping_fee', CASE WHEN s.free_shipping_threshold IS NOT NULL AND g.subtotal >= s.free_shipping_threshold
+                                THEN 0 ELSE s.shipping_fee END,
+           'min_order_amount', s.min_order_amount,
+           'deliverable', v_city = ANY (s.delivery_cities),
+           'payment', v_payments->>(s.supplier_id::text),
+           'payment_ok', COALESCE(v_payments->>(s.supplier_id::text) = ANY (s.payment_methods), false)
+                         AND (COALESCE(v_payments->>(s.supplier_id::text), '') <> 'transfer'
+                              OR EXISTS (SELECT 1 FROM public.market_store_transfer t WHERE t.supplier_id = s.supplier_id))
+         ) ORDER BY s.supplier_id)
+    INTO v_stores
+    FROM (SELECT p.supplier_id, sum(p.price * q.qty)::integer AS subtotal
+            FROM jsonb_to_recordset(v_req) AS q(product_id uuid, qty integer)
+            JOIN public.market_products p ON p.id = q.product_id
+           GROUP BY p.supplier_id) g
+    JOIN public.market_stores s ON s.supplier_id = g.supplier_id;
+
+  IF jsonb_array_length(v_stores) > 10 THEN
+    RETURN jsonb_build_object('ok', false, 'code', 'TOO_MANY_STORES');
+  END IF;
+
+  SELECT jsonb_agg(x.value->'supplier_id') INTO v_bad
+    FROM jsonb_array_elements(v_stores) AS x(value) WHERE NOT (x.value->>'deliverable')::boolean;
+  IF v_bad IS NOT NULL THEN
+    RETURN jsonb_build_object('ok', false, 'code', 'NOT_DELIVERABLE', 'stores', v_bad);
+  END IF;
+
+  SELECT jsonb_agg(jsonb_build_object('supplier_id', x.value->'supplier_id',
+                                      'min_order_amount', x.value->'min_order_amount', 'subtotal', x.value->'subtotal'))
+    INTO v_bad
+    FROM jsonb_array_elements(v_stores) AS x(value)
+   WHERE (x.value->>'subtotal')::integer < (x.value->>'min_order_amount')::integer;
+  IF v_bad IS NOT NULL THEN
+    RETURN jsonb_build_object('ok', false, 'code', 'BELOW_MINIMUM', 'stores', v_bad);
+  END IF;
+
+  SELECT jsonb_agg(x.value->'supplier_id') INTO v_bad
+    FROM jsonb_array_elements(v_stores) AS x(value) WHERE NOT (x.value->>'payment_ok')::boolean;
+  IF v_bad IS NOT NULL THEN
+    RETURN jsonb_build_object('ok', false, 'code', 'PAYMENT_NOT_ACCEPTED', 'stores', v_bad);
+  END IF;
+
+  IF v_expected IS NOT NULL THEN
+    SELECT jsonb_agg(jsonb_build_object('supplier_id', x.value->'supplier_id',
+                                        'total', (x.value->>'subtotal')::integer + (x.value->>'shipping_fee')::integer))
+      INTO v_bad
+      FROM jsonb_array_elements(v_stores) AS x(value)
+     WHERE (v_expected->>(x.value->>'supplier_id'))
+           IS DISTINCT FROM ((x.value->>'subtotal')::integer + (x.value->>'shipping_fee')::integer)::text;
+    IF v_bad IS NOT NULL THEN
+      RETURN jsonb_build_object('ok', false, 'code', 'PRICE_CHANGED', 'stores', v_bad);
+    END IF;
+  END IF;
+
+  -- 7. 建單:同一次結帳的訂單共用一組查詢 token(32 bytes 隨機值的 base64url,43 字;DB 只存 sha256 hex)
+  v_token := rtrim(translate(encode(extensions.gen_random_bytes(32), 'base64'), '+/', '-_'), '=');
+  v_hash  := encode(sha256(convert_to(v_token, 'UTF8')), 'hex');
+
+  FOR v_store IN SELECT x.value FROM jsonb_array_elements(v_stores) AS x(value) LOOP
+    INSERT INTO public.market_orders
+      (checkout_id, supplier_id, buyer_name, buyer_phone, buyer_email, ship_city, ship_address, buyer_note,
+       subtotal, shipping_fee, total, payment_method, lookup_token_hash, terms_version)
+    VALUES
+      (v_checkout, (v_store->>'supplier_id')::uuid, v_name, v_phone, v_email, v_city, v_address, v_note,
+       (v_store->>'subtotal')::integer, (v_store->>'shipping_fee')::integer,
+       (v_store->>'subtotal')::integer + (v_store->>'shipping_fee')::integer,
+       v_store->>'payment', v_hash, v_terms)
+    RETURNING id INTO v_order;
+
+    INSERT INTO public.market_order_items (order_id, product_id, product_name, spec, temperature, unit_price, qty, line_total)
+    SELECT v_order, p.id, p.name, p.spec, p.temperature, p.price, q.qty, p.price * q.qty
+      FROM jsonb_to_recordset(v_req) AS q(product_id uuid, qty integer)
+      JOIN public.market_products p ON p.id = q.product_id
+     WHERE p.supplier_id = (v_store->>'supplier_id')::uuid
+     ORDER BY p.name, p.id;
+
+    -- 第一筆紀錄(guard 認得「還沒有紀錄的單」= 剛建好,身分記成 consumer);trigger 會排供應商的新訂單通知
+    INSERT INTO public.market_order_events (order_id, from_status, to_status) VALUES (v_order, NULL, 'pending');
+
+    v_orders := v_orders || jsonb_build_array(jsonb_build_object(
+      'id', v_order,
+      'supplier_id', v_store->>'supplier_id',
+      'total', (v_store->>'subtotal')::integer + (v_store->>'shipping_fee')::integer));
+  END LOOP;
+
+  UPDATE public.market_products p
+     SET stock = p.stock - q.qty
+    FROM jsonb_to_recordset(v_req) AS q(product_id uuid, qty integer)
+   WHERE p.id = q.product_id AND p.stock IS NOT NULL;
+
+  -- 下單確認信(含查詢連結):只有這裡知道 token 明文
+  PERFORM public.market_enqueue_notify(jsonb_build_object('kind', 'placed', 'checkout_id', v_checkout, 'token', v_token));
+
+  RETURN jsonb_build_object('ok', true, 'token', v_token, 'checkout_id', v_checkout, 'orders', v_orders);
+END;
+$$;
+
+COMMENT ON FUNCTION public.market_place_order(jsonb) IS
+  '零售市集免註冊下單:伺服器重算價格、庫存、配送範圍、最低金額、付款方式;每家店一張單;回傳查詢 token。錯誤回 {ok:false, code},不 raise。';
+
+REVOKE ALL ON FUNCTION public.market_place_order(jsonb) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.market_place_order(jsonb) TO anon, authenticated, service_role;
+
+-- 下單開關的狀態,給前端決定要不要讓人進結帳(真正的關卡仍是 market_place_order 第 4 步)。
+-- {open:對外開放了沒, can_order:這位呼叫者現在能不能下單(開放了,或是平台管理員)};不洩漏 app_config 其他內容。
+CREATE OR REPLACE FUNCTION public.market_checkout_status()
+RETURNS jsonb
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+  SELECT jsonb_build_object('open', s.open, 'can_order', s.open OR public.is_admin())
+    FROM (SELECT COALESCE((SELECT c.value FROM public.app_config c WHERE c.key = 'market_checkout_open'), '') = 'true' AS open) s
+$$;
+
+REVOKE ALL ON FUNCTION public.market_checkout_status() FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.market_checkout_status() TO anon, authenticated, service_role;

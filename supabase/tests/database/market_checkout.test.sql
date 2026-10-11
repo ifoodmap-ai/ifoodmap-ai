@@ -85,3 +85,237 @@ SELECT pg_temp.expect('清理排程每天 19:50 UTC',
   (SELECT schedule FROM cron.job WHERE jobname = 'ifoodmap-market-rate-cleanup'), '50 19 * * *');
 SELECT pg_temp.expect('下單開關與限流的鹽都在 app_config(值不印出來)',
   (SELECT count(*)::text FROM public.app_config WHERE key IN ('market_checkout_open', 'market_rate_salt')), '2');
+
+-- ---------------------------------------------------------------------
+-- 2. 下單 RPC
+-- ---------------------------------------------------------------------
+CREATE TEMP TABLE _ctx (k text PRIMARY KEY, v jsonb) ON COMMIT DROP;
+
+-- 以 anon(或帶 JWT 的登入者)身分呼叫下單 RPC;p_ip = 這次請求的 cf-connecting-ip(NULL = 沒有 IP 標頭)
+CREATE FUNCTION pg_temp.place(p_claims text, p_ip text, p_checkout jsonb) RETURNS jsonb LANGUAGE plpgsql AS $f$
+DECLARE
+  r jsonb;
+  v_state text;
+BEGIN
+  PERFORM set_config('request.headers', CASE WHEN p_ip IS NULL THEN '' ELSE json_build_object('cf-connecting-ip', p_ip)::text END, true);
+  PERFORM set_config('request.jwt.claims', p_claims, true);
+  PERFORM set_config('role', CASE WHEN p_claims LIKE '%"authenticated"%' THEN 'authenticated' ELSE 'anon' END, true);
+  BEGIN
+    r := public.market_place_order(p_checkout);
+  EXCEPTION WHEN OTHERS THEN
+    GET STACKED DIAGNOSTICS v_state = RETURNED_SQLSTATE;
+    r := jsonb_build_object('ok', false, 'code', 'ERR ' || v_state, 'message', SQLERRM);
+  END;
+  PERFORM set_config('role', 'none', true);
+  PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('request.headers', '', true);
+  RETURN r;
+END
+$f$;
+
+-- 結帳內容。電話預設由 Email 算出一支不重複的(同一支電話每天只能下 10 單,測試會超過);
+-- 要測正規化時自己帶(例如 '0912-345-678')。Email 可以帶大寫:伺服器會轉小寫
+CREATE FUNCTION pg_temp.co(p_email text, p_items jsonb, p_payments jsonb, p_city text DEFAULT '臺北市',
+                           p_expected jsonb DEFAULT NULL, p_phone text DEFAULT NULL)
+RETURNS jsonb LANGUAGE sql AS $f$
+  SELECT jsonb_strip_nulls(jsonb_build_object(
+    'buyer', jsonb_build_object('name', '測試買家',
+                                'phone', COALESCE(p_phone, '09' || lpad((abs(hashtext(p_email)) % 100000000)::text, 8, '0')),
+                                'email', p_email, 'city', p_city, 'address', '測試路 1 號 2 樓', 'note', '請放管理室'),
+    'items', p_items, 'payments', p_payments, 'expected_totals', p_expected, 'terms_version', '2026-10-draft'))
+$f$;
+
+CREATE FUNCTION pg_temp.item(p_product text, p_qty integer) RETURNS jsonb LANGUAGE sql AS $f$
+  SELECT jsonb_build_object('product_id', 'a9300000-0000-4000-8000-0000000000' || p_product, 'qty', p_qty)
+$f$;
+
+CREATE FUNCTION pg_temp.queued(p_kind text) RETURNS bigint LANGUAGE sql AS $f$
+  SELECT count(*) FROM net.http_request_queue q
+   WHERE q.url = 'http://127.0.0.1:9/market-test' AND convert_from(q.body, 'UTF8')::jsonb ->> 'kind' = p_kind
+$f$;
+
+UPDATE public.app_config SET value = 'http://127.0.0.1:9/market-test' WHERE key = 'market_notify_function_url';
+UPDATE public.app_config SET value = 'false' WHERE key = 'market_checkout_open';
+
+SELECT pg_temp.expect('開關關閉:anon 拿到 MARKET_CLOSED',
+  pg_temp.place(pg_temp.anon(), '198.51.100.1',
+    pg_temp.co('closed@market-test.invalid', jsonb_build_array(pg_temp.item('a2', 1)), '{"a9200000-0000-4000-8000-00000000000a":"cod"}')) ->> 'code',
+  'MARKET_CLOSED');
+SELECT pg_temp.expect('開關關閉:平台管理員可以下單(業主實測用)',
+  pg_temp.place(pg_temp.jwt('a9100000-0000-4000-8000-000000000003', true), '198.51.100.1',
+    pg_temp.co('owner-test@market-test.invalid', jsonb_build_array(pg_temp.item('a2', 1)), '{"a9200000-0000-4000-8000-00000000000a":"cod"}')) ->> 'ok',
+  'true');
+
+SELECT pg_temp.expect('開關狀態:關閉時 anon 不能下單、管理員可以',
+  pg_temp.as_val('anon', pg_temp.anon(), 'SELECT public.market_checkout_status()::text') || '|' ||
+  pg_temp.as_val('authenticated', pg_temp.jwt('a9100000-0000-4000-8000-000000000003', true), 'SELECT public.market_checkout_status()::text'),
+  '{"open": false, "can_order": false}|{"open": false, "can_order": true}');
+
+UPDATE public.app_config SET value = 'true' WHERE key = 'market_checkout_open';
+
+SELECT pg_temp.expect('開關狀態:打開後 anon 也能下單',
+  pg_temp.as_val('anon', pg_temp.anon(), 'SELECT public.market_checkout_status()::text'),
+  '{"open": true, "can_order": true}');
+
+INSERT INTO _ctx VALUES ('happy', pg_temp.place(pg_temp.anon(), '198.51.100.2', pg_temp.co('Happy@Market-Test.invalid',
+  jsonb_build_array(pg_temp.item('a1', 2) || '{"price": 1}', pg_temp.item('a2', 1), pg_temp.item('b1', 1)),
+  '{"a9200000-0000-4000-8000-00000000000a":"cod","a9200000-0000-4000-8000-00000000000b":"transfer"}',
+  '臺北市', NULL, '0912-345-678')));
+SELECT pg_temp.expect('anon 一次結帳兩家店成功', (SELECT v ->> 'ok' FROM _ctx WHERE k = 'happy'), 'true');
+SELECT pg_temp.expect('金額是伺服器算的(送來的 price 不算):A 200+450+運費 120 = 770;B 200+運費 60 = 260',
+  (SELECT string_agg(o ->> 'total', ',' ORDER BY o ->> 'supplier_id') FROM _ctx, jsonb_array_elements(v -> 'orders') o WHERE k = 'happy'),
+  '770,260');
+SELECT pg_temp.expect('token 43 字;兩張單共用、DB 只存它的 sha256',
+  (SELECT (char_length(v ->> 'token') = 43)::text || '|' ||
+          (SELECT count(*) FROM public.market_orders o
+            WHERE o.lookup_token_hash = encode(sha256(convert_to(v ->> 'token', 'UTF8')), 'hex'))::text
+     FROM _ctx WHERE k = 'happy'),
+  'true|2');
+SELECT pg_temp.expect('明細是下單當下的快照',
+  (SELECT string_agg(i.product_name || '×' || i.qty || '=' || i.line_total, ',' ORDER BY i.unit_price)
+     FROM public.market_order_items i
+    WHERE i.order_id IN (SELECT (o ->> 'id')::uuid FROM _ctx, jsonb_array_elements(v -> 'orders') o WHERE k = 'happy')),
+  '有機高麗菜×2=200,挪威鮭魚×1=200,牛肉片×1=450');
+SELECT pg_temp.expect('庫存扣掉(高麗菜 10→8、鮭魚 3→2;不限庫存的牛肉片不動)',
+  (SELECT string_agg(COALESCE(stock::text, '∅'), '|' ORDER BY id) FROM public.market_products
+    WHERE id IN ('a9300000-0000-4000-8000-0000000000a1', 'a9300000-0000-4000-8000-0000000000a2', 'a9300000-0000-4000-8000-0000000000b1')),
+  '8|∅|2');
+SELECT pg_temp.expect('每張單第一筆紀錄是 pending、身分是消費者',
+  (SELECT count(*)::text FROM public.market_order_events e
+    WHERE e.to_status = 'pending' AND e.actor_role = 'consumer'
+      AND e.order_id IN (SELECT (o ->> 'id')::uuid FROM _ctx, jsonb_array_elements(v -> 'orders') o WHERE k = 'happy')),
+  '2');
+SELECT pg_temp.expect('收件資料正規化:電話去掉 -、Email 轉小寫',
+  (SELECT string_agg(DISTINCT o.buyer_phone || '|' || o.buyer_email, ',') FROM public.market_orders o
+    WHERE o.id IN (SELECT (x ->> 'id')::uuid FROM _ctx, jsonb_array_elements(v -> 'orders') x WHERE k = 'happy')),
+  '0912345678|happy@market-test.invalid');
+SELECT pg_temp.expect('排了 1 封下單確認(帶 token)+ 2 封新訂單通知',
+  (SELECT count(*)::text FROM net.http_request_queue q, _ctx c
+    WHERE c.k = 'happy' AND q.url = 'http://127.0.0.1:9/market-test'
+      AND convert_from(q.body, 'UTF8')::jsonb ->> 'kind' = 'placed'
+      AND convert_from(q.body, 'UTF8')::jsonb ->> 'checkout_id' = c.v ->> 'checkout_id'
+      AND convert_from(q.body, 'UTF8')::jsonb ->> 'token' = c.v ->> 'token')
+  || '|' ||
+  (SELECT count(*)::text FROM net.http_request_queue q
+     JOIN public.market_order_events e ON e.id::text = convert_from(q.body, 'UTF8')::jsonb ->> 'event_id'
+    WHERE q.url = 'http://127.0.0.1:9/market-test'
+      AND e.order_id IN (SELECT (o ->> 'id')::uuid FROM _ctx, jsonb_array_elements(v -> 'orders') o WHERE k = 'happy')),
+  '1|2');
+
+INSERT INTO _ctx VALUES ('price', pg_temp.place(pg_temp.anon(), '198.51.100.3', pg_temp.co('price@market-test.invalid',
+  jsonb_build_array(pg_temp.item('a2', 1)), '{"a9200000-0000-4000-8000-00000000000a":"cod"}', '臺北市',
+  '{"a9200000-0000-4000-8000-00000000000a": 1}')));
+SELECT pg_temp.expect('畫面上的總額對不上 → PRICE_CHANGED,回伺服器算的 570,不建單',
+  (SELECT (v ->> 'code') || '|' || (v -> 'stores' -> 0 ->> 'total') FROM _ctx WHERE k = 'price') || '|' ||
+  (SELECT count(*)::text FROM public.market_orders WHERE buyer_email = 'price@market-test.invalid'),
+  'PRICE_CHANGED|570|0');
+SELECT pg_temp.expect('總額對得上就成功',
+  pg_temp.place(pg_temp.anon(), '198.51.100.3', pg_temp.co('price@market-test.invalid',
+    jsonb_build_array(pg_temp.item('a2', 1)), '{"a9200000-0000-4000-8000-00000000000a":"cod"}', '臺北市',
+    '{"a9200000-0000-4000-8000-00000000000a": 570}')) ->> 'ok',
+  'true');
+
+INSERT INTO _ctx VALUES ('stock', pg_temp.place(pg_temp.anon(), '198.51.100.4', pg_temp.co('stock@market-test.invalid',
+  jsonb_build_array(pg_temp.item('b1', 5)), '{"a9200000-0000-4000-8000-00000000000b":"cod"}')));
+SELECT pg_temp.expect('庫存不足 → OUT_OF_STOCK(剩 2),庫存不變',
+  (SELECT (v ->> 'code') || '|' || (v -> 'products' -> 0 ->> 'available') FROM _ctx WHERE k = 'stock') || '|' ||
+  (SELECT stock::text FROM public.market_products WHERE id = 'a9300000-0000-4000-8000-0000000000b1'),
+  'OUT_OF_STOCK|2|2');
+SELECT pg_temp.expect('待審、暫停販售、不存在的商品都 PRODUCT_UNAVAILABLE',
+  (pg_temp.place(pg_temp.anon(), '198.51.100.5', pg_temp.co('u1@market-test.invalid', jsonb_build_array(pg_temp.item('a3', 1)),
+     '{"a9200000-0000-4000-8000-00000000000a":"cod"}')) ->> 'code') || '|' ||
+  (pg_temp.place(pg_temp.anon(), '198.51.100.6', pg_temp.co('u2@market-test.invalid', jsonb_build_array(pg_temp.item('b2', 1)),
+     '{"a9200000-0000-4000-8000-00000000000b":"cod"}')) ->> 'code') || '|' ||
+  (pg_temp.place(pg_temp.anon(), '198.51.100.7', pg_temp.co('u3@market-test.invalid',
+     '[{"product_id":"a9300000-0000-4000-8000-0000000000ff","qty":1}]', '{}')) ->> 'code'),
+  'PRODUCT_UNAVAILABLE|PRODUCT_UNAVAILABLE|PRODUCT_UNAVAILABLE');
+INSERT INTO _ctx VALUES ('city', pg_temp.place(pg_temp.anon(), '198.51.100.8', pg_temp.co('city@market-test.invalid',
+  jsonb_build_array(pg_temp.item('a1', 3), pg_temp.item('b1', 1)),
+  '{"a9200000-0000-4000-8000-00000000000a":"cod","a9200000-0000-4000-8000-00000000000b":"cod"}', '新北市')));
+SELECT pg_temp.expect('收件縣市不在配送範圍 → NOT_DELIVERABLE,只列不送新北市的 B 店',
+  (SELECT (v ->> 'code') || '|' || (v -> 'stores')::text FROM _ctx WHERE k = 'city'),
+  'NOT_DELIVERABLE|["a9200000-0000-4000-8000-00000000000b"]');
+INSERT INTO _ctx VALUES ('min', pg_temp.place(pg_temp.anon(), '198.51.100.9', pg_temp.co('min@market-test.invalid',
+  jsonb_build_array(pg_temp.item('a1', 2)), '{"a9200000-0000-4000-8000-00000000000a":"cod"}')));
+SELECT pg_temp.expect('A 店最低 300、小計 200 → BELOW_MINIMUM',
+  (SELECT (v ->> 'code') || '|' || (v -> 'stores' -> 0 ->> 'subtotal') || '|' || (v -> 'stores' -> 0 ->> 'min_order_amount') FROM _ctx WHERE k = 'min'),
+  'BELOW_MINIMUM|200|300');
+SELECT pg_temp.expect('剛好 300 就可以(運費 120 → 420)',
+  (SELECT (r ->> 'ok') || '|' || (r -> 'orders' -> 0 ->> 'total')
+     FROM (SELECT pg_temp.place(pg_temp.anon(), '198.51.100.10', pg_temp.co('min300@market-test.invalid',
+             jsonb_build_array(pg_temp.item('a1', 3)), '{"a9200000-0000-4000-8000-00000000000a":"cod"}')) AS r) x),
+  'true|420');
+SELECT pg_temp.expect('滿 1000 免運:牛肉片 ×2 + 高麗菜 ×1 = 1000 → 總額 1000',
+  (SELECT (r ->> 'ok') || '|' || (r -> 'orders' -> 0 ->> 'total')
+     FROM (SELECT pg_temp.place(pg_temp.anon(), '198.51.100.11', pg_temp.co('free@market-test.invalid',
+             jsonb_build_array(pg_temp.item('a2', 2), pg_temp.item('a1', 1)), '{"a9200000-0000-4000-8000-00000000000a":"cod"}')) AS r) x),
+  'true|1000');
+SELECT pg_temp.expect('付款方式不在店家接受的裡面、或沒選 → PAYMENT_NOT_ACCEPTED',
+  (pg_temp.place(pg_temp.anon(), '198.51.100.12', pg_temp.co('pay1@market-test.invalid', jsonb_build_array(pg_temp.item('a2', 1)),
+     '{"a9200000-0000-4000-8000-00000000000a":"transfer"}')) ->> 'code') || '|' ||
+  (pg_temp.place(pg_temp.anon(), '198.51.100.13', pg_temp.co('pay2@market-test.invalid', jsonb_build_array(pg_temp.item('a2', 1)), '{}')) ->> 'code'),
+  'PAYMENT_NOT_ACCEPTED|PAYMENT_NOT_ACCEPTED');
+DELETE FROM public.market_store_transfer WHERE supplier_id = 'a9200000-0000-4000-8000-00000000000b';
+SELECT pg_temp.expect('轉帳資訊被刪掉的店不能選轉帳',
+  pg_temp.place(pg_temp.anon(), '198.51.100.14', pg_temp.co('pay3@market-test.invalid', jsonb_build_array(pg_temp.item('b1', 1)),
+    '{"a9200000-0000-4000-8000-00000000000b":"transfer"}')) ->> 'code',
+  'PAYMENT_NOT_ACCEPTED');
+INSERT INTO public.market_store_transfer (supplier_id, transfer_info)
+VALUES ('a9200000-0000-4000-8000-00000000000b', '郵局(700) 帳號 0001234-5678901 戶名 市集測試 B');
+
+CREATE FUNCTION pg_temp.bad(p_n integer, p_checkout jsonb) RETURNS text LANGUAGE sql AS $f$
+  SELECT COALESCE(pg_temp.place(pg_temp.anon(), '198.51.101.' || p_n, p_checkout) ->> 'field', '(沒有 field)')
+$f$;
+SELECT pg_temp.expect('欄位驗證:每個欄位都有上限與格式',
+  concat_ws(',',
+    pg_temp.bad(1, jsonb_set(pg_temp.co('f1@market-test.invalid', jsonb_build_array(pg_temp.item('a2', 1)), '{}'), '{buyer,phone}', '"12345"')),
+    pg_temp.bad(2, pg_temp.co('a@b', jsonb_build_array(pg_temp.item('a2', 1)), '{}')),
+    pg_temp.bad(3, jsonb_set(pg_temp.co('f3@market-test.invalid', jsonb_build_array(pg_temp.item('a2', 1)), '{}'), '{buyer,name}', '"  "')),
+    pg_temp.bad(4, jsonb_set(pg_temp.co('f4@market-test.invalid', jsonb_build_array(pg_temp.item('a2', 1)), '{}'), '{buyer,name}', to_jsonb(repeat('名', 51)))),
+    pg_temp.bad(5, pg_temp.co('f5@market-test.invalid', jsonb_build_array(pg_temp.item('a2', 1)), '{}', '台北市')),
+    pg_temp.bad(6, jsonb_set(pg_temp.co('f6@market-test.invalid', jsonb_build_array(pg_temp.item('a2', 1)), '{}'), '{buyer,address}', '"短"')),
+    pg_temp.bad(7, jsonb_set(pg_temp.co('f7@market-test.invalid', jsonb_build_array(pg_temp.item('a2', 1)), '{}'), '{buyer,note}', to_jsonb(repeat('字', 301)))),
+    pg_temp.bad(8, jsonb_set(pg_temp.co('f8@market-test.invalid', jsonb_build_array(pg_temp.item('a2', 1)), '{}'), '{terms_version}', '""')),
+    pg_temp.bad(9, pg_temp.co('f9@market-test.invalid', jsonb_build_array(pg_temp.item('a2', 0)), '{}')),
+    pg_temp.bad(10, pg_temp.co('f10@market-test.invalid', '[{"product_id":"a9300000-0000-4000-8000-0000000000a2","qty":"2"}]', '{}')),
+    pg_temp.bad(11, pg_temp.co('f11@market-test.invalid', '[{"product_id":"a9300000-0000-4000-8000-0000000000a2","qty":1.5}]', '{}')),
+    pg_temp.bad(12, pg_temp.co('f12@market-test.invalid', '[{"product_id":"x","qty":1}]', '{}'))),
+  'buyer.phone,buyer.email,buyer.name,buyer.name,buyer.city,buyer.address,buyer.note,terms_version,items,items,items,items');
+SELECT pg_temp.expect('空購物車 → EMPTY_CART;超過 50 行 → TOO_MANY_ITEMS',
+  (pg_temp.place(pg_temp.anon(), '198.51.102.1', pg_temp.co('e1@market-test.invalid', '[]', '{}')) ->> 'code') || '|' ||
+  (pg_temp.place(pg_temp.anon(), '198.51.102.2', pg_temp.co('e2@market-test.invalid',
+     (SELECT jsonb_agg(pg_temp.item('a2', 1)) FROM generate_series(1, 51)), '{}')) ->> 'code'),
+  'EMPTY_CART|TOO_MANY_ITEMS');
+SELECT pg_temp.expect('同一個 Email 一小時前 3 次可以,第 4 次 RATE_LIMITED(有 retry_after)',
+  (SELECT string_agg(pg_temp.place(pg_temp.anon(), '198.51.103.' || n, pg_temp.co('rate@market-test.invalid',
+            jsonb_build_array(pg_temp.item('a2', 1)), '{"a9200000-0000-4000-8000-00000000000a":"cod"}')) ->> 'ok', ',' ORDER BY n)
+     FROM generate_series(1, 3) AS n) || '|' ||
+  (SELECT (r ->> 'code') || '|' || ((r ->> 'retry_after')::integer > 0)::text
+     FROM (SELECT pg_temp.place(pg_temp.anon(), '198.51.103.9', pg_temp.co('rate@market-test.invalid',
+             jsonb_build_array(pg_temp.item('a2', 1)), '{"a9200000-0000-4000-8000-00000000000a":"cod"}')) AS r) x),
+  'true,true,true|RATE_LIMITED|true');
+SELECT pg_temp.expect('……被擋的那次不吃額度(Email 計數停在 3)',
+  (SELECT hits::text FROM public.market_rate_counters
+    WHERE bucket = public.market_rate_key('email', 'rate@market-test.invalid',
+                                          (SELECT value FROM public.app_config WHERE key = 'market_rate_salt')) || '|1h'),
+  '3');
+SELECT pg_temp.expect('同一個 IP 一小時第 6 次 RATE_LIMITED',
+  (SELECT string_agg(pg_temp.place(pg_temp.anon(), '198.51.104.1', pg_temp.co('ip' || n || '@market-test.invalid',
+            jsonb_build_array(pg_temp.item('a2', 1)), '{"a9200000-0000-4000-8000-00000000000a":"cod"}')) ->> 'code', ',' ORDER BY n)
+     FROM generate_series(1, 6) AS n),
+  'RATE_LIMITED');
+SELECT pg_temp.expect('拿不到 IP 的請求不算 IP 額度(不會所有人共用一格)',
+  pg_temp.place(pg_temp.anon(), NULL, pg_temp.co('noip@market-test.invalid',
+    jsonb_build_array(pg_temp.item('a2', 1)), '{"a9200000-0000-4000-8000-00000000000a":"cod"}')) ->> 'ok',
+  'true');
+SELECT pg_temp.expect('計數表裡沒有明文 Email / 電話 / IP',
+  (SELECT count(*)::text FROM public.market_rate_counters WHERE bucket ~ '@|09[0-9]{8}|198\.51'), '0');
+SELECT pg_temp.expect('anon 讀不到訂單、明細、紀錄、計數',
+  concat_ws('|',
+    pg_temp.as_val('anon', pg_temp.anon(), $q$SELECT count(*)::text FROM public.market_orders$q$),
+    pg_temp.as_val('anon', pg_temp.anon(), $q$SELECT count(*)::text FROM public.market_order_items$q$),
+    pg_temp.as_val('anon', pg_temp.anon(), $q$SELECT count(*)::text FROM public.market_order_events$q$),
+    pg_temp.as_val('anon', pg_temp.anon(), $q$SELECT count(*)::text FROM public.market_rate_counters$q$)),
+  'ERR 42501|ERR 42501|ERR 42501|ERR 42501');
+SELECT pg_temp.expect('下單 RPC 有鎖商品列(FOR UPDATE),兩張單搶最後一件不會超賣',
+  (position('FOR UPDATE' IN pg_get_functiondef('public.market_place_order(jsonb)'::regprocedure)) > 0)::text, 'true');
