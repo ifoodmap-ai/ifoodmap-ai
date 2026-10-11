@@ -256,3 +256,46 @@ describe("MarketOrderLookupPage:取消、排序、聯絡店家、離線、複製
     expect(screen.queryByRole("alert")).toBeNull();
   });
 });
+
+describe("MarketOrderLookupPage:72 小時自動取消的期限", () => {
+  it("待接單:說店家 72 小時內沒接單會自動取消,附期限(下單時間 + 72 小時,台北時間)", async () => {
+    vi.mocked(fetchOrdersByToken).mockResolvedValue([A, B]);
+    renderAt(`/market/orders/${TOKEN}`);
+    const a = within(await screen.findByRole("region", { name: `市集測試 A 店 訂單 ${formatOrderNo(A.id)}` }));
+    // 下單 2026-10-09T04:05Z → 期限 2026-10-12T04:05Z = 台北 10/12 12:05
+    expect(a.getByText("店家 72 小時內沒有接單,訂單會自動取消(期限 10/12 12:05)")).toBeInTheDocument();
+    expect(a.queryByText(/前完成匯款/)).toBeNull();
+  });
+
+  it("待匯款:在匯款資訊裡寫期限(最後一筆「待匯款」紀錄 + 72 小時);不寫待接單那句", async () => {
+    vi.mocked(fetchOrdersByToken).mockResolvedValue([A, B]);
+    renderAt(`/market/orders/${TOKEN}`);
+    const b = within(await screen.findByRole("region", { name: `市集測試 B 店 訂單 ${formatOrderNo(B.id)}` }));
+    // 待匯款紀錄 2026-10-09T05:00Z → 期限 2026-10-12T05:00Z = 台北 10/12 13:00
+    const note = b.getByText("請在 10/12 13:00 前完成匯款,逾期訂單會自動取消");
+    const box = b.getByText("店家已接單,請匯款 NT$ 260:").parentElement as HTMLElement;
+    expect(box).toContainElement(note);
+    expect(box).toHaveTextContent("帳號 0001234-5678901");
+    expect(b.queryByText(/小時內沒有接單/)).toBeNull();
+  });
+
+  it("待匯款但沒有匯款資訊(店家刪了轉帳資訊):期限照樣寫在單上", async () => {
+    vi.mocked(fetchOrdersByToken).mockResolvedValue([{ ...B, transfer_info: null }]);
+    renderAt(`/market/orders/${TOKEN}`);
+    const b = within(await screen.findByRole("region", { name: `市集測試 B 店 訂單 ${formatOrderNo(B.id)}` }));
+    expect(b.getByText("請在 10/12 13:00 前完成匯款,逾期訂單會自動取消")).toBeInTheDocument();
+    expect(b.queryByText(/店家已接單,請匯款/)).toBeNull();
+  });
+
+  it("其他狀態不寫自動取消", async () => {
+    vi.mocked(fetchOrdersByToken).mockResolvedValue([
+      base({ status: "confirmed" }),
+      base({ id: "a9600000-0000-4000-8000-0000000000c2", status: "paid", payment_method: "transfer" }),
+      base({ id: "a9600000-0000-4000-8000-0000000000c3", status: "cancelled", status_note: "店家超過 72 小時沒有接單,系統自動取消" }),
+    ]);
+    renderAt(`/market/orders/${TOKEN}`);
+    expect(await screen.findByText("原因:店家超過 72 小時沒有接單,系統自動取消")).toBeInTheDocument();
+    expect(screen.queryByText(/訂單會自動取消/)).toBeNull();
+    expect(screen.queryByText(/逾期訂單會自動取消/)).toBeNull();
+  });
+});

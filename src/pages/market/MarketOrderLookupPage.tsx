@@ -1,5 +1,6 @@
 // /market/orders/:token 訂單查詢(免登入):這次結帳的每張訂單 —— 店家、訂單編號、狀態與時間軸、明細、付款方式;
 // 轉帳訂單在店家接單後(待匯款)顯示匯款資訊;拒單 / 取消顯示原因(已收款後被取消也一樣);出貨顯示物流與單號。
+// 待接單、待匯款寫出 72 小時自動取消的期限(autoCancel.ts;台北時間),系統自動取消時的原因照樣在「原因:」顯示。
 // ?new=1 = 剛下單:顯示「已送出」與這個網址(提醒加入書籤 —— 寄信閘門沒開時,消費者收不到確認信)。
 //   提示記在 state 裡,接著馬上把網址的 ?new=1 拿掉:消費者照提示加入書籤時,存到的是乾淨的網址(不會每次打開都說「已送出」)。
 // 🔴 這個網址就是查詢權限(token),頁面上不放任何外部連結,避免 token 經 Referer 外流(聯絡店家只有 tel:)。
@@ -12,6 +13,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { MARKET_FOCUS_RING, useMarketTitle } from "@/components/market/MarketLayout";
 import { MarketStaleNotice } from "@/components/market/MarketNotices";
 import OrderItems from "@/components/market/OrderItems";
+import { autoCancelDeadline, formatAutoCancelDeadline, MARKET_AUTO_CANCEL_HOURS } from "@/lib/market/autoCancel";
 import { PAYMENT_METHODS } from "@/lib/market/constants";
 import { formatTaipei, formatTwd } from "@/lib/market/format";
 import { fetchOrdersByToken, sortEvents, TOKEN_PATTERN } from "@/lib/market/lookup";
@@ -117,64 +119,77 @@ export default function MarketOrderLookupPage() {
         {first.buyer_note ? <p className="break-words text-slate-600">備註:{first.buyer_note}</p> : null}
       </section>
 
-      {orders.map((o) => (
-        <section key={o.id} aria-labelledby={`lookup-${o.id}`} className="space-y-3 rounded-xl border border-slate-200 bg-white p-4">
-          <div className="flex flex-wrap items-baseline justify-between gap-2">
-            <h2 id={`lookup-${o.id}`} className="text-lg font-semibold text-slate-900">
-              {/* 店名與編號之間的空白給螢幕閱讀器:行內元素之間不會自動補空白,會唸成「A 店訂單」 */}
-              {o.store.name}{" "}
-              <span className="ml-1 whitespace-nowrap text-sm font-normal text-slate-500">訂單 {formatOrderNo(o.id)}</span>
-            </h2>
-            <p className="rounded-full bg-emerald-100 px-3 py-1 text-sm font-semibold text-emerald-900">{ORDER_STATUS_LABEL[o.status]}</p>
-          </div>
-          <p className="text-sm text-slate-600">
-            {formatTaipei(o.created_at)} 下單・{PAYMENT_METHODS[o.payment_method]}
-          </p>
-
-          {o.transfer_info ? (
-            <div className="rounded-lg border border-sky-300 bg-sky-50 p-3 text-sm text-sky-900">
-              <p className="font-semibold">店家已接單,請匯款 {formatTwd(o.total)}:</p>
-              <p className="mt-1 whitespace-pre-line break-words">{o.transfer_info}</p>
-              <p className="mt-1 text-xs">店家確認收款後就會出貨。</p>
+      {orders.map((o) => {
+        const deadline = autoCancelDeadline(o, o.events);
+        const payBy = o.status === "awaiting_payment" && deadline ? `請在 ${formatAutoCancelDeadline(deadline)} 前完成匯款,逾期訂單會自動取消` : null;
+        return (
+          <section key={o.id} aria-labelledby={`lookup-${o.id}`} className="space-y-3 rounded-xl border border-slate-200 bg-white p-4">
+            <div className="flex flex-wrap items-baseline justify-between gap-2">
+              <h2 id={`lookup-${o.id}`} className="text-lg font-semibold text-slate-900">
+                {/* 店名與編號之間的空白給螢幕閱讀器:行內元素之間不會自動補空白,會唸成「A 店訂單」 */}
+                {o.store.name}{" "}
+                <span className="ml-1 whitespace-nowrap text-sm font-normal text-slate-500">訂單 {formatOrderNo(o.id)}</span>
+              </h2>
+              <p className="rounded-full bg-emerald-100 px-3 py-1 text-sm font-semibold text-emerald-900">{ORDER_STATUS_LABEL[o.status]}</p>
             </div>
-          ) : null}
-          {(o.status === "rejected" || o.status === "cancelled") && o.status_note ? (
-            <p className="break-words rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-800">原因:{o.status_note}</p>
-          ) : null}
-          {o.shipped_carrier ? (
-            <p className="break-words text-sm text-slate-800">
-              物流:{o.shipped_carrier}
-              {o.shipped_tracking_no ? `,單號 ${o.shipped_tracking_no}` : ""}
+            <p className="text-sm text-slate-600">
+              {formatTaipei(o.created_at)} 下單・{PAYMENT_METHODS[o.payment_method]}
             </p>
-          ) : null}
-
-          <OrderItems items={o.items} subtotal={o.subtotal} shippingFee={o.shipping_fee} total={o.total} />
-
-          <div>
-            <h3 className="text-sm font-semibold text-slate-900">進度</h3>
-            <ol className="mt-1 space-y-1 text-sm text-slate-700">
-              {sortEvents(o.events).map((e, i) => (
-                <li key={`${e.to_status}-${i}`}>
-                  {formatTaipei(e.created_at)} {ORDER_STATUS_LABEL[e.to_status]}
-                </li>
-              ))}
-            </ol>
-          </div>
-
-          <div className="text-sm text-slate-700">
-            <h3 className="font-semibold text-slate-900">聯絡店家</h3>
-            {o.store.phone ? (
-              <p>
-                電話:
-                <a href={`tel:${o.store.phone}`} className={`inline-flex min-h-11 items-center text-emerald-800 underline ${MARKET_FOCUS_RING}`}>
-                  {o.store.phone}
-                </a>
+            {o.status === "pending" && deadline ? (
+              <p className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
+                店家 {MARKET_AUTO_CANCEL_HOURS} 小時內沒有接單,訂單會自動取消(期限 {formatAutoCancelDeadline(deadline)})
               </p>
             ) : null}
-            {o.store.return_policy ? <p className="mt-1 whitespace-pre-line break-words text-slate-600">退換貨:{o.store.return_policy}</p> : null}
-          </div>
-        </section>
-      ))}
+
+            {o.transfer_info ? (
+              <div className="rounded-lg border border-sky-300 bg-sky-50 p-3 text-sm text-sky-900">
+                <p className="font-semibold">店家已接單,請匯款 {formatTwd(o.total)}:</p>
+                <p className="mt-1 whitespace-pre-line break-words">{o.transfer_info}</p>
+                {/* 期限放在匯款資訊旁邊:消費者照著匯款時就看得到 */}
+                {payBy ? <p className="mt-2 font-semibold">{payBy}</p> : null}
+                <p className="mt-1 text-xs">店家確認收款後就會出貨。</p>
+              </div>
+            ) : payBy ? (
+              <p className="rounded-lg border border-sky-300 bg-sky-50 p-3 text-sm font-semibold text-sky-900">{payBy}</p>
+            ) : null}
+            {(o.status === "rejected" || o.status === "cancelled") && o.status_note ? (
+              <p className="break-words rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-800">原因:{o.status_note}</p>
+            ) : null}
+            {o.shipped_carrier ? (
+              <p className="break-words text-sm text-slate-800">
+                物流:{o.shipped_carrier}
+                {o.shipped_tracking_no ? `,單號 ${o.shipped_tracking_no}` : ""}
+              </p>
+            ) : null}
+
+            <OrderItems items={o.items} subtotal={o.subtotal} shippingFee={o.shipping_fee} total={o.total} />
+
+            <div>
+              <h3 className="text-sm font-semibold text-slate-900">進度</h3>
+              <ol className="mt-1 space-y-1 text-sm text-slate-700">
+                {sortEvents(o.events).map((e, i) => (
+                  <li key={`${e.to_status}-${i}`}>
+                    {formatTaipei(e.created_at)} {ORDER_STATUS_LABEL[e.to_status]}
+                  </li>
+                ))}
+              </ol>
+            </div>
+
+            <div className="text-sm text-slate-700">
+              <h3 className="font-semibold text-slate-900">聯絡店家</h3>
+              {o.store.phone ? (
+                <p>
+                  電話:
+                  <a href={`tel:${o.store.phone}`} className={`inline-flex min-h-11 items-center text-emerald-800 underline ${MARKET_FOCUS_RING}`}>
+                    {o.store.phone}
+                  </a>
+                </p>
+              ) : null}
+              {o.store.return_policy ? <p className="mt-1 whitespace-pre-line break-words text-slate-600">退換貨:{o.store.return_policy}</p> : null}
+            </div>
+          </section>
+        );
+      })}
     </div>
   );
 }
