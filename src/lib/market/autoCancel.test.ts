@@ -1,6 +1,6 @@
 // autoCancel.ts:72 小時自動取消的期限(待接單看下單時間、待匯款看最後一筆「待匯款」紀錄)、台北時間的期限文字、剩幾個小時。
-// 時數跟 migration 20261012100000_market_hardening.sql 的 `-- @market-auto-cancel-hours` 標記比對(檔案還沒進來時先跳過)。
-import { existsSync, readFileSync } from "node:fs";
+// 時數跟 migration 20261012100000_market_hardening.sql 的 `-- @market-auto-cancel-hours` 標記(與它下一行的 c_hours 常數)比對。
+import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
@@ -17,10 +17,11 @@ describe("MARKET_AUTO_CANCEL_HOURS", () => {
     expect(MARKET_AUTO_CANCEL_HOURS).toBe(72);
   });
 
-  it.skipIf(!existsSync(HARDENING))("跟 migration 的 `-- @market-auto-cancel-hours` 標記一樣(剛好一處)", () => {
+  it("跟 migration 的 `-- @market-auto-cancel-hours` 標記一樣(全檔剛好一處),標記下一行的 c_hours 常數也一樣", () => {
     const sql = readFileSync(HARDENING, "utf8");
-    const marks = [...sql.matchAll(/--\s*@market-auto-cancel-hours\s+(\d+)/g)].map((m) => Number(m[1]));
-    expect(marks).toEqual([MARKET_AUTO_CANCEL_HOURS]);
+    const marks = [...sql.matchAll(/--\s*@market-auto-cancel-hours\s+(\d+)\s*\n\s*c_hours\s+CONSTANT\s+integer\s*:=\s*(\d+)\s*;/g)];
+    expect(marks.map((m) => [Number(m[1]), Number(m[2])])).toEqual([[MARKET_AUTO_CANCEL_HOURS, MARKET_AUTO_CANCEL_HOURS]]);
+    expect(sql.match(/@market-auto-cancel-hours/g)).toHaveLength(1);
   });
 });
 
