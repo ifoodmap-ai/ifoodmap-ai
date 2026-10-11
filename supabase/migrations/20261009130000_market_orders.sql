@@ -455,6 +455,12 @@ BEGIN
   -- 先依商品加總:同一個商品在明細裡有好幾列時,UPDATE … FROM 一個商品只會配到其中一列
   -- (下單 RPC 會先合併同一個商品,正常不會有;直接寫明細才會)
   IF NEW.to_status IN ('rejected', 'cancelled') THEN
+    -- 先依 id 排序鎖住要補的商品再改:跟下單 RPC 同一個順序(依 id FOR UPDATE),同時下單與取消同一批商品不會死結
+    PERFORM 1 FROM public.market_products p
+     WHERE p.id IN (SELECT oi.product_id FROM public.market_order_items oi
+                     WHERE oi.order_id = NEW.order_id AND oi.stock_deducted > 0)
+     ORDER BY p.id
+       FOR UPDATE;
     UPDATE public.market_products p
        SET stock = LEAST(p.stock + i.qty, 100000)
       FROM (SELECT oi.product_id, sum(oi.stock_deducted) AS qty

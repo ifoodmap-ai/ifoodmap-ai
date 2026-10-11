@@ -435,3 +435,7 @@ SELECT pg_temp.expect('下單時沒扣庫存的明細,取消不會憑空補回�
      FROM public.market_orders o, public.market_products p
     WHERE o.id = 'a9600000-0000-4000-8000-000000000012' AND p.id = 'a9300000-0000-4000-8000-0000000000a1'),
   'cancelled|15');
+-- 5-5 補庫存先依 id 排序、FOR UPDATE 鎖住商品再改(跟下單 RPC 同一個順序,兩邊同時動同一批商品不會死結)
+SELECT pg_temp.expect('拒單 / 取消補庫存先依商品 id 排序鎖列(FOR UPDATE)再 UPDATE',
+  (pg_get_functiondef('public.market_apply_event()'::regprocedure) ~ 'ORDER BY p\.id\s+FOR UPDATE;\s+UPDATE public\.market_products')::text,
+  'true');
