@@ -1178,7 +1178,8 @@ IP / Email / 電話只以「加鹽 sha256 前 16 hex」落地(鹽在 `app_config
 - IP 取自 `market_client_ip()`:`cf-connecting-ip` → `x-real-ip` → `x-forwarded-for` 第一段。2026-10-11 部署時用暫時的探測函式驗過(IPv4,見「部署」第 9-5 步):
   實際用到的是 `cf-connecting-ip`(Cloudflare 覆寫;用戶端自己帶 `CF-Connecting-IP` 會被 Cloudflare 直接回 403 `error code: 1000`),
   `x-real-ip` 會被中間的 proxy 改寫成真實 IP,`x-forwarded-for` 第一段偽造得了但只是第三順位。IPv6 /64 還沒驗(見「對外開放前待辦」第 6 條)。
-  加固 20261012100000 套用之後順序改成 `cf-connecting-ip` → `x-real-ip` → NULL:不再信 `x-forwarded-for`,兩個都沒有就算進 `noip`(見「第 3 階段」)。
+  加固 20261012100000 套用之後順序改成 `cf-connecting-ip` → `x-real-ip` → NULL:不再信 `x-forwarded-for`,兩個都沒有就算進 `noip`;
+  另有 Cloudflare Pseudo IPv4 的回退(`cf-connecting-ip` 在 240.0.0.0/4 而且 `cf-connecting-ipv6` 合法 → 用 IPv6 的 /64,見「第 3 階段」)。
 - 計數表 `market_rate_counters`;**擋下次數** `market_rate_blocks_daily`(`day` 台北日、`rule` 規則種類 = bucket 冒號前的前綴、`hits`,主鍵 `(day, rule)`):
   被擋時把擋下的那種規則 +1,同一次請求被同一種的兩條擋下(例如 Email 每小時與每天)只算 1;沒被擋時不寫;只記次數、不記是誰。兩張表 anon / 登入者都碰不到。
 - 清理:pg_cron `ifoodmap-market-rate-cleanup` 每天 19:50 UTC(台北 03:50)刪 2 天前的計數、**90 天前**的擋下紀錄。
@@ -1537,7 +1538,8 @@ where jobid = (select jobid from cron.job where jobname = 'ifoodmap-market-expir
    **已處理**(加固 20261012100000):待接單、或轉帳單待匯款超過 72 小時,pg_cron 每 10 分鐘自動取消、補庫存、通知消費者與店家(見「第 3 階段」)。
 6. **IP 標頭檢查**:限流靠的 IP 必須是偽造不了的那一個,偽造得了的話 IP 那幾條額度形同虛設(Email、電話、全站上限仍然有效)。
    IPv4 已在 2026-10-11 部署時用探測函式驗過、通過(見「部署」第 9-5 步);**還缺 IPv6**:找一個有 IPv6 的網路,照第 9-5 步用 `curl -6` 再做一次,
-   確認 `used` 是 /64 的網段位址(若 Cloudflare 對這個網域開了 Pseudo IPv4,/64、/48 規則會失效)。
+   確認 `used` 是 /64 的網段位址(若 Cloudflare 對這個網域開了 Pseudo IPv4,`cf-connecting-ip` 會是 240.0.0.0/4 的假位址、真的在 `cf-connecting-ipv6`:
+   加固 20261012100000 之後改用後者的 /64,見「第 3 階段」;實測時兩個標頭都要看)。
    另外,`market_client_ip()` 的最後退路原本是 `x-forwarded-for` **第一段**,用戶端偽造得了(獨立驗收 2026-10-11 的建議)——
    **已處理**(加固 20261012100000):順序改成 `cf-connecting-ip` → `x-real-ip` → NULL,不再信 XFF,NULL 算進 `noip`。**IPv6 /64 的實測仍是待辦。**
    開關打開之後**馬上**再用真的下單 RPC 做一次確認(「開放當天的順序」第 7 步)——
@@ -1600,7 +1602,10 @@ where jobid = (select jobid from cron.job where jobname = 'ifoodmap-market-expir
     下一輪再來;已接單(貨到付款)、已收款、已出貨都不動。`auto_expire` 只有系統的取消能帶,供應商、管理員帶了會被 guard 擋(22023 `auto_expire_invalid`)。
     時數 72 只定義在 `market_expire_orders` 的常數,旁邊的 `-- @market-auto-cancel-hours 72` 由前端 `src/lib/market/autoCancel.ts` 與 `market-notify` 的測試對照。
     對應第 2 階段待辦第 5 條。
-  - **`market_client_ip()` 不再信 `x-forwarded-for`**:順序 `cf-connecting-ip` → `x-real-ip` → NULL(NULL 算進 `noip`)。對應待辦第 6 條的 XFF 退路;IPv6 /64 實測仍是待辦。
+  - **`market_client_ip()` 不再信 `x-forwarded-for`**:順序 `cf-connecting-ip` → `x-real-ip` → NULL(NULL 算進 `noip`)。對應待辦第 6 條的 XFF 退路。
+    **Pseudo IPv4 回退**:`cf-connecting-ip` 落在 240.0.0.0/4、而且 `cf-connecting-ipv6` 是合法的 IPv6 位址時,改用 `cf-connecting-ipv6`、照 /64 正規化 ——
+    這時 IPv6 的 /48 規則(`ip48`、`ip48o`)才接得上;`cf-connecting-ip` 是一般位址時,帶了 `cf-connecting-ipv6` 也不理。會不會遇到這種情形,要看 Supabase 的
+    Cloudflare 有沒有開 Pseudo IPv4,所以 **IPv6 的實測仍是開放前待辦**(待辦第 6 條)。
   - **被擋的請求用非同步 commit**:`market_rate_take` 擋下時先 `set_config('synchronous_commit', 'off', true)` 再寫擋下紀錄;建單的路不動。對應待辦第 11 條。
 - **跟 migration 一起上線的前端與通知信**:查單頁、供應商零售訂單頁、結帳頁寫出 72 小時的期限;`market-notify` 的新訂單、下單確認、待匯款信寫明期限,
   自動取消信分得出是逾時取消。`market-notify` 改了,這次要重新部署(「部署(第 3 階段)」第 3 步)。
@@ -1620,6 +1625,13 @@ where jobid = (select jobid from cron.job where jobname = 'ifoodmap-market-expir
 | 9 | 刻意保留 |
 | 10 | 沒做(極少數) |
 | 11 | 已處理(20261012100000 被擋的請求非同步 commit) |
+
+**營運注意**:
+
+- `market_expire_orders` 是**單一交易**:pg_cron 每 10 分鐘呼叫一次(`SELECT public.market_expire_orders()`),一次最多處理 200 張單,整批到最後才一起 commit
+  (每張單包在自己的子交易裡,一張失敗只跳過那一張)。量變大時,改成每張單各自 commit 的 procedure(`CREATE PROCEDURE`,pg_cron 的指令改成 `CALL …`)。
+  函式裡的 `RAISE WARNING`(某張單取消失敗)**不會**出現在 pg_cron 的執行紀錄(`cron.job_run_details`)裡 —— 監控要看「開放前檢查」的
+  `orders_pending_over_72h` 與 `orders_awaiting_payment_over_72h`,正常應該是 0(排程每 10 分鐘,最多晚 10 分鐘)。
 
 ### 部署(第 3 階段)
 
@@ -1646,7 +1658,7 @@ where jobid = (select jobid from cron.job where jobname = 'ifoodmap-market-expir
    node scripts/supabase-sql.mjs dry supabase/tests/database/market_hardening_rollback.test.sql --with-migration $H --with-rollback $RH
    node scripts/supabase-sql.mjs ro supabase/tests/database/market_residue.sql
    ```
-   Expected:依序 `共 31 項` / `共 67 項` / `共 9 項` / `共 93 項` / `共 4 項`(`9aa90d2` 加固的實作者實測;之後有變以計畫檔尾勘誤最新一節為準),
+   Expected:依序 `共 36 項` / `共 67 項` / `共 9 項` / `共 93 項` / `共 4 項`(加固定案 `e9121e3`,加固的實作者實測;之後有變以計畫檔尾勘誤最新一節為準),
    全部 `失敗 0 項`、每次殘留五個 `0`。`market_checkout.test.sql` 的 XFF 那一項(第 86–88 行)`9aa90d2` 起期待 NULL,所以套用前一定要帶 `--with-migration $H`
    (不帶的話那一項會紅,屬預期);套用之後不帶也會過。
 3. **重新部署 `market-notify`**(先於 migration,理由見本節開頭):同第 2 階段「部署」第 6 步的兩段指令
@@ -1660,7 +1672,7 @@ where jobid = (select jobid from cron.job where jobname = 'ifoodmap-market-expir
 5. **確認線上**:跑「開放前檢查(第 3 階段)」那一節的指令,固定值要是表裡「加固之後」那一欄 —— `migrations` 六個版本、`expire_orders_cron` = `"*/10 * * * *"`、
    `client_ip_ignores_xff`、`blocked_async_commit` = `true`,其餘固定值不變、`checkout_open` 還是 `false`;另跑
    `SUPABASE_PROJECT_REF=cwvpehqcvbfuynabpqop node scripts/check-migrations.mjs`(✅,repo 47 個、線上 47 個)。
-   (這幾個「加固之後」的值,2026-10-12 在本機一次性的 Postgres 載入 120000–130200 與 20261012100000 草稿實測過;同時實測了兩張逾時的單被取消、
+   (這幾個「加固之後」的值,2026-10-12 在本機一次性的 Postgres 載入 120000–130200 與 20261012100000(草稿 `fc25de1`、定案 `e9121e3` 各一次)實測過;同時實測了兩張逾時的單被取消、
    原因與 `auto_expire` 照上面寫的、庫存補回、通知排進 pg_net、再跑一次取消 0 張、供應商冒充 `auto_expire` 被擋。)
 6. **用線上 schema 再跑一次測試**(不帶 `--with-migration`)與還原檔的乾跑:
    ```bash
@@ -1742,7 +1754,7 @@ cd /Users/aimand/.gemini/File/ifoodmap && SUPABASE_ACCESS_TOKEN="$(cat <token �
 | `api_can_touch_rate_tables` | 未登入 / 登入者碰得到限流的兩張表 | `false` | 同 | `true` = 可以把限流歸零,回報 |
 | `tmp_ip_probe_absent` | 第 2 階段部署時暫時建的 IP 探測函式已刪掉 | `true` | 同 | `false` = 回報派工者刪掉它(`DROP FUNCTION public.market_tmp_ip_probe();`,要寫入權限) |
 | `expire_orders_cron` | 72 小時自動取消的排程 | `null` | `"*/10 * * * *"` | 加固之後還是 `null` = 自動取消沒在跑 |
-| `expire_orders_last_run_ok` | 自動取消排程最近一次成功 | `null` | 套用 10 分鐘後 `true` | `false` = 看「怎麼查(第 2 階段)」的排程執行紀錄 |
+| `expire_orders_last_run_ok` | 自動取消排程最近一次成功 | `null` | 套用 10 分鐘後 `true` | `false` = 看「怎麼查(第 2 階段)」的排程執行紀錄;`true` 也不代表每張都取消成功,要一起看 `orders_pending_over_72h` 那兩項 |
 | `client_ip_ignores_xff` | `market_client_ip()` 已不讀 `x-forwarded-for` | `false` | `true` | 加固之後還是 `false` = 加固沒套到 |
 | `blocked_async_commit` | 被擋的請求非同步 commit | `false` | `true` | 同上 |
 
@@ -1757,7 +1769,7 @@ cd /Users/aimand/.gemini/File/ifoodmap && SUPABASE_ACCESS_TOKEN="$(cat <token �
 | `products_pending_review`、`products_pending_over_2_days` | 待審的商品、等超過 2 天的 | 照實 | 超過 2 天的 > 0 = 提醒管理員到「零售市集 › 商品審核」 |
 | `orders_total`、`orders_by_status` | 訂單總數、各狀態幾張 | 照實 | — |
 | `orders_pending_over_1_day` | 超過 1 天還沒接單 | 0 為佳 | > 0 = 提醒店家接單(滿 72 小時會被自動取消) |
-| `orders_pending_over_72h`、`orders_awaiting_payment_over_72h` | 該被自動取消、還沒取消的單 | 0(排程每 10 分鐘,最多晚 10 分鐘) | 持續 > 0 = 自動取消沒在跑:看排程執行紀錄(「怎麼查(第 2 階段)」) |
+| `orders_pending_over_72h`、`orders_awaiting_payment_over_72h` | 該被自動取消、還沒取消的單 | 0(排程每 10 分鐘,最多晚 10 分鐘) | 持續 > 0 = 自動取消沒在跑,或有幾張一直取消失敗(函式的 WARNING 不會進排程執行紀錄,見「第 3 階段」的營運注意):先看排程執行紀錄(「怎麼查(第 2 階段)」),排程有在跑就回報 |
 | `orders_paid_unshipped_over_3_days` | 已收款超過 3 天還沒出貨 | 0 | > 0 = 收了錢沒出貨,客訴風險最高:聯絡店家 |
 | `notify_failed_7_days` | 7 天內零售通知寄失敗(含 Email 格式不對沒寄的) | 0 | > 0 = 管理後台「通知紀錄」或「怎麼查(第 2 階段)」看原因 |
 | `rate_blocks_7_days` | 今天與前 6 天,依規則加總的擋下次數 | `{}` 為佳 | `ipo` / `ip48o` 多 = 共用網路擋到真人,考慮調高(待辦第 7 條);`global` 有 = 那天 500 單滿了;`noip` 有 = 見下一列 |
