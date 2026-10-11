@@ -88,26 +88,29 @@ describe("遇到限速、伺服器錯誤、連線失敗會重試(最多 3 次、
   };
   const total = (xs: number[]) => xs.reduce((a, b) => a + b, 0);
 
-  it("429 兩次後成功:只寄出一封、三次都是同一個 Idempotency-Key、依序等 1 秒與 2 秒", async () => {
+  it("429 兩次後成功:只寄出一封、三次都是同一個 Idempotency-Key、依序等 0.7 秒與 1.5 秒", async () => {
     const f = scripted(reply(429), reply(429), ok);
     const s = make(f.impl);
     await expect(s.run()).resolves.toEqual({ ok: true, id: "re_ok", error: null });
     expect(f.impl).toHaveBeenCalledTimes(3);
     expect(f.keys).toEqual([msg.idempotencyKey, msg.idempotencyKey, msg.idempotencyKey]);
-    expect(s.waits).toEqual([1000, 2000]);
+    expect(s.waits).toEqual([700, 1500]);
     expect(s.retries).toEqual([
       { status: 429, attempt: 1 },
       { status: 429, attempt: 2 },
     ]);
   });
 
-  it("一直 429:重試 3 次(共 4 次請求)後回失敗;等待是 1、2、4 秒加抖動(各不到 250 毫秒),總和不超過 20 秒", async () => {
+  it("一直 429:重試 3 次(共 4 次請求)後回失敗;等待是 0.7、1.5、2.5 秒加抖動(各不到 250 毫秒),總和不超過 5 秒", async () => {
     const f = scripted(reply(429, '{"name":"rate_limit_exceeded"}'));
     const s = make(f.impl, () => 0.999);
     await expect(s.run()).resolves.toEqual({ ok: false, id: null, error: 'Resend 429: {"name":"rate_limit_exceeded"}' });
     expect(f.impl).toHaveBeenCalledTimes(4);
-    expect(s.waits).toEqual([1249, 2249, 4249]);
-    expect(total(s.waits)).toBeLessThanOrEqual(20_000);
+    expect(s.waits).toEqual([949, 1749, 2302]); // 第 3 次只剩 5000 − 949 − 1749 = 2302 毫秒的額度
+    expect(total(s.waits)).toBe(5_000);
+    const calm = make(scripted(reply(429)).impl); // 沒有抖動:0.7 + 1.5 + 2.5 = 4.7 秒
+    await calm.run();
+    expect(calm.waits).toEqual([700, 1500, 2500]);
     expect(s.retries.map((r) => r.attempt)).toEqual([1, 2, 3]);
   });
 
@@ -147,10 +150,10 @@ describe("遇到限速、伺服器錯誤、連線失敗會重試(最多 3 次、
     const s2 = make(f2.impl);
     await expect(s2.run()).resolves.toEqual({ ok: false, id: null, error: "network down" });
     expect(f2.impl).toHaveBeenCalledTimes(4);
-    expect(total(s2.waits)).toBeLessThanOrEqual(20_000);
+    expect(total(s2.waits)).toBeLessThanOrEqual(5_000);
   });
 
-  it("有 retry-after 就照它的秒數等;超過 10 秒只等 10 秒;等待總和用完就不再重試", async () => {
+  it("有 retry-after 就照它的秒數等;超過 3 秒只等 3 秒;等待總和(5 秒)用完就不再重試", async () => {
     const f1 = scripted(reply(429, "{}", { "retry-after": "3" }), ok);
     const s1 = make(f1.impl);
     await expect(s1.run()).resolves.toMatchObject({ ok: true });
@@ -159,14 +162,14 @@ describe("遇到限速、伺服器錯誤、連線失敗會重試(最多 3 次、
     const f2 = scripted(reply(429, "{}", { "retry-after": "30" }));
     const s2 = make(f2.impl);
     await expect(s2.run()).resolves.toMatchObject({ ok: false });
-    expect(s2.waits).toEqual([10_000, 10_000]); // 第 3 次重試時已經等滿 20 秒,不再重試
+    expect(s2.waits).toEqual([3000, 2000]); // 30 秒只等 3 秒;第 2 次只剩 2 秒額度;之後額度用完,不再重試
     expect(f2.impl).toHaveBeenCalledTimes(3);
-    expect(total(s2.waits)).toBeLessThanOrEqual(20_000);
+    expect(total(s2.waits)).toBe(5_000);
 
-    const f3 = scripted(reply(503, "{}", { "retry-after": "9" }), reply(503, "{}", { "retry-after": "9" }), reply(503, "{}", { "retry-after": "9" }), ok);
+    const f3 = scripted(reply(503, "{}", { "retry-after": "2" }), reply(503, "{}", { "retry-after": "2" }), reply(503, "{}", { "retry-after": "2" }), ok);
     const s3 = make(f3.impl);
     await expect(s3.run()).resolves.toMatchObject({ ok: true });
-    expect(s3.waits).toEqual([9000, 9000, 2000]); // 第 3 次只剩 2 秒額度
+    expect(s3.waits).toEqual([2000, 2000, 1000]); // 第 3 次只剩 1 秒額度
   });
 
   it("retry-after 的寫法:秒數(可以有小數)、HTTP 日期;讀不出來回 null、過去的時間是 0", () => {
@@ -183,9 +186,71 @@ describe("遇到限速、伺服器錯誤、連線失敗會重試(最多 3 次、
     try {
       const f = scripted(reply(429), ok);
       const pending = createMarketResendSender("re_key", f.impl as unknown as typeof fetch)(msg);
-      await vi.advanceTimersByTimeAsync(1250); // 第 1 次重試最多等 1 秒 + 250 毫秒抖動
+      await vi.advanceTimersByTimeAsync(950); // 第 1 次重試最多等 0.7 秒 + 250 毫秒抖動
       await expect(pending).resolves.toMatchObject({ ok: true });
       expect(f.impl).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+// 2026-10-12:總等待壓在 pg_net 的 8 秒逾時以內(5 秒)。Resend 的限速以秒計算,等 1–2 秒就夠讓同一次結帳的 4 封信都寄出
+/** 假的 Resend:每一秒(依 Date.now(),測試用假的 timer)最多收 perSecond 封,超過回 429 */
+const limitedResend = (perSecond: number) => {
+  const accepted: { key: string; at: number }[] = [];
+  let rejected = 0;
+  const fetchImpl = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    const now = Date.now();
+    const key = (init?.headers as Record<string, string>)["Idempotency-Key"];
+    if (accepted.filter((a) => Math.floor(a.at / 1000) === Math.floor(now / 1000)).length >= perSecond) {
+      rejected += 1;
+      return new Response('{"name":"rate_limit_exceeded"}', { status: 429 });
+    }
+    accepted.push({ key, at: now });
+    return new Response(JSON.stringify({ id: `re_${accepted.length}` }), { status: 200 });
+  }) as typeof fetch;
+  return { fetchImpl, accepted, rejected: () => rejected };
+};
+
+describe("同一刻 4 封信、Resend 每秒只收 2 封(假的 timer,不真的等)", () => {
+  const base = {
+    from: "iFoodmap 食材地圖 <noreply@gathertaiwan.com>",
+    to: ["ifoodmaptw@gmail.com"],
+    subject: "s",
+    html: "<p>h</p>",
+    text: "t",
+    replyTo: "ifoodmaptw@gmail.com",
+  };
+
+  it.each([
+    ["沒有 retry-after", 0.5],
+    ["抖動最大", 0.999],
+    ["沒有抖動", 0],
+  ])("%s:4 封最後都寄出、每個 key 只寄一次、每封總等待不超過 5 秒", async (_label, jitter) => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    vi.setSystemTime(new Date("2026-10-12T03:00:00Z"));
+    try {
+      const resend = limitedResend(2);
+      const keys = ["placed", "store-a", "store-b", "store-c"].map((k) => `market-notify:${k}`);
+      const waits = new Map<string, number>(keys.map((k) => [k, 0]));
+      const all = Promise.all(
+        keys.map((key) =>
+          createMarketResendSender("re_key", resend.fetchImpl, {
+            random: () => jitter,
+            sleep: (ms) => {
+              waits.set(key, (waits.get(key) ?? 0) + ms);
+              return new Promise<void>((done) => setTimeout(done, ms));
+            },
+          })({ ...base, idempotencyKey: key }),
+        ),
+      );
+      await vi.advanceTimersByTimeAsync(5_000);
+      const results = await all;
+      expect(results.map((r) => r.ok)).toEqual([true, true, true, true]);
+      expect(resend.accepted.map((a) => a.key).sort()).toEqual([...keys].sort());
+      expect(resend.rejected()).toBeGreaterThan(0); // 真的碰到限速
+      for (const [key, ms] of waits) expect(ms, key).toBeLessThanOrEqual(5_000);
     } finally {
       vi.useRealTimers();
     }

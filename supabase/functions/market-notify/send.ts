@@ -4,9 +4,11 @@
 //      Resend 24 小時內只寄一次(同一個 key、內容不同會回 409)。key 由 handler.ts 決定:
 //      狀態信 market-notify:<event_id>:<consumer|supplier>、下單確認 market-notify:placed:<checkout_id>。
 //   2. 遇到限速(429)、伺服器錯誤(5xx)或連線失敗(丟出例外)時重試,最多 3 次:回應有 retry-after 就照它等
-//      (最多 10 秒),沒有就依序等 1、2、4 秒加一點隨機抖動;全部等待加起來不超過 20 秒(Edge Function 有執行時間上限)。
+//      (最多 3 秒),沒有就依序等 0.7、1.5、2.5 秒加最多 0.25 秒的隨機抖動;一封信全部等待加起來不超過 5 秒,
+//      預算用完就停 —— 要在 pg_net 呼叫這支函式的 8 秒逾時以內做完(20261009130100 的 timeout_milliseconds)。
 //      其他 4xx(422、409…)不重試。每次重試都用同一個 Idempotency-Key,Resend 自己去重,不會寄出兩封。
-//      為什麼要重試:Resend 預設每秒只收 2 個請求,一次結帳 3 家店會同時送出 1 封下單確認 + 3 封新訂單信。
+//      為什麼要重試:Resend 預設每秒只收 2 個請求,一次結帳 3 家店會同時送出 1 封下單確認 + 3 封新訂單信;
+//      Resend 的限速以秒計算,等 1–2 秒就夠讓 4 封信都寄出。
 // 沒有 Deno 相依,vitest 直接測(send.test.ts);等待用注入的 sleep,測試不會真的等。
 import { createResendSender, type SendMail, type SendResult } from "../_shared/supplier-mail.ts";
 
@@ -25,13 +27,13 @@ export type MarketSendMail = (msg: MarketMailMessage) => Promise<SendResult>;
 /** 最多重試幾次(不含第一次) */
 export const MAX_RETRIES = 3;
 /** 沒有 retry-after 時,第 1、2、3 次重試前等多久 */
-export const BACKOFF_MS = [1000, 2000, 4000] as const;
+export const BACKOFF_MS = [700, 1500, 2500] as const;
 /** 隨機抖動的上限(不含):同時被擋的幾封信錯開重試 */
 export const JITTER_MS = 250;
 /** retry-after 最多照著等多久 */
-export const RETRY_AFTER_CAP_MS = 10_000;
-/** 一封信全部等待加起來的上限 */
-export const TOTAL_WAIT_CAP_MS = 20_000;
+export const RETRY_AFTER_CAP_MS = 3_000;
+/** 一封信全部等待加起來的上限:壓在 pg_net 的 8 秒逾時以內(還要留時間給請求本身與寫 notifications) */
+export const TOTAL_WAIT_CAP_MS = 5_000;
 
 export interface MarketSenderOptions {
   /** 等待(測試注入假的,不會真的等);預設 setTimeout */

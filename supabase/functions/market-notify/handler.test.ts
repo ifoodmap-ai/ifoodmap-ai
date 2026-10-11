@@ -702,7 +702,7 @@ describe("market-notify:狀態紀錄", () => {
     const res = await s.call({ kind: "placed", checkout_id: CHECKOUT, token: TOKEN });
     expect(res.body.data).toMatchObject({ sent: 1, total: 1 });
     expect(r.keys).toEqual(Array(3).fill(`market-notify:placed:${CHECKOUT}`));
-    expect(r.waits).toEqual([1000, 2000]);
+    expect(r.waits).toEqual([700, 1500]);
     expect(s.db.tables.notifications.map((n) => n.status)).toEqual(["sent"]);
     expect(s.log.mock.calls.filter((c) => c[1].step === "send-retry")).toEqual([
       ["info", { fn: "market-notify", step: "send-retry", audience: "consumer", status: 429, attempt: 1 }],
@@ -717,10 +717,90 @@ describe("market-notify:狀態紀錄", () => {
     const res = await s.call({ kind: "event", event_id: EV(2) });
     expect(res.body.data).toMatchObject({ sent: 0, total: 1 });
     expect(r.keys).toHaveLength(4);
-    expect(r.waits.reduce((a, b) => a + b, 0)).toBeLessThanOrEqual(20_000);
+    expect(r.waits.reduce((a, b) => a + b, 0)).toBeLessThanOrEqual(5_000); // 壓在 pg_net 的 8 秒逾時以內
     expect(s.db.tables.notifications[0]).toMatchObject({ status: "failed", sent_at: null });
     expect(s.log.mock.calls.filter((c) => c[1].step === "send-retry").map((c) => c[1].attempt)).toEqual([1, 2, 3]);
     expect(s.log).toHaveBeenCalledWith("error", expect.objectContaining({ step: "send", error: 'Resend 429: {"name":"rate_limit_exceeded"}' }));
+  });
+
+  it("一次結帳 3 家店:下單確認 + 3 封新訂單信同時送、Resend 每秒只收 2 封 → 4 封都記成 sent,每封總等待不超過 5 秒(假的 timer)", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    vi.setSystemTime(new Date("2026-10-12T03:00:00Z"));
+    try {
+      // 假的 Resend:每一秒最多收 2 封,超過回 429(限速以秒計算)
+      const accepted: { key: string; at: number }[] = [];
+      let rejected = 0;
+      const fetchImpl = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+        const now = Date.now();
+        const key = (init?.headers as Record<string, string>)["Idempotency-Key"];
+        if (accepted.filter((a) => Math.floor(a.at / 1000) === Math.floor(now / 1000)).length >= 2) {
+          rejected += 1;
+          return new Response('{"name":"rate_limit_exceeded"}', { status: 429 });
+        }
+        accepted.push({ key, at: now });
+        return new Response(JSON.stringify({ id: `re_${accepted.length}` }), { status: 200 });
+      }) as typeof fetch;
+      // 每封信各自記下等了多久(真的重試邏輯,等待走假的 setTimeout)
+      const waits = new Map<string, number>();
+      const send: MarketSendMail = (msg) =>
+        createMarketResendSender("re_key", fetchImpl, {
+          random: () => 0.5,
+          sleep: (ms) => {
+            waits.set(msg.idempotencyKey, (waits.get(msg.idempotencyKey) ?? 0) + ms);
+            return new Promise<void>((done) => setTimeout(done, ms));
+          },
+        })(msg);
+      const s = setup({ live: true, send });
+      // 第三家店 C,跟 A、B 同一次結帳;三家店都有聯絡信箱
+      const SUP_C = "a9200000-0000-4000-8000-00000000000c";
+      const ORDER_C = "a9600000-0000-4000-8000-0000000000c1";
+      s.db.tables.suppliers[1].contact_email = "store-b@example.com";
+      s.db.tables.suppliers.push({ id: SUP_C, name: "市集測試 C 店", contact_email: "store-c@example.com", phone: null });
+      s.db.tables.market_stores.push({ supplier_id: SUP_C, ship_days: 1 });
+      s.db.tables.market_orders.push(order({ id: ORDER_C, supplier_id: SUP_C, subtotal: 300, shipping_fee: 0, total: 300 }));
+      s.db.tables.market_order_items.push({ order_id: ORDER_C, product_name: "土雞蛋", spec: "10 顆", qty: 1, unit_price: 300, line_total: 300 });
+      s.db.tables.market_order_events.push({ id: EV(40), order_id: ORDER_C, from_status: null, to_status: "pending", actor_role: "consumer", note: null, payload: {} });
+
+      const started = Date.now();
+      const finished: number[] = [];
+      let done = false;
+      const all = Promise.all(
+        [
+          { kind: "placed", checkout_id: CHECKOUT, token: TOKEN },
+          { kind: "event", event_id: EV(1) },
+          { kind: "event", event_id: EV(8) },
+          { kind: "event", event_id: EV(40) },
+        ].map((body) =>
+          s.call(body).then((r) => {
+            finished.push(Date.now() - started);
+            return r;
+          }),
+        ),
+      ).finally(() => {
+        done = true;
+      });
+      const yieldReal = () => new Promise<void>((resolve) => setImmediate(resolve)); // 驗密鑰、算雜湊的 crypto 是真的非同步
+      // 假的時鐘停在同一刻,等 4 封信都送到假的 Resend
+      for (let i = 0; i < 2000 && accepted.length + rejected < 4; i += 1) await yieldReal();
+      expect(accepted.length + rejected).toBe(4);
+      expect(rejected).toBe(2); // 同一秒只收 2 封,另外 2 封被回 429
+      // 一次推 50 毫秒,中間讓真的非同步跑完
+      for (let step = 0; step < 120 && !done; step += 1) {
+        await vi.advanceTimersByTimeAsync(50);
+        for (let i = 0; i < 20; i += 1) await yieldReal();
+      }
+      const results = await all;
+      expect(results.map((r) => r.status)).toEqual([200, 200, 200, 200]);
+      expect(results.map((r) => r.body.data.sent)).toEqual([1, 1, 1, 1]);
+      expect(s.db.tables.notifications.map((n) => n.status)).toEqual(["sent", "sent", "sent", "sent"]);
+      expect(accepted.map((a) => a.key).sort()).toEqual(
+        [`market-notify:placed:${CHECKOUT}`, `market-notify:${EV(1)}:supplier`, `market-notify:${EV(8)}:supplier`, `market-notify:${EV(40)}:supplier`].sort(),
+      );
+      for (const [key, ms] of waits) expect(ms, key).toBeLessThanOrEqual(5_000);
+      for (const ms of finished) expect(ms).toBeLessThanOrEqual(5_000);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("讀資料庫失敗 500(不洩漏細節)", async () => {
