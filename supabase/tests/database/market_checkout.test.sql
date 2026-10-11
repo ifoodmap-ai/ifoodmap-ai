@@ -1,9 +1,9 @@
 -- =====================================================================
--- migration 20261009130200_market_checkout 的資料庫層測試(限流、下單 RPC、token 查單)(第 1 階段的 120000 / 120100 已套用正式庫,不要再帶):
+-- migration 20261009130200_market_checkout 的資料庫層測試(限流、下單 RPC、token 查單)。
+-- 120000 / 120100 / 130000 / 130100 / 130200 都已套用正式庫,不要再帶;20261012100000_market_hardening 還沒套用時要帶:
 --   … dry supabase/tests/database/market_checkout.test.sql \
---     --with-migration supabase/migrations/20261009130000_market_orders.sql \
---     --with-migration supabase/migrations/20261009130100_market_notify.sql \
---     --with-migration supabase/migrations/20261009130200_market_checkout.sql
+--     --with-migration supabase/migrations/20261012100000_market_hardening.sql
+-- (hardening 之後 market_client_ip 不再退回 x-forwarded-for,第 1 節那一項跟著改;沒帶 hardening 時那一項會紅,屬預期)
 -- 通知網址換成 http://127.0.0.1:9/market-test;下單開關在交易裡切換;全部跟著 ROLLBACK 消失。
 -- 金額跟前端測試同一組:A 店運費 120、滿 1000 免運、最低 300;B 店運費 60、沒有免運、沒有最低金額。
 -- =====================================================================
@@ -84,7 +84,8 @@ SELECT pg_temp.expect('呼叫者 IP:cf-connecting-ip 優先', public.market_clie
 SELECT set_config('request.headers', '{"x-forwarded-for":"1.1.1.1, 2.2.2.2","x-real-ip":"3.3.3.3"}', true);
 SELECT pg_temp.expect('……沒有就用 x-real-ip', public.market_client_ip(), '3.3.3.3');
 SELECT set_config('request.headers', '{"x-forwarded-for":"1.1.1.1, 2.2.2.2"}', true);
-SELECT pg_temp.expect('……再沒有才用 x-forwarded-for 第一段', public.market_client_ip(), '1.1.1.1');
+-- 20261012100000_market_hardening 起不再退回 x-forwarded-for(第一段偽造得了):只有 XFF = 拿不到 IP,算進 noip
+SELECT pg_temp.expect('……只有 x-forwarded-for 不算(回 NULL,算進 noip)', COALESCE(public.market_client_ip(), '∅'), '∅');
 SELECT set_config('request.headers', '', true);
 SELECT pg_temp.expect('……都沒有回 NULL(不算 IP 額度)', COALESCE(public.market_client_ip(), '∅'), '∅');
 SELECT pg_temp.expect('bucket 只存加鹽雜湊',
