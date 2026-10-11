@@ -134,15 +134,18 @@ export default function MarketCartPage() {
                       </div>
                       <div className="flex flex-wrap items-center gap-2">
                         <QtyStepper value={l.qty} max={Math.max(l.qty, l.maxQty)} onChange={(q) => setQty(l.product.id, q)} label={`${l.product.name} 數量`} />
-                        <p className="ml-auto font-medium text-slate-900">{formatTwd(l.lineTotal)}</p>
-                        <button
-                          type="button"
-                          onClick={() => remove([l.product.id])}
-                          aria-label={`移除 ${l.product.name}`}
-                          className={`inline-flex min-h-11 items-center rounded-md px-2 text-sm text-slate-600 hover:text-red-700 ${MARKET_FOCUS_RING}`}
-                        >
-                          移除
-                        </button>
+                        {/* 小計與「移除」包成一組:窄螢幕放不下時一起換到下一行靠右(不然 390px 寬只有「移除」掉到下一行的左邊) */}
+                        <div className="ml-auto flex items-center gap-2">
+                          <p className="whitespace-nowrap font-medium text-slate-900">{formatTwd(l.lineTotal)}</p>
+                          <button
+                            type="button"
+                            onClick={() => remove([l.product.id])}
+                            aria-label={`移除 ${l.product.name}`}
+                            className={`inline-flex min-h-11 items-center rounded-md px-2 text-sm text-slate-600 hover:text-red-700 ${MARKET_FOCUS_RING}`}
+                          >
+                            移除
+                          </button>
+                        </div>
                       </div>
                     </div>
                   </li>

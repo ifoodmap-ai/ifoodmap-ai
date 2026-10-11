@@ -92,6 +92,15 @@ describe("MarketCartPage", () => {
     expect(cartStore.get()).toEqual([{ productId: CABBAGE.id, qty: 3 }]);
   });
 
+  it("每一列的小計和「移除」在同一組:窄螢幕一起換到下一行靠右,不會只剩「移除」掉到左邊", async () => {
+    cartStore.add(CABBAGE.id, 3);
+    renderCart();
+    const remove = await screen.findByRole("button", { name: "移除 有機高麗菜" });
+    const lineTotal = within(remove.closest("li") as HTMLElement).getByText("NT$ 300");
+    expect(lineTotal.parentElement).toBe(remove.parentElement);
+    expect(remove.parentElement).toHaveClass("ml-auto");
+  });
+
   it("下單還沒對外開放:提示可以先逛,前往結帳不能按", async () => {
     vi.mocked(fetchCheckoutStatus).mockResolvedValue({ open: false, can_order: false });
     cartStore.add(CABBAGE.id, 3);
