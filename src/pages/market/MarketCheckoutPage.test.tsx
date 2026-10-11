@@ -19,7 +19,17 @@ vi.mock("@/lib/market/checkout", async (importOriginal) => ({
 }));
 
 import { fetchProductsByIds } from "@/lib/market/catalog";
-import { checkoutErrorMessage, fetchCheckoutStatus, placeOrder } from "@/lib/market/checkout";
+import {
+  CHECKOUT_NO_RESPONSE_MESSAGE,
+  CHECKOUT_TOKEN_STORAGE_KEY,
+  checkoutErrorMessage,
+  checkoutTokenStore,
+  fetchCheckoutStatus,
+  placeOrder,
+  type CheckoutPayload,
+  type PlaceOrderResult,
+} from "@/lib/market/checkout";
+import { MarketDbError } from "@/lib/market/db";
 import { TERMS_VERSION } from "@/lib/market/legal";
 import { BEEF, CABBAGE, SALMON, STORE_A, SUPPLIER_A, SUPPLIER_B } from "@/lib/market/testFixtures";
 import { cartStore } from "@/lib/market/useCart";
@@ -43,6 +53,8 @@ const fill = async (city = "臺北市") => {
 
 beforeEach(() => {
   vi.stubGlobal("localStorage", createMemoryStorage());
+  vi.stubGlobal("sessionStorage", createMemoryStorage());
+  checkoutTokenStore.resetForTests();
   cartStore.resetForTests();
   cartStore.add(CABBAGE.id, 2);
   cartStore.add(BEEF.id, 1);
@@ -113,6 +125,7 @@ describe("MarketCheckoutPage", () => {
       payments: { [SUPPLIER_A]: "transfer", [SUPPLIER_B]: "cod" },
       expected_totals: { [SUPPLIER_A]: 770, [SUPPLIER_B]: 260 },
       terms_version: TERMS_VERSION,
+      token: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/),
     });
     await waitFor(() => expect(screen.getByTestId("location")).toHaveTextContent(`/market/orders/${TOKEN}?new=1`));
     expect(cartStore.get()).toEqual([]);
@@ -288,5 +301,167 @@ describe("MarketCheckoutPage:錯誤對照、離線與載入失敗、下架商品
     await agreeAndSubmit();
     await userEvent.click(await screen.findByRole("button", { name: "上一頁" }));
     expect(await screen.findByText("購物車頁")).toBeInTheDocument();
+  });
+});
+
+describe("MarketCheckoutPage:查詢 token(重送不會重複下單)", () => {
+  const TOKEN_RE = /^[A-Za-z0-9_-]{43}$/;
+  const sentTokens = () => vi.mocked(placeOrder).mock.calls.map((c) => c[0].token);
+  const agree = () => userEvent.click(screen.getByRole("checkbox", { name: "我已閱讀並同意服務條款與隱私權政策" }));
+  const submit = () => userEvent.click(screen.getByRole("button", { name: /送出訂單/ }));
+  // 伺服器把收到的 token 原樣回傳(成功);送出當下 token 一定已經存好
+  const stored: Array<string | null> = [];
+  const echo = async (p: CheckoutPayload): Promise<PlaceOrderResult> => {
+    stored.push(checkoutTokenStore.peek());
+    return { ok: true, token: p.token, checkout_id: "c1", orders: [] };
+  };
+  // supabase-js 斷線時回的錯(沒有錯誤代碼)
+  const offline = () => new MarketDbError({ message: "TypeError: Failed to fetch", hint: "", code: "" });
+  const blockedStorage = (): Storage => {
+    const fail = () => {
+      throw new DOMException("blocked", "SecurityError");
+    };
+    return { length: 0, clear: fail, getItem: fail, key: fail, removeItem: fail, setItem: fail } as unknown as Storage;
+  };
+  beforeEach(() => {
+    stored.length = 0;
+  });
+
+  it("斷線(沒收到回覆):說訂單可能已經送出、token 留著;再按一次用同一個 token,成功後才清掉;前端沒過的送出不產生 token", async () => {
+    vi.mocked(placeOrder).mockRejectedValueOnce(offline()).mockImplementationOnce(echo);
+    renderCheckout();
+    await fill();
+    await submit(); // 沒勾同意:前端就擋下
+    expect(placeOrder).not.toHaveBeenCalled();
+    expect(checkoutTokenStore.peek()).toBeNull();
+    await agree();
+    await submit();
+    expect(await screen.findByRole("alert")).toHaveTextContent(CHECKOUT_NO_RESPONSE_MESSAGE);
+    const [first] = sentTokens();
+    expect(first).toMatch(TOKEN_RE);
+    expect(sessionStorage.getItem(CHECKOUT_TOKEN_STORAGE_KEY)).toBe(first);
+    expect(cartStore.get()).toHaveLength(3);
+    await submit();
+    await waitFor(() => expect(screen.getByTestId("location")).toHaveTextContent(`/market/orders/${first}?new=1`));
+    expect(sentTokens()).toEqual([first, first]);
+    expect(stored).toEqual([first]);
+    expect(checkoutTokenStore.peek()).toBeNull();
+    expect(sessionStorage.getItem(CHECKOUT_TOKEN_STORAGE_KEY)).toBeNull();
+    expect(cartStore.get()).toEqual([]);
+  });
+
+  it("商業錯誤(缺貨)之後再送:同一個 token", async () => {
+    vi.mocked(placeOrder).mockResolvedValueOnce({ ok: false, code: "OUT_OF_STOCK", products: [] }).mockImplementationOnce(echo);
+    renderCheckout();
+    await fill();
+    await agree();
+    await submit();
+    expect(await screen.findByRole("alert")).toHaveTextContent("庫存不足");
+    expect(checkoutTokenStore.peek()).toBe(sentTokens()[0]);
+    await submit();
+    await waitFor(() => expect(placeOrder).toHaveBeenCalledTimes(2));
+    const [a, b] = sentTokens();
+    expect(a).toMatch(TOKEN_RE);
+    expect(b).toBe(a);
+  });
+
+  it("成功就清掉 token:下一次結帳換新的", async () => {
+    vi.mocked(placeOrder).mockImplementation(echo);
+    renderCheckout();
+    await fill();
+    await agree();
+    await submit();
+    await waitFor(() => expect(screen.getByTestId("location")).toHaveTextContent("/market/orders/"));
+    const [first] = sentTokens();
+    expect(first).toMatch(TOKEN_RE);
+    expect(checkoutTokenStore.peek()).toBeNull();
+    cleanup();
+    cartStore.add(CABBAGE.id, 3);
+    renderCheckout();
+    await fill();
+    await agree();
+    await submit();
+    await waitFor(() => expect(placeOrder).toHaveBeenCalledTimes(2));
+    expect(sentTokens()[1]).toMatch(TOKEN_RE);
+    expect(sentTokens()[1]).not.toBe(first);
+  });
+
+  it("duplicate:true 完全當成功:結帳的商品拿掉、進查詢頁、token 清掉", async () => {
+    vi.mocked(placeOrder).mockImplementation(async (p) => {
+      stored.push(checkoutTokenStore.peek());
+      return { ok: true, duplicate: true, token: p.token, checkout_id: "c1", orders: [] };
+    });
+    renderCheckout();
+    await fill();
+    await agree();
+    await submit();
+    const [t] = sentTokens();
+    expect(t).toMatch(TOKEN_RE);
+    await waitFor(() => expect(screen.getByTestId("location")).toHaveTextContent(`/market/orders/${t}?new=1`));
+    expect(stored).toEqual([t]);
+    expect(cartStore.get()).toEqual([]);
+    expect(checkoutTokenStore.peek()).toBeNull();
+    expect(sessionStorage.getItem(CHECKOUT_TOKEN_STORAGE_KEY)).toBeNull();
+  });
+
+  it("TOKEN_REUSED:說訂單已經成立並附「查看訂單」(舊 token 的查詢頁);換掉 token、購物車不動、不自動重送;再按就用新 token", async () => {
+    vi.mocked(placeOrder).mockResolvedValueOnce({ ok: false, code: "TOKEN_REUSED" }).mockImplementationOnce(echo);
+    renderCheckout();
+    await fill();
+    await agree();
+    await submit();
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(checkoutErrorMessage({ ok: false, code: "TOKEN_REUSED" }, () => ""));
+    expect(alert).toHaveTextContent("你剛才送出的訂單已經成立");
+    const [old] = sentTokens();
+    expect(old).toMatch(TOKEN_RE);
+    expect(within(alert).getByRole("link", { name: "查看訂單" })).toHaveAttribute("href", `/market/orders/${old}`);
+    expect(placeOrder).toHaveBeenCalledTimes(1);
+    expect(checkoutTokenStore.peek()).toBeNull();
+    expect(sessionStorage.getItem(CHECKOUT_TOKEN_STORAGE_KEY)).toBeNull();
+    expect(cartStore.get()).toHaveLength(3);
+    expect(screen.getByTestId("location")).toHaveTextContent("/market/checkout");
+    await submit();
+    await waitFor(() => expect(placeOrder).toHaveBeenCalledTimes(2));
+    expect(sentTokens()[1]).toMatch(TOKEN_RE);
+    expect(sentTokens()[1]).not.toBe(old);
+    expect(screen.queryByRole("link", { name: "查看訂單" })).toBeNull();
+  });
+
+  it("sessionStorage 不能用(一讀寫就丟例外):照樣能下單,斷線後重送沿用同一個 token(存在記憶體)", async () => {
+    vi.stubGlobal("sessionStorage", blockedStorage());
+    vi.mocked(placeOrder).mockRejectedValueOnce(offline()).mockImplementationOnce(echo);
+    renderCheckout();
+    await fill();
+    await agree();
+    await submit();
+    expect(await screen.findByRole("alert")).toHaveTextContent(CHECKOUT_NO_RESPONSE_MESSAGE);
+    await submit();
+    await waitFor(() => expect(screen.getByTestId("location")).toHaveTextContent("/market/orders/"));
+    const [a, b] = sentTokens();
+    expect(a).toMatch(TOKEN_RE);
+    expect(b).toBe(a);
+    expect(checkoutTokenStore.peek()).toBeNull();
+    expect(cartStore.get()).toEqual([]);
+  });
+
+  it("重新整理頁面之後重送:用的是同一個 token(同一個分頁的 sessionStorage)", async () => {
+    vi.mocked(placeOrder).mockRejectedValueOnce(offline()).mockImplementationOnce(echo);
+    renderCheckout();
+    await fill();
+    await agree();
+    await submit();
+    expect(await screen.findByRole("alert")).toHaveTextContent(CHECKOUT_NO_RESPONSE_MESSAGE);
+    const [first] = sentTokens();
+    // 重新整理:畫面整個重來、記憶體裡的 token 沒了,同一個分頁的 sessionStorage 還在
+    cleanup();
+    checkoutTokenStore.resetForTests();
+    renderCheckout();
+    await fill();
+    await agree();
+    await submit();
+    await waitFor(() => expect(placeOrder).toHaveBeenCalledTimes(2));
+    expect(first).toMatch(TOKEN_RE);
+    expect(sentTokens()[1]).toBe(first);
   });
 });

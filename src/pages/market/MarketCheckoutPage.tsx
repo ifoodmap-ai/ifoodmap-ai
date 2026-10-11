@@ -3,7 +3,11 @@
 // 送出後資料庫重算一切(market_place_order);成功就把結帳的商品從購物車拿掉,帶著 token 進訂單查詢頁(?new=1 顯示「已送出」)。
 // 無障礙:每個欄位有 <label>;錯誤顯示在欄位下方(aria-invalid + aria-describedby),送出失敗時焦點移到第一個錯的欄位。
 //
-// 🔴 伺服器回的錯誤一律經 checkout.ts 的 checkoutErrorMessage 轉成中文(新的錯誤代碼只要在那裡加一句),這頁不寫死訊息。
+// 🔴 伺服器回的錯誤一律經 checkout.ts 的 checkoutErrorMessage 轉成中文(新的錯誤代碼只要在那裡加一句),這頁不寫死訊息;
+//    送出時丟出的例外(斷線、逾時)經 checkoutExceptionMessage。
+// 🔴 查詢 token(checkoutTokenStore):第一次送出才產生,斷線、逾時、缺貨、價格變了…之後的重送都沿用同一個 —— 下單 RPC 認出來就回
+//    第一次的結果(duplicate:true)、不重複建單。成功(含 duplicate)就清掉;TOKEN_REUSED(這個 token 已經成功下過單、內容不同)
+//    給舊 token 的「查看訂單」並清掉,購物車保留、不自動重送(再按就是用新 token 的另一張訂單)。
 // 🔴 還沒拿到商品資料時不顯示表單(離線、載入失敗各自有整頁畫面):用空陣列算會變成「0 家店、NT$ 0」的表單。
 // 已下架 / 查不到的商品不在任何一家店裡,要列在「這次不能結帳」,不然消費者不知道少結了哪些。
 import { useMemo, useState, type FormEvent } from "react";
@@ -16,7 +20,10 @@ import { buildCart, CART_LIMITS, cartProductsKey, type CartGroup } from "@/lib/m
 import { fetchProductsByIds } from "@/lib/market/catalog";
 import {
   buildCheckoutPayload,
+  CHECKOUT_TOKEN_PATTERN,
   checkoutErrorMessage,
+  checkoutExceptionMessage,
+  checkoutTokenStore,
   defaultPayment,
   emptyBuyer,
   fetchCheckoutStatus,
@@ -26,7 +33,6 @@ import {
   type BuyerForm,
 } from "@/lib/market/checkout";
 import { LIMITS, PAYMENT_METHODS, TW_CITIES, type PaymentMethod, type TwCity } from "@/lib/market/constants";
-import { friendlyDbError } from "@/lib/market/db";
 import { formatTwd } from "@/lib/market/format";
 import { TERMS_VERSION } from "@/lib/market/legal";
 import { cartStore, useCart } from "@/lib/market/useCart";
@@ -66,6 +72,8 @@ export default function MarketCheckoutPage() {
   const [agreed, setAgreed] = useState(false);
   const [agreeError, setAgreeError] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  /** TOKEN_REUSED 時舊 token 的查詢頁(「查看訂單」連結) */
+  const [reusedToken, setReusedToken] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
   const view = useMemo(() => buildCart(lines, products.data ?? [], buyer.city || null), [lines, products.data, buyer.city]);
@@ -94,6 +102,7 @@ export default function MarketCheckoutPage() {
     e.preventDefault();
     if (submitting) return;
     setSubmitError(null);
+    setReusedToken(null);
     const errs = validateBuyer(buyer);
     setErrors(errs);
     setAgreeError(!agreed);
@@ -114,23 +123,33 @@ export default function MarketCheckoutPage() {
       setSubmitError(checkoutErrorMessage({ ok: false, code: "TOO_MANY_STORES" }, storeNameOf));
       return;
     }
+    // 前端檢查都過了、真的要送出才拿 token(第一次送出時產生,之後重送沿用)
+    const token = checkoutTokenStore.getOrCreate();
+    const chosen = Object.fromEntries(ready.map((g) => [g.supplierId, paymentOf(g)]));
+    const payload = buildCheckoutPayload({ buyer, groups: ready, payments: chosen, termsVersion: TERMS_VERSION, token });
     setSubmitting(true);
     try {
-      const chosen = Object.fromEntries(ready.map((g) => [g.supplierId, paymentOf(g)]));
-      const r = await placeOrder(buildCheckoutPayload({ buyer, groups: ready, payments: chosen, termsVersion: TERMS_VERSION }));
+      const r = await placeOrder(payload);
       // 用 === 比對:tsconfig.app.json 沒開 strict,只靠 if (r.ok) 收窄不了聯集型別
       if (r.ok === false) {
+        if (r.code === "TOKEN_REUSED") {
+          // 這個 token 之前已經成功下過單(這次內容不同):給舊的查詢頁、換掉 token;購物車留著,不自動重送
+          checkoutTokenStore.clear();
+          setReusedToken(token);
+        }
         setSubmitError(checkoutErrorMessage(r, storeNameOf));
         if (REFETCH_CODES.includes(r.code)) await queryClient.invalidateQueries({ queryKey: ["market", "cart-products"] });
         // 開關在這頁打開之後被關掉了:重新確認,畫面換成「還沒開放」的說明(不留著一張送不出去的表單)
         if (r.code === "MARKET_CLOSED") await queryClient.invalidateQueries({ queryKey: ["market", "checkout-status"] });
         return;
       }
+      // 成功(含 duplicate:true —— 同一個 token 重送,伺服器回第一次的結果、沒有重複建單):一樣清空、進查詢頁
+      checkoutTokenStore.clear();
       cartStore.remove(ready.flatMap((g) => g.lines.map((l) => l.product.id)));
-      navigate(`/market/orders/${r.token}?new=1`, { replace: true });
+      navigate(`/market/orders/${CHECKOUT_TOKEN_PATTERN.test(r.token ?? "") ? r.token : token}?new=1`, { replace: true });
     } catch (err) {
-      // 斷網、資料庫錯誤:db.ts 認得的轉成中文,其他用 checkout.ts 的預設句(不顯示英文原文)
-      setSubmitError(friendlyDbError(err, checkoutErrorMessage({ ok: false, code: "UNKNOWN" }, storeNameOf)));
+      // 沒拿到回覆(斷線、逾時):訂單可能已經建好 → token 留著,請買家再按一次(伺服器認出同一個 token,不會重複下單)
+      setSubmitError(checkoutExceptionMessage(err));
     } finally {
       setSubmitting(false);
     }
@@ -344,9 +363,14 @@ export default function MarketCheckoutPage() {
             <FieldError id="checkout-agree-error" message={agreeError && !agreed ? "請先勾選同意服務條款與隱私權政策" : undefined} />
           </div>
           {submitError ? (
-            <p role="alert" className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800">
-              {submitError}
-            </p>
+            <div role="alert" className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800">
+              <p>{submitError}</p>
+              {reusedToken ? (
+                <Link to={`/market/orders/${reusedToken}`} className={`mt-1 inline-flex min-h-11 items-center font-semibold text-emerald-800 underline ${MARKET_FOCUS_RING}`}>
+                  查看訂單
+                </Link>
+              ) : null}
+            </div>
           ) : null}
           <button
             type="submit"
