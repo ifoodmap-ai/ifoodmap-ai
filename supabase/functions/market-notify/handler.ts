@@ -228,6 +228,9 @@ const deliver = async (
       // 回信一律到平台信箱:🔴 店家的 contact_email 是收新訂單通知的信箱,不給消費者(要聯絡店家看信裡的店家電話)
       replyTo: deps.config.replyTo,
       idempotencyKey,
+      // 被限速(429)、伺服器錯誤或連線失敗時 send.ts 會重試(同一個 key);每次重試記一筆,只有狀態碼與第幾次
+      // (deps.log 在下單確認是遮 token 的 redactLog)
+      onRetry: ({ status, attempt }) => deps.log("info", { fn: "market-notify", step: "send-retry", audience: d.audience, status, attempt }),
     });
     await recordNotification(deps, d.audience, {
       recipient: d.to,

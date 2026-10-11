@@ -18,7 +18,7 @@ import {
   SUPPLIER_COLUMNS,
   TRANSFER_COLUMNS,
 } from "./handler.ts";
-import type { MarketSendMail } from "./send.ts";
+import { createMarketResendSender, type MarketSendMail } from "./send.ts";
 
 const SECRET = "notify-secret";
 const TOKEN = `tok_${"x".repeat(39)}`; // 43 字元 base64url
@@ -676,6 +676,51 @@ describe("market-notify:狀態紀錄", () => {
       const n = await mailsOf(id);
       expect(n.msgs.map((m) => m.subject)).toEqual([`訂單已取消 — 零售訂單 ${formatOrderNo(ORDER_A)}`, `平台已取消零售訂單 ${formatOrderNo(ORDER_A)} — 請不要出貨`]);
     }
+  });
+
+  // 2026-10-12:Resend 預設每秒只收 2 個請求;send.ts 遇到 429 / 5xx / 連線失敗會重試,handler 記每次重試(只有狀態碼與第幾次)
+  const resend = (statuses: number[]) => {
+    const keys: string[] = [];
+    const fetchImpl = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      keys.push((init?.headers as Record<string, string>)["Idempotency-Key"]);
+      const status = statuses[Math.min(keys.length - 1, statuses.length - 1)];
+      return new Response(status === 200 ? '{"id":"re_ok"}' : '{"name":"rate_limit_exceeded"}', { status });
+    }) as typeof fetch;
+    const waits: number[] = [];
+    const send = createMarketResendSender("re_key", fetchImpl, {
+      sleep: async (ms) => {
+        waits.push(ms);
+      },
+      random: () => 0,
+    });
+    return { keys, waits, send };
+  };
+
+  it("寄信被限速兩次後成功:同一個 key 送三次、記兩筆重試 log(只有狀態碼與第幾次)、notifications 記 sent", async () => {
+    const r = resend([429, 429, 200]);
+    const s = setup({ live: true, send: r.send });
+    const res = await s.call({ kind: "placed", checkout_id: CHECKOUT, token: TOKEN });
+    expect(res.body.data).toMatchObject({ sent: 1, total: 1 });
+    expect(r.keys).toEqual(Array(3).fill(`market-notify:placed:${CHECKOUT}`));
+    expect(r.waits).toEqual([1000, 2000]);
+    expect(s.db.tables.notifications.map((n) => n.status)).toEqual(["sent"]);
+    expect(s.log.mock.calls.filter((c) => c[1].step === "send-retry")).toEqual([
+      ["info", { fn: "market-notify", step: "send-retry", audience: "consumer", status: 429, attempt: 1 }],
+      ["info", { fn: "market-notify", step: "send-retry", audience: "consumer", status: 429, attempt: 2 }],
+    ]);
+    expect(s.log.mock.calls.filter((c) => c[1].step === "send")).toEqual([]);
+  });
+
+  it("寄信一直被限速:重試 3 次後照原本的方式記 failed 與錯誤", async () => {
+    const r = resend([429]);
+    const s = setup({ live: true, send: r.send });
+    const res = await s.call({ kind: "event", event_id: EV(2) });
+    expect(res.body.data).toMatchObject({ sent: 0, total: 1 });
+    expect(r.keys).toHaveLength(4);
+    expect(r.waits.reduce((a, b) => a + b, 0)).toBeLessThanOrEqual(20_000);
+    expect(s.db.tables.notifications[0]).toMatchObject({ status: "failed", sent_at: null });
+    expect(s.log.mock.calls.filter((c) => c[1].step === "send-retry").map((c) => c[1].attempt)).toEqual([1, 2, 3]);
+    expect(s.log).toHaveBeenCalledWith("error", expect.objectContaining({ step: "send", error: 'Resend 429: {"name":"rate_limit_exceeded"}' }));
   });
 
   it("讀資料庫失敗 500(不洩漏細節)", async () => {
