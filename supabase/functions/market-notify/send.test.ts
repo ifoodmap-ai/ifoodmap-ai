@@ -232,6 +232,33 @@ describe("遇到限速、伺服器錯誤、連線失敗會重試(最多 3 次、
     expect(r3).toEqual({ ok: false, id: null, error: "Resend 409: {}" });
   });
 
+  // 部署前審查 m2:502、504(Resend 那邊可能還在處理)或請求逾時之後,同一個 key 回 409 也一樣可能已經寄出
+  it("502、504、逾時之後重試回 409:也標記第一次可能已經寄出(中間隔了別的回應也算);500、503、429 之後的 409 照原本", async () => {
+    const conflict = '{"name":"concurrent_idempotent_requests"}';
+    for (const first of [502, 504]) {
+      const r = await make(scripted(reply(first), reply(409, conflict)).impl).run();
+      expect(r, String(first)).toEqual({ ok: false, id: null, error: `Resend 409: ${conflict}`, maybeDelivered: true });
+    }
+    await expect(make(scripted(reply(504), reply(429), reply(409)).impl).run()).resolves.toMatchObject({ maybeDelivered: true });
+    // 逾時:第一個請求的 signal 已經中止(假的逾時),fetch 跟真的一樣丟出 signal.reason
+    const timedOut = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.signal?.aborted) throw init.signal.reason;
+      return new Response(conflict, { status: 409 });
+    });
+    let made = 0;
+    const timeoutOnce = (ms: number) => {
+      made += 1;
+      return made === 1 ? AbortSignal.abort(new DOMException(`${ms} ms`, "TimeoutError")) : new AbortController().signal;
+    };
+    const send = createMarketResendSender("re_key", timedOut as unknown as typeof fetch, { sleep: async () => undefined, random: () => 0, timeoutSignal: timeoutOnce });
+    await expect(send(msg)).resolves.toEqual({ ok: false, id: null, error: `Resend 409: ${conflict}`, maybeDelivered: true });
+    expect(timedOut).toHaveBeenCalledTimes(2);
+    for (const first of [500, 503, 429]) {
+      const r = await make(scripted(reply(first), reply(409)).impl).run();
+      expect(r, String(first)).toEqual({ ok: false, id: null, error: "Resend 409: {}" });
+    }
+  });
+
   it("retry-after 的寫法:秒數(可以有小數)、HTTP 日期;讀不出來回 null、過去的時間是 0", () => {
     const now = Date.parse("2026-10-12T03:00:00Z");
     expect(retryAfterMs("2", now)).toBe(2000);
@@ -249,6 +276,195 @@ describe("遇到限速、伺服器錯誤、連線失敗會重試(最多 3 次、
       await vi.advanceTimersByTimeAsync(950); // 第 1 次重試最多等 0.7 秒 + 250 毫秒抖動
       await expect(pending).resolves.toMatchObject({ ok: true });
       expect(f.impl).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+// 部署前審查 m1:截止時間只管「等多久再重試」,管不到已經送出、還在等回應的請求 —— 每個請求都要帶逾時
+describe("每個請求都帶逾時(AbortSignal.timeout):剩下的額度和 3 秒取小的、下限 1 秒;逾時算連線失敗", () => {
+  const msg = {
+    from: "iFoodmap 食材地圖 <noreply@gathertaiwan.com>",
+    to: ["ifoodmaptw@gmail.com"],
+    subject: "s",
+    html: "<p>h</p>",
+    text: "t",
+    replyTo: "ifoodmaptw@gmail.com",
+    idempotencyKey: "market-notify:a9700000-0000-4000-8000-000000000005:consumer",
+  };
+  const keyOf = (init?: RequestInit) => (init?.headers as Record<string, string>)["Idempotency-Key"];
+
+  it("逾時 = min(剩下的額度, 3 秒),下限 1 秒;額度用完了,下一封信的請求也有 1 秒;每個請求都帶這個 signal", async () => {
+    const clock = { t: 0 };
+    const made: { ms: number; signal: AbortSignal }[] = [];
+    const impl = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response("{}", { status: 429 }));
+    const send = createMarketResendSender("re_key", impl as unknown as typeof fetch, {
+      sleep: async (ms) => {
+        clock.t += ms;
+      },
+      random: () => 0,
+      now: () => clock.t,
+      timeoutSignal: (ms) => {
+        const signal = new AbortController().signal;
+        made.push({ ms, signal });
+        return signal;
+      },
+    });
+    const budget = createRetryBudget(5_000, () => clock.t);
+    await send({ ...msg, budget });
+    // 請求在 0、0.7、2.2、4.7 秒送出,剩下 5、4.3、2.8、0.3 秒
+    expect(made.map((m) => m.ms)).toEqual([3_000, 3_000, 2_800, 1_000]);
+    await send({ ...msg, budget });
+    // 第二封:剩 0.3 秒 → 1 秒;等 0.3 秒後額度用完 → 1 秒,之後不再重試
+    expect(made.map((m) => m.ms).slice(4)).toEqual([1_000, 1_000]);
+    expect(impl).toHaveBeenCalledTimes(6);
+    impl.mock.calls.forEach(([, init], i) => expect(init?.signal, `第 ${i + 1} 個請求`).toBe(made[i].signal));
+  });
+
+  it("沒有注入時用 AbortSignal.timeout,signal 交給 fetch", async () => {
+    const spy = vi.spyOn(AbortSignal, "timeout");
+    try {
+      const impl = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response('{"id":"re_1"}', { status: 200 }));
+      await expect(createMarketResendSender("re_key", impl as unknown as typeof fetch)(msg)).resolves.toEqual({ ok: true, id: "re_1", error: null });
+      expect(spy.mock.calls).toEqual([[3_000]]);
+      expect(impl.mock.calls[0][1]?.signal).toBe(spy.mock.results[0].value);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  /** 假的 Resend:每個請求要 latencyMs 才回應(假的 timer);signal 中止時跟真的 fetch 一樣丟出 signal.reason */
+  const slowResend = (latencyMs: number, respond: () => Response) => {
+    const calls: { key: string; start: number; end: number; outcome: "response" | "aborted" }[] = [];
+    const fetchImpl = vi.fn(
+      (_input: RequestInfo | URL, init?: RequestInit) =>
+        new Promise<Response>((resolve, reject) => {
+          const key = keyOf(init);
+          const start = Date.now();
+          const signal = init?.signal;
+          if (signal?.aborted) return reject(signal.reason);
+          const timer = setTimeout(() => {
+            calls.push({ key, start, end: Date.now(), outcome: "response" });
+            resolve(respond());
+          }, latencyMs);
+          signal?.addEventListener(
+            "abort",
+            () => {
+              clearTimeout(timer);
+              calls.push({ key, start, end: Date.now(), outcome: "aborted" });
+              reject(signal.reason);
+            },
+            { once: true },
+          );
+        }),
+    );
+    return { fetchImpl, calls };
+  };
+  /** 跟 AbortSignal.timeout 一樣時間到就以 TimeoutError 中止,但用 setTimeout(跟著假的 timer 走,不看執行環境) */
+  const timerSignal = (ms: number): AbortSignal => {
+    const ac = new AbortController();
+    setTimeout(() => ac.abort(new DOMException("The operation timed out.", "TimeoutError")), ms);
+    return ac.signal;
+  };
+  /** 推假的 timer,直到 done() 或推了 maxMs */
+  const runUntil = async (done: () => boolean, maxMs = 15_000) => {
+    for (let t = 0; t < maxMs && !done(); t += 50) await vi.advanceTimersByTimeAsync(50);
+  };
+
+  it.each([
+    ["預設的 AbortSignal.timeout、抖動最大", undefined, 0.999],
+    ["預設的 AbortSignal.timeout、沒有抖動", undefined, 0],
+    ["setTimeout 做的逾時、抖動一半", timerSignal, 0.5],
+  ])("Resend 每個請求要 2 秒、一直 429:同一次呼叫依序寄 2 封(共用額度),總時間不超過 7 秒 —— %s", async (_label, timeoutSignal, jitter) => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    vi.setSystemTime(new Date("2026-10-12T03:00:00Z"));
+    try {
+      const resend = slowResend(2_000, () => new Response('{"name":"rate_limit_exceeded"}', { status: 429 }));
+      const send = createMarketResendSender("re_key", resend.fetchImpl as unknown as typeof fetch, {
+        random: () => jitter,
+        ...(timeoutSignal ? { timeoutSignal } : {}),
+      });
+      const started = Date.now();
+      const budget = createRetryBudget(5_000); // handler 每次呼叫建一個
+      let elapsed = -1;
+      const pending = (async () => {
+        const consumer = await send({ ...msg, idempotencyKey: "market-notify:e:consumer", budget });
+        const supplier = await send({ ...msg, idempotencyKey: "market-notify:e:supplier", budget });
+        elapsed = Date.now() - started;
+        return [consumer, supplier];
+      })();
+      await runUntil(() => elapsed >= 0);
+      const results = await pending;
+      expect(elapsed).toBeGreaterThan(0);
+      expect(elapsed).toBeLessThanOrEqual(7_000); // 沒有逾時的話:第一封 7 秒(第 3 次請求在 5 秒送出、7 秒回來)、第二封再 2 秒,共 9 秒
+      expect(results.map((r) => r.ok)).toEqual([false, false]);
+      expect(results.map((r) => r.error)).toEqual(["Resend 請求逾時(1000 毫秒沒有回應)", "Resend 請求逾時(1000 毫秒沒有回應)"]);
+      for (const c of resend.calls) expect(c.end - c.start, `${c.key} @${c.start - started}`).toBeLessThanOrEqual(3_000);
+      expect(resend.calls.some((c) => c.outcome === "aborted")).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("逾時算連線失敗:同一個 key 重試、onRetry 的狀態碼是 null;一直逾時就回失敗,訊息寫清楚逾時(各執行環境的 TimeoutError 訊息不一樣)", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    vi.setSystemTime(new Date("2026-10-12T03:00:00Z"));
+    try {
+      const resend = slowResend(4_000, () => new Response('{"id":"re_late"}', { status: 200 }));
+      const retries: MarketRetryInfo[] = [];
+      const started = Date.now();
+      let elapsed = -1;
+      const pending = createMarketResendSender("re_key", resend.fetchImpl as unknown as typeof fetch, { random: () => 0 })({
+        ...msg,
+        onRetry: (info) => retries.push(info),
+      }).then((r) => {
+        elapsed = Date.now() - started;
+        return r;
+      });
+      await runUntil(() => elapsed >= 0);
+      // 0 秒送出、3 秒逾時;等 0.7 秒;3.7 秒送出、只剩 1.3 秒 → 5 秒逾時;額度用完,不再重試
+      await expect(pending).resolves.toEqual({ ok: false, id: null, error: "Resend 請求逾時(1300 毫秒沒有回應)" });
+      expect(elapsed).toBe(5_000);
+      expect(resend.calls.map((c) => [c.start - started, c.end - started, c.outcome])).toEqual([
+        [0, 3_000, "aborted"],
+        [3_700, 5_000, "aborted"],
+      ]);
+      expect(resend.calls.map((c) => c.key)).toEqual([msg.idempotencyKey, msg.idempotencyKey]);
+      expect(retries).toEqual([{ status: null, attempt: 1 }]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("回應標頭到了、內文一直讀不完:一樣在逾時中止、算連線失敗而重試(同一個 key),不會卡住", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    vi.setSystemTime(new Date("2026-10-12T03:00:00Z"));
+    try {
+      const keys: string[] = [];
+      const impl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        keys.push(keyOf(init));
+        if (keys.length > 1) return new Response('{"id":"re_ok"}', { status: 200 });
+        const signal = init?.signal;
+        // 真的 fetch:signal 也管回應內文,中止時內文讀到一半就失敗
+        const body = new ReadableStream<Uint8Array>({
+          start(c) {
+            c.enqueue(new TextEncoder().encode('{"id":'));
+            signal?.addEventListener("abort", () => c.error(signal.reason), { once: true });
+          },
+        });
+        return new Response(body, { status: 200 });
+      });
+      const started = Date.now();
+      let elapsed = -1;
+      const pending = createMarketResendSender("re_key", impl as unknown as typeof fetch, { random: () => 0 })(msg).then((r) => {
+        elapsed = Date.now() - started;
+        return r;
+      });
+      await runUntil(() => elapsed >= 0);
+      await expect(pending).resolves.toEqual({ ok: true, id: "re_ok", error: null });
+      expect(elapsed).toBe(3_700); // 3 秒逾時、等 0.7 秒再送一次
+      expect(keys).toEqual([msg.idempotencyKey, msg.idempotencyKey]);
     } finally {
       vi.useRealTimers();
     }

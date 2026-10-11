@@ -42,7 +42,10 @@ interface RequestDeps extends MarketNotifyDeps {
   budget: RetryBudget;
 }
 
-/** 連線失敗後重試、Resend 回 409:同一個 key 的第一次請求可能還在處理、其實已經寄出(send.ts 的 maybeDelivered) */
+/**
+ * 連線失敗、請求逾時、502、504 之後重試,Resend 回 409:同一個 key 的第一次請求可能還在處理、其實已經寄出
+ * (send.ts 的 maybeDelivered)
+ */
 const MAYBE_DELIVERED_NOTE = "(重試時 Resend 回 409,第一次可能已經寄出,人工補寄前請先確認收件人沒收到)";
 
 // 讀資料用的欄位(handler.test.ts 會對照 migration 的 CREATE TABLE,打錯字測試就會失敗;測試的假資料庫也照這些字串只回傳選到的欄位)

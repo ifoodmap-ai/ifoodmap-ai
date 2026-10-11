@@ -886,6 +886,85 @@ describe("market-notify:狀態紀錄", () => {
     expect(String(s2.db.tables.notifications[0].message)).not.toContain("第一次可能已經寄出");
   });
 
+  // 部署前審查 m2:502、504(Resend 那邊可能還在處理)、請求逾時之後回 409,也一樣可能已經寄出
+  it("502、504、逾時之後重試回 409:一樣記 failed,message 寫清楚第一次可能已經寄出", async () => {
+    const conflict = () => new Response('{"name":"concurrent_idempotent_requests"}', { status: 409 });
+    const cases: [string, (n: number, init?: RequestInit) => Response][] = [
+      ["502", (n) => (n === 1 ? new Response("bad gateway", { status: 502 }) : conflict())],
+      ["504", (n) => (n === 1 ? new Response("gateway timeout", { status: 504 }) : conflict())],
+      [
+        "逾時",
+        (_n, init) => {
+          if (init?.signal?.aborted) throw init.signal.reason; // 跟真的 fetch 一樣:signal 中止就丟出原因
+          return conflict();
+        },
+      ],
+    ];
+    for (const [label, respond] of cases) {
+      let n = 0;
+      const fetchImpl = (async (_input: RequestInfo | URL, init?: RequestInit) => respond(++n, init)) as typeof fetch;
+      let made = 0;
+      // 「逾時」:第一個請求的逾時 signal 已經中止(假的逾時,不用真的等)
+      const timeoutSignal = (ms: number) =>
+        ++made === 1 && label === "逾時" ? AbortSignal.abort(new DOMException(`${ms} ms`, "TimeoutError")) : new AbortController().signal;
+      const s = setup({ live: true, send: createMarketResendSender("re_key", fetchImpl, { sleep: async () => undefined, random: () => 0, timeoutSignal }) });
+      const r = await s.call({ kind: "event", event_id: EV(2) });
+      expect(r.body.data, label).toMatchObject({ sent: 0, total: 1 });
+      expect(n, label).toBe(2);
+      expect(s.db.tables.notifications[0], label).toMatchObject({ status: "failed", sent_at: null });
+      expect(String(s.db.tables.notifications[0].message), label).toContain("(重試時 Resend 回 409,第一次可能已經寄出,人工補寄前請先確認收件人沒收到)");
+    }
+  });
+
+  // 部署前審查 m1:截止時間只管「等多久再重試」;已經送出、還在等回應的請求也要有逾時,Resend 很慢時整次呼叫才會在 8 秒內
+  it("Resend 每個請求要 2 秒、一直 429:平台取消(兩封)整次呼叫不超過 7 秒、每個請求不超過 3 秒,兩封記 failed", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    vi.setSystemTime(new Date("2026-10-12T03:00:00Z"));
+    try {
+      const spans: number[] = [];
+      // 每個請求 2 秒才回 429;signal 中止時跟真的 fetch 一樣丟出原因(index.ts 用預設的 AbortSignal.timeout,這裡也是)
+      const fetchImpl = ((_input: RequestInfo | URL, init?: RequestInit) =>
+        new Promise<Response>((resolve, reject) => {
+          const start = Date.now();
+          const signal = init?.signal;
+          const timer = setTimeout(() => {
+            spans.push(Date.now() - start);
+            resolve(new Response('{"name":"rate_limit_exceeded"}', { status: 429 }));
+          }, 2_000);
+          signal?.addEventListener(
+            "abort",
+            () => {
+              clearTimeout(timer);
+              spans.push(Date.now() - start);
+              reject(signal.reason);
+            },
+            { once: true },
+          );
+        })) as typeof fetch;
+      const t = timedSender(fetchImpl, () => 0.999);
+      const s = setup({ live: true, send: t.send });
+      const started = Date.now();
+      let elapsed = -1;
+      const pending = s.call({ kind: "event", event_id: EV(5) }).then((r) => {
+        elapsed = Date.now() - started;
+        return r;
+      });
+      await drive(() => elapsed >= 0);
+      const r = await pending;
+      expect(r.status).toBe(200);
+      expect(r.body.data).toMatchObject({ sent: 0, total: 2 });
+      expect(elapsed).toBeGreaterThan(0);
+      expect(elapsed).toBeLessThanOrEqual(7_000); // 沒有逾時時是 9 秒(第一封 7 秒、第二封 2 秒),超過 pg_net 的 8 秒
+      expect(spans.length).toBeGreaterThanOrEqual(3);
+      for (const ms of spans) expect(ms).toBeLessThanOrEqual(3_000);
+      expect([...t.waits.values()].reduce((a, b) => a + b, 0)).toBeLessThanOrEqual(5_000);
+      expect(s.db.tables.notifications.map((n) => n.status)).toEqual(["failed", "failed"]);
+      expect(s.log).toHaveBeenCalledWith("error", expect.objectContaining({ step: "send", error: "Resend 請求逾時(1000 毫秒沒有回應)" }));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   /** 可重現的亂數(mulberry32) */
   const seeded = (seed: number) => () => {
     seed = (seed + 0x6d2b79f5) | 0;

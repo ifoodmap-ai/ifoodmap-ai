@@ -8,11 +8,17 @@
 //      等待額度是「截止時間」(RetryBudget):handler 每次呼叫建一個 5 秒的額度,同一次呼叫的每封信共用,
 //      寄信本身的時間也算在內 —— 一次呼叫不管寄幾封,重試都在截止時間前結束,整次呼叫落在 pg_net 的 8 秒逾時以內
 //      (20261009130100 的 timeout_milliseconds)。沒給額度時,這封信自己一個 5 秒額度。
-//      連線失敗後重試、Resend 回 409:同一個 key 的第一次請求可能還在處理、其實已經寄出 → 結果標 maybeDelivered。
+//      連線失敗、請求逾時、502、504(Resend 那邊可能還在處理)之後重試,Resend 回 409:同一個 key 的第一次請求
+//      可能還在處理、其實已經寄出 → 結果標 maybeDelivered。
 //      其他 4xx(422、409…)不重試。每次重試都用同一個 Idempotency-Key,Resend 自己去重,不會寄出兩封。
 //      為什麼要重試:Resend 預設每秒只收 2 個請求,一次結帳 3 家店會同時送出 1 封下單確認 + 3 封新訂單信;
 //      Resend 的限速以秒計算,等 1–2 秒就夠讓 4 封信都寄出。
-// 沒有 Deno 相依,vitest 直接測(send.test.ts);等待用注入的 sleep,測試不會真的等。
+//   3. 每個請求都帶 AbortSignal.timeout:截止時間只管「等多久再重試」,管不到已經送出、還在等回應的請求。
+//      逾時取「剩下的額度」和 3 秒中較小的,下限 1 秒(額度用完了,還沒送過的信也有一次機會);送出請求到讀完回應內文都算在內。
+//      逾時算連線失敗,照上面的規則決定要不要重試,也受同一個截止時間限制。
+//      一次呼叫最多寄 2 封(取消紀錄的消費者 + 店家):第一封最後一次重試最多超過截止時間 1 秒、第二封最多再 1 秒,
+//      整次呼叫(從 handler 收到請求算起)最多 7 秒加上寫 notifications —— Resend 很慢時也在 pg_net 的 8 秒以內。
+// 沒有 Deno 相依,vitest 直接測(send.test.ts);等待用注入的 sleep、逾時可以注入 timeoutSignal,測試不會真的等。
 import { createResendSender, type SendMail, type SendResult } from "../_shared/supplier-mail.ts";
 
 /** 每次要重試之前回報(handler 用它記 log,經過 redactLog):只有狀態碼(連線失敗是 null)與第幾次重試 */
@@ -37,7 +43,10 @@ export type MarketMailMessage = Parameters<SendMail>[0] & {
   budget?: RetryBudget;
 };
 
-/** maybeDelivered:連線失敗後重試時 Resend 回 409(同一個 key 的第一次請求還在處理)—— 第一次可能已經寄出 */
+/**
+ * maybeDelivered:連線失敗、請求逾時、502、504 之後重試,Resend 回 409(同一個 key 的第一次請求還在處理)——
+ * 第一次可能已經寄出
+ */
 export type MarketSendResult = SendResult & { maybeDelivered?: true };
 export type MarketSendMail = (msg: MarketMailMessage) => Promise<MarketSendResult>;
 
@@ -59,6 +68,15 @@ export const createRetryBudget = (totalMs: number = TOTAL_WAIT_CAP_MS, now: () =
   return { remainingMs: () => Math.max(0, deadline - now()) };
 };
 
+/** 每個請求(送出到讀完回應內文)最多等多久 */
+export const REQUEST_TIMEOUT_CAP_MS = 3_000;
+/** 每個請求至少給多久:額度快用完(甚至用完)時,這個請求也有機會等到回應 */
+export const REQUEST_TIMEOUT_FLOOR_MS = 1_000;
+
+/** 這個請求的逾時:剩下的額度和 3 秒取小的,下限 1 秒 */
+export const requestTimeoutMs = (remainingMs: number): number =>
+  Math.max(REQUEST_TIMEOUT_FLOOR_MS, Math.min(remainingMs, REQUEST_TIMEOUT_CAP_MS));
+
 export interface MarketSenderOptions {
   /** 等待(測試注入假的,不會真的等);預設 setTimeout */
   sleep?: (ms: number) => Promise<void>;
@@ -66,10 +84,18 @@ export interface MarketSenderOptions {
   random?: () => number;
   /** retry-after 是 HTTP 日期時的「現在」;預設 Date.now */
   now?: () => number;
+  /** 每個請求的逾時 signal(測試注入跟著假 timer 走的);預設 AbortSignal.timeout */
+  timeoutSignal?: (ms: number) => AbortSignal;
 }
 
 /** 這個狀態碼要不要重試:429 與 5xx 要;其他 4xx(422、409…)不要 */
 export const isRetryableStatus = (status: number): boolean => status === 429 || (status >= 500 && status <= 599);
+
+/**
+ * 回這些狀態時,Resend 那邊可能還在處理這個請求(閘道替它回的錯誤:上游出錯、上游逾時):之後同一個 key 回 409,
+ * 第一次可能已經寄出。500、503 是 Resend 自己處理完才回的錯誤,不算;連線失敗與請求逾時另外算。
+ */
+export const MAYBE_IN_FLIGHT_STATUSES: readonly number[] = [502, 504];
 
 /** retry-after(秒數,可以有小數;或 HTTP 日期)換成要等幾毫秒;讀不出來回 null,過去的時間是 0 */
 export const retryAfterMs = (value: string | null, now: number): number | null => {
@@ -86,32 +112,38 @@ export const createMarketResendSender =
     const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((done) => setTimeout(done, ms)));
     const random = opts.random ?? Math.random;
     const now = opts.now ?? Date.now;
+    const timeoutSignal = opts.timeoutSignal ?? ((ms: number) => AbortSignal.timeout(ms));
     const shared = budget ?? createRetryBudget(TOTAL_WAIT_CAP_MS, now);
-    let networkFailed = false;
+    // 之前的請求可能還在 Resend 那邊處理(連線失敗、逾時、502、504):之後同一個 key 回 409,第一次可能已經寄出
+    let maybeInFlight = false;
     let conflictAfterFailure = false;
 
     const fetchWithRetry = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       // createResendSender 送出的 headers 是一般物件(Authorization、Content-Type),在這裡補上 Idempotency-Key;每次重試都一樣
       const withKey: RequestInit = { ...init, headers: { ...(init?.headers as Record<string, string> | undefined), "Idempotency-Key": idempotencyKey } };
       for (let retry = 0; ; retry += 1) {
+        const timeoutMs = requestTimeoutMs(shared.remainingMs());
+        const signal = timeoutSignal(timeoutMs);
         let res: Response | null = null;
         let failure: unknown = null;
         try {
-          res = await fetchImpl(input, withKey);
+          const raw = await fetchImpl(input, { ...withKey, signal });
+          // 回應內文也在這裡讀完(signal 也管內文;標頭到了、內文卡住一樣會逾時),交給 createResendSender 的是讀好的回應
+          const text = await raw.text();
+          res = new Response(text === "" ? null : text, { status: raw.status, statusText: raw.statusText, headers: raw.headers });
         } catch (e) {
-          failure = e; // 連線失敗也算可以重試
-          networkFailed = true;
+          // 連線失敗、逾時都算可以重試;逾時換成固定的訊息(各執行環境 TimeoutError 的訊息不一樣)
+          failure = signal.aborted ? new Error(`Resend 請求逾時(${timeoutMs} 毫秒沒有回應)`) : e;
         }
         const retryable = res === null || isRetryableStatus(res.status);
         const remaining = shared.remainingMs();
         if (!retryable || retry >= MAX_RETRIES || remaining <= 0) {
           // 不重試了:回應交給 createResendSender 照原本的方式判斷(失敗就是 Resend <狀態碼>: …);例外也照原本的方式處理
-          if (res !== null) {
-            if (res.status === 409 && networkFailed) conflictAfterFailure = true;
-            return res;
-          }
-          throw failure;
+          if (res === null) throw failure;
+          if (res.status === 409 && maybeInFlight) conflictAfterFailure = true;
+          return res;
         }
+        if (res === null || MAYBE_IN_FLIGHT_STATUSES.includes(res.status)) maybeInFlight = true;
         const hinted = res === null ? null : retryAfterMs(res.headers.get("retry-after"), now());
         const wish =
           hinted === null
@@ -119,7 +151,6 @@ export const createMarketResendSender =
             : Math.min(hinted, RETRY_AFTER_CAP_MS) + Math.floor(random() * RETRY_AFTER_JITTER_MS);
         const wait = Math.min(wish, remaining);
         onRetry?.({ status: res === null ? null : res.status, attempt: retry + 1 });
-        await res?.body?.cancel().catch(() => undefined); // 不讀的回應內文要放掉
         await sleep(wait);
       }
     };
