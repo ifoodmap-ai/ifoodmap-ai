@@ -253,6 +253,11 @@ describe("讀取的欄位都存在於 migration", () => {
 /** 跟 index.ts 一樣:每次請求用 marketLiveFromEnv 讀「環境變數」(這裡是測試中途可以改值的物件) */
 const setupEnv = (env: Record<string, string | undefined>) => {
   const db = new FakeDb({ tables: tables() });
+  // 補上 fixture 沒有的兩種:拒單、供應商自己取消(閘門測試要走過每一種信)
+  db.tables.market_order_events.push(
+    { id: EV(9), order_id: ORDER_A, from_status: "pending", to_status: "rejected", actor_role: "supplier", note: "缺貨", payload: {} },
+    { id: EV(10), order_id: ORDER_A, from_status: "confirmed", to_status: "cancelled", actor_role: "supplier", note: "無法出貨", payload: {} },
+  );
   const send = vi.fn<SendMail>(async () => ({ ok: true, id: "re_1", error: null }));
   const handler = createMarketNotifyHandler({
     db,
@@ -280,18 +285,32 @@ describe("market-notify:MARKET_NOTIFY_LIVE 不是剛好字串 true,就不會寄�
   const NOT_LIVE: (string | undefined)[] = [undefined, "", "TRUE", "True", "1", " true", "true ", "\ttrue", "true\n", "yes", "false"];
   const REAL = ["buyer@example.com", "store-a@example.com"];
 
-  it("每一種值:下單確認、新訂單、接單、平台取消全部轉寄 ifoodmaptw@gmail.com,主旨加 [測試轉寄]、回信也是平台信箱", async () => {
+  it("每一種值:下單確認與每一種狀態信全部轉寄 ifoodmaptw@gmail.com,主旨加 [測試轉寄]、回信也是平台信箱", async () => {
     for (const v of NOT_LIVE) {
       const label = `MARKET_NOTIFY_LIVE=${JSON.stringify(v)}`;
       // 餐廳訂單的 NOTIFY_LIVE 開了也一樣:零售只看 MARKET_NOTIFY_LIVE
       const s = setupEnv({ MARKET_NOTIFY_LIVE: v, NOTIFY_LIVE: "true" });
       expect((await s.call({ kind: "placed", checkout_id: CHECKOUT, token: TOKEN })).body.data, label).toMatchObject({ live: false, sent: 1 });
-      // 新訂單(→ 供應商)、貨到付款接單(→ 消費者)、平台取消(→ 消費者 + 供應商)
-      for (const id of [EV(1), EV(2), EV(5)]) {
-        expect((await s.call({ kind: "event", event_id: id })).body.data, `${label} ${id}`).toMatchObject({ live: false });
+      // 新訂單(→ 供應商)、貨到付款接單、待匯款(→ 消費者)、平台取消(→ 消費者 + 供應商)、出貨、拒單、供應商取消(→ 消費者)
+      const kinds: string[] = [];
+      for (const id of [EV(1), EV(2), EV(4), EV(5), EV(6), EV(9), EV(10)]) {
+        const data = (await s.call({ kind: "event", event_id: id })).body.data;
+        expect(data, `${label} ${id}`).toMatchObject({ live: false });
+        kinds.push(...data.kinds);
       }
+      expect(new Set(kinds), label).toEqual(
+        new Set([
+          "supplier_new",
+          "consumer_confirmed",
+          "consumer_awaiting_payment",
+          "consumer_rejected",
+          "consumer_shipped",
+          "consumer_cancelled",
+          "supplier_cancelled_by_platform",
+        ]),
+      );
       const msgs = s.send.mock.calls.map((c) => c[0]);
-      expect(msgs, label).toHaveLength(5);
+      expect(msgs, label).toHaveLength(9);
       for (const m of msgs) {
         expect(m.to, label).toEqual(["ifoodmaptw@gmail.com"]);
         expect(m.subject.startsWith("[測試轉寄] "), `${label} ${m.subject}`).toBe(true);
@@ -303,7 +322,7 @@ describe("market-notify:MARKET_NOTIFY_LIVE 不是剛好字串 true,就不會寄�
       // 原收件人只列在轉寄說明裡
       expect(msgs[0].html, label).toContain("原本的收件人(消費者):buyer@example.com");
       expect(msgs[1].html, label).toContain("原本的收件人(供應商):store-a@example.com");
-      expect(s.db.tables.notifications.map((n) => n.recipient), label).toEqual(Array(5).fill("ifoodmaptw@gmail.com"));
+      expect(s.db.tables.notifications.map((n) => n.recipient), label).toEqual(Array(9).fill("ifoodmaptw@gmail.com"));
     }
   });
 
