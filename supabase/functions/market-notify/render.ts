@@ -34,6 +34,17 @@ export interface MailOrder {
 }
 
 export const twd = (n: number) => `NT$ ${Number(n).toLocaleString("zh-TW")}`;
+
+/**
+ * 主旨只能一行(Resend 的 subject 是純文字、不跳脫):控制字元(含 CR、LF)與 U+2028 / U+2029 換成空白,
+ * 連續空白壓成一個 —— 同 _shared/supplier-mail.ts 申請通知信裡的 oneLine(那支沒有 export,這裡另寫一份)。
+ * placedMail / renderEventMail 回傳前一律套用,店名等變數怎麼填都只會是一行。
+ */
+export const oneLine = (v: unknown) =>
+  String(v ?? "")
+    .replace(/[\p{Cc}\p{Zl}\p{Zp}]/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim();
 export const orderLabel = (id: string) => `零售訂單 ${formatOrderNo(id)}`;
 const PAYMENT_LABEL = { cod: "貨到付款", transfer: "銀行轉帳" } as const;
 
@@ -112,7 +123,7 @@ export const placedMail = (opts: { buyerName: string; orders: MailOrder[]; looku
     "",
     FOOTER,
   ].join("\n");
-  return { subject, html, text };
+  return { subject: oneLine(subject), html, text };
 };
 
 export type EventMailKind =
@@ -160,7 +171,8 @@ export interface EventContext {
 
 const LOOKUP_HINT = "訂單進度請用「下單確認信」裡的「查看訂單」連結查看。";
 
-export const renderEventMail = (kind: EventMailKind, c: EventContext): Mail => {
+/** 狀態信的內容;主旨在 renderEventMail 壓成單行 */
+const eventMail = (kind: EventMailKind, c: EventContext): Mail => {
   const o = c.order;
   const label = orderLabel(o.id);
   switch (kind) {
@@ -216,4 +228,9 @@ export const renderEventMail = (kind: EventMailKind, c: EventContext): Mail => {
       return { subject, html, text: `iFoodmap 平台已取消訂單 ${label}(消費者 ${c.buyerName}),請不要出貨。\n原因:${c.reason || "(沒有填寫)"}\n${c.supplierOrdersUrl}` };
     }
   }
+};
+
+export const renderEventMail = (kind: EventMailKind, c: EventContext): Mail => {
+  const m = eventMail(kind, c);
+  return { ...m, subject: oneLine(m.subject) };
 };

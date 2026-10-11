@@ -250,6 +250,17 @@ describe("market-notify:狀態紀錄", () => {
     }
   });
 
+  it("店名帶 \\r\\nBcc: …:實際交給寄信的主旨只有一行(閘門開 / 關都一樣)", async () => {
+    for (const live of [true, false]) {
+      const s = setup({ live });
+      s.db.tables.suppliers[0].name = "A 店\r\nBcc: victim@example.com\r\n";
+      await s.call({ kind: "event", event_id: EV(2) });
+      const subject = s.send.mock.calls[0][0].subject;
+      expect(subject).toBe(`${live ? "" : "[測試轉寄] "}A 店 Bcc: victim@example.com 已接單 — 零售訂單 ${formatOrderNo(ORDER_A)}`);
+      expect(subject).not.toMatch(/[\r\n]/);
+    }
+  });
+
   it("讀資料庫失敗 500(不洩漏細節)", async () => {
     const s = setup({ fail: (table) => (table === "market_orders" ? { message: "boom" } : undefined) });
     const r = await s.call({ kind: "event", event_id: EV(1) });
