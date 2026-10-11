@@ -55,6 +55,39 @@ export const oneLine = (v: unknown) =>
     .trim();
 
 export const orderLabel = (id: string) => `零售訂單 ${formatOrderNo(id)}`;
+
+/**
+ * 自動取消的時限(小時):pending 超過這麼久店家沒接單、或轉帳單進入待匯款超過這麼久,系統自動取消。
+ * 跟 migration 20261012100000_market_hardening.sql 的 `-- @market-auto-cancel-hours` 標記是同一個數字(render.test.ts 對照);
+ * 信裡提到時限的地方一律用這個常數。
+ */
+export const MARKET_AUTO_CANCEL_HOURS = 72;
+
+const TAIPEI_PARTS = new Intl.DateTimeFormat("zh-TW", {
+  timeZone: "Asia/Taipei",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  hourCycle: "h23",
+});
+
+/**
+ * 台北時間「2026/10/15 11:00(台北時間)」—— 跟 _shared/supplier-mail.ts 的 taipeiTime 同一種寫法(測試對照),
+ * 但逐欄組出來、固定 h23:不靠執行環境的時區(Edge Function 跑在 UTC),午夜寫 00:00 不會變成 24:00。
+ */
+export const taipeiDateTime = (d: Date): string => {
+  const part = (type: Intl.DateTimeFormatPartTypes) => TAIPEI_PARTS.formatToParts(d).find((x) => x.type === type)?.value ?? "";
+  return `${part("year")}/${part("month")}/${part("day")} ${part("hour")}:${part("minute")}\u{FF08}台北時間\u{FF09}`;
+};
+
+/** 匯款期限 = 這筆待匯款紀錄的建立時間 + MARKET_AUTO_CANCEL_HOURS;時間讀不出來回 null(信裡改寫「72 小時內」) */
+export const paymentDeadline = (createdAt: string): string | null => {
+  const t = Date.parse(createdAt);
+  if (!createdAt || Number.isNaN(t)) return null;
+  return taipeiDateTime(new Date(t + MARKET_AUTO_CANCEL_HOURS * 60 * 60 * 1000));
+};
 const PAYMENT_LABEL = { cod: "貨到付款", transfer: "銀行轉帳" } as const;
 
 const FOOTER = "iFoodmap 食材市集是媒合平台:商品由各店家販售、出貨與收款,發票由店家開立。";
@@ -104,6 +137,17 @@ const itemsText = (o: MailOrder) =>
     `總額:${twd(o.total)}`,
   ].join("\n");
 
+/** 72 小時自動取消:下單確認、新訂單信多的那一句 */
+const PLACED_DEADLINE = `店家會在 ${MARKET_AUTO_CANCEL_HOURS} 小時內確認訂單;超過時間沒有接單,訂單會自動取消。`;
+const ACCEPT_DEADLINE = `請在 ${MARKET_AUTO_CANCEL_HOURS} 小時內接單,超過時間系統會自動取消這張訂單。`;
+/** 待匯款信的期限那一句(期限算不出來就寫「72 小時內」) */
+const payByText = (createdAt: string) => {
+  const deadline = paymentDeadline(createdAt);
+  return deadline
+    ? `請在 ${deadline}前完成匯款,逾期訂單會自動取消。`
+    : `請在 ${MARKET_AUTO_CANCEL_HOURS} 小時內完成匯款,逾期訂單會自動取消。`;
+};
+
 /** 下單確認(寄給消費者,含查詢連結) */
 export const placedMail = (opts: { buyerName: string; orders: MailOrder[]; lookupUrl: string }): Mail => {
   const subject = `訂單已送出(共 ${opts.orders.length} 家店)— iFoodmap 食材市集`;
@@ -125,12 +169,14 @@ export const placedMail = (opts: { buyerName: string; orders: MailOrder[]; looku
   const html = shell(
     "訂單已送給店家",
     p(`${esc(opts.buyerName)} 您好,感謝您在 iFoodmap 食材市集訂購。以下訂單已送給店家,店家接單後會再寄信通知您。`) +
+      p(esc(PLACED_DEADLINE)) +
       sections +
       button(opts.lookupUrl, "查看訂單") +
       p(esc("這個連結就是您的訂單查詢頁,請保留這封信、不要轉寄給別人。")),
   );
   const text = [
     `${opts.buyerName} 您好,感謝您在 iFoodmap 食材市集訂購。以下訂單已送給店家,店家接單後會再寄信通知您。`,
+    PLACED_DEADLINE,
     ...opts.orders.map((o) =>
       [`\n【${o.storeName}】${orderLabel(o.id)}`, itemsText(o), `付款方式:${PAYMENT_LABEL[o.paymentMethod]}`, phoneText(o)].filter(Boolean).join("\n"),
     ),
@@ -185,6 +231,10 @@ export interface EventContext {
   supplierOrdersUrl: string;
   /** 這張單已收款(paid_at 有值,或這筆紀錄是從 paid 轉過來的):取消信要說明退款由店家處理 */
   paid: boolean;
+  /** 系統的 72 小時自動取消(紀錄的 payload.auto_expire);不是自動取消就是 null */
+  autoExpire: "pending" | "awaiting_payment" | null;
+  /** 這筆狀態紀錄的建立時間(ISO 字串):待匯款信用它算匯款期限 */
+  eventCreatedAt: string;
 }
 
 const LOOKUP_HINT = "訂單進度請用「下單確認信」裡的「查看訂單」連結查看。";
@@ -199,11 +249,12 @@ const eventMail = (kind: EventMailKind, c: EventContext): Mail => {
       const html = shell(
         "有一張新的零售訂單",
         p(`消費者 ${esc(c.buyerName)} 向你訂購(${esc(PAYMENT_LABEL[o.paymentMethod])},收件縣市 ${esc(c.shipCity)})。請盡快接單或拒單。`) +
+          p(esc(ACCEPT_DEADLINE)) +
           itemsTable(o) +
           (c.buyerNote ? box("消費者備註", c.buyerNote) : "") +
           button(c.supplierOrdersUrl, "到後台處理"),
       );
-      const text = [`有一張新的零售訂單 ${label}`, itemsText(o), c.buyerNote ? `消費者備註:${c.buyerNote}` : "", `到後台處理:${c.supplierOrdersUrl}`].filter(Boolean).join("\n");
+      const text = [`有一張新的零售訂單 ${label}`, ACCEPT_DEADLINE, itemsText(o), c.buyerNote ? `消費者備註:${c.buyerNote}` : "", `到後台處理:${c.supplierOrdersUrl}`].filter(Boolean).join("\n");
       return { subject, html, text };
     }
     case "consumer_confirmed": {
@@ -219,11 +270,12 @@ const eventMail = (kind: EventMailKind, c: EventContext): Mail => {
         "店家已接單,請匯款",
         p(`「${esc(o.storeName)}」已接受您的訂單 ${esc(label)}。請依下列資訊匯款 ${esc(twd(o.total))},店家確認收款後就會安排出貨。`) +
           box("匯款資訊", c.transferInfo || "(店家尚未提供,請直接聯絡店家)") +
+          p(esc(payByText(c.eventCreatedAt))) +
           itemsTable(o) +
           phoneHtml(o) +
           p(esc(LOOKUP_HINT)),
       );
-      const text = [`「${o.storeName}」已接受您的訂單 ${label}。請匯款 ${twd(o.total)}:`, c.transferInfo || "(店家尚未提供,請直接聯絡店家)", itemsText(o), phoneText(o), LOOKUP_HINT].filter(Boolean).join("\n");
+      const text = [`「${o.storeName}」已接受您的訂單 ${label}。請匯款 ${twd(o.total)}:`, c.transferInfo || "(店家尚未提供,請直接聯絡店家)", payByText(c.eventCreatedAt), itemsText(o), phoneText(o), LOOKUP_HINT].filter(Boolean).join("\n");
       return { subject, html, text };
     }
     case "consumer_rejected": {

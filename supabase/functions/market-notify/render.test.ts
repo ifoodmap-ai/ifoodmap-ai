@@ -1,6 +1,20 @@
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { formatOrderNo } from "../../../src/lib/order-number.ts";
-import { placedMail, renderEventMail, resolveEventMails, twd, type EventContext, type EventMailKind, type MailOrder } from "./render.ts";
+import { taipeiTime } from "../_shared/supplier-mail.ts";
+import {
+  MARKET_AUTO_CANCEL_HOURS,
+  paymentDeadline,
+  placedMail,
+  renderEventMail,
+  resolveEventMails,
+  taipeiDateTime,
+  twd,
+  type EventContext,
+  type EventMailKind,
+  type MailOrder,
+} from "./render.ts";
 
 const ORDER: MailOrder = {
   id: "a9600000-0000-4000-8000-0000000000a1",
@@ -25,6 +39,9 @@ const CTX: EventContext = {
   transferInfo: "台灣銀行 004\n帳號 0123-456-789",
   supplierOrdersUrl: "https://app.ifoodmap.ai/supplier/market/orders",
   paid: false,
+  autoExpire: null,
+  // 這筆狀態紀錄的建立時間(PostgREST 回的是微秒格式)
+  eventCreatedAt: "2026-10-12T03:00:00.123456+00:00",
 };
 
 describe("resolveEventMails", () => {
@@ -347,6 +364,96 @@ describe("已收款的單被取消(paid → cancelled)", () => {
         "consumer_cancelled",
         "supplier_cancelled_by_platform",
       ]);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------
+// 2026-10-12 業主決定:72 小時自動取消(資料庫 migration 20261012100000_market_hardening.sql)
+// ---------------------------------------------------------------------
+
+describe("72 小時自動取消:時限只有一個常數,跟 migration 的標記同一個數字", () => {
+  const dir = resolve(__dirname, "../../migrations");
+  const HARDENING = "20261012100000_market_hardening.sql";
+  const marks = readdirSync(dir)
+    .filter((f) => f.endsWith(".sql"))
+    .flatMap((f) => [...readFileSync(resolve(dir, f), "utf8").matchAll(/--\s*@market-auto-cancel-hours\s+(\d+)\b/g)].map((m) => ({ file: f, hours: Number(m[1]) })));
+  const hasHardening = existsSync(resolve(dir, HARDENING));
+
+  // 資料庫那支 migration commit 之前先跳過;檔案(或標記)一出現就自動打開
+  it.skipIf(!hasHardening && marks.length === 0)("MARKET_AUTO_CANCEL_HOURS = migration 的 -- @market-auto-cancel-hours", () => {
+    expect(marks.length, "migration 裡要有一行 -- @market-auto-cancel-hours <小時>").toBeGreaterThan(0);
+    if (hasHardening) expect(marks.filter((m) => m.file === HARDENING), HARDENING).toHaveLength(1);
+    for (const m of marks) expect(m.hours, m.file).toBe(MARKET_AUTO_CANCEL_HOURS);
+  });
+
+  it("業主定的是 72 小時", () => {
+    expect(MARKET_AUTO_CANCEL_HOURS).toBe(72);
+  });
+});
+
+describe("匯款期限:待匯款那筆紀錄的建立時間 + 72 小時,一律用台北時間", () => {
+  it.each([
+    ["2026-10-12T03:00:00.123456+00:00", "2026/10/15 11:00(台北時間)"], // PostgREST 的微秒格式
+    ["2026-10-12T17:30:00Z", "2026/10/16 01:30(台北時間)"], // UTC 還是 15 日、台北已經 16 日(跨日)
+    ["2026-10-29T18:00:00+00:00", "2026/11/02 02:00(台北時間)"], // 跨月
+    ["2026-12-29T16:00:00Z", "2027/01/02 00:00(台北時間)"], // 跨年;午夜寫 00:00,不寫 24:00
+    ["2026-10-12T11:00:00+08:00", "2026/10/15 11:00(台北時間)"], // 帶 +08:00 的寫法
+  ])("%s → %s", (createdAt, expected) => {
+    expect(paymentDeadline(createdAt)).toBe(expected.replace("(", "\u{FF08}").replace(")", "\u{FF09}"));
+  });
+
+  it("時間讀不出來回 null", () => {
+    for (const v of ["", "not-a-date"]) expect(paymentDeadline(v), v).toBeNull();
+  });
+
+  it("不靠執行環境的時區(Edge Function 跑在 UTC)", () => {
+    const before = process.env.TZ;
+    try {
+      for (const tz of ["UTC", "America/Los_Angeles"]) {
+        process.env.TZ = tz;
+        expect(paymentDeadline("2026-10-12T17:30:00Z"), tz).toBe("2026/10/16 01:30\u{FF08}台北時間\u{FF09}");
+      }
+    } finally {
+      if (before === undefined) delete process.env.TZ;
+      else process.env.TZ = before;
+    }
+  });
+
+  // taipeiTime 直接用 Intl 的格式:新版 ICU(Node 25)在日期與時間之間放的是 U+2009 細空白,別的 ICU 版本可能是一般空白;
+  // 這裡逐欄組、一律用一般空白,不管跑在哪個 runtime 都一樣 —— 所以比對時把空白類字元都當成一般空白
+  it("寫法跟信裡現有的日期一樣(_shared/supplier-mail.ts 的 taipeiTime;空白一律用一般空白)", () => {
+    for (const iso of ["2026-10-15T03:00:00Z", "2026-10-16T05:07:00Z"]) {
+      expect(taipeiDateTime(new Date(iso))).toBe(taipeiTime(iso).replace(/\s/gu, " "));
+      expect(taipeiDateTime(new Date(iso))).not.toMatch(/[^\S ]/u); // 只有一般空白
+    }
+  });
+});
+
+describe("72 小時自動取消:信裡新增的句子(html 與 text)", () => {
+  it("店家的新訂單信:請在 72 小時內接單,超過時間系統會自動取消這張訂單", () => {
+    const m = renderEventMail("supplier_new", CTX);
+    for (const body of [m.html, m.text]) expect(body).toContain("請在 72 小時內接單,超過時間系統會自動取消這張訂單。");
+  });
+
+  it("消費者的下單確認信:店家會在 72 小時內確認訂單;超過時間沒有接單,訂單會自動取消", () => {
+    const m = placedMail({ buyerName: "王小明", orders: [ORDER], lookupUrl: "https://app.ifoodmap.ai/market/orders/TOKEN123" });
+    for (const body of [m.html, m.text]) expect(body).toContain("店家會在 72 小時內確認訂單;超過時間沒有接單,訂單會自動取消。");
+  });
+
+  it("消費者的待匯款信:請在 <待匯款時間 + 72 小時> 前完成匯款,逾期訂單會自動取消", () => {
+    const m = renderEventMail("consumer_awaiting_payment", CTX);
+    for (const body of [m.html, m.text]) expect(body).toContain("請在 2026/10/15 11:00\u{FF08}台北時間\u{FF09}前完成匯款,逾期訂單會自動取消。");
+  });
+
+  it("待匯款信:時間讀不出來就寫「72 小時內」", () => {
+    const m = renderEventMail("consumer_awaiting_payment", { ...CTX, eventCreatedAt: "" });
+    for (const body of [m.html, m.text]) expect(body).toContain("請在 72 小時內完成匯款,逾期訂單會自動取消。");
+  });
+
+  it("其他信不多這些句子", () => {
+    for (const k of ["consumer_confirmed", "consumer_rejected", "consumer_shipped", "consumer_cancelled", "supplier_cancelled_by_platform"] as const) {
+      expect(renderEventMail(k, CTX).text, k).not.toMatch(/72 小時/);
     }
   });
 });

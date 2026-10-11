@@ -78,7 +78,8 @@ const tables = (): Record<string, Row[]> => ({
     { id: EV(1), order_id: ORDER_A, from_status: null, to_status: "pending", actor_role: "consumer", note: null, payload: {} },
     { id: EV(2), order_id: ORDER_A, from_status: "pending", to_status: "confirmed", actor_role: "supplier", note: null, payload: {} },
     { id: EV(3), order_id: ORDER_B, from_status: "pending", to_status: "confirmed", actor_role: "supplier", note: null, payload: {} },
-    { id: EV(4), order_id: ORDER_B, from_status: "confirmed", to_status: "awaiting_payment", actor_role: "system", note: null, payload: {} },
+    // created_at:PostgREST 回的微秒格式(台北 2026/10/12 11:00 進入待匯款 → 匯款期限 2026/10/15 11:00)
+    { id: EV(4), order_id: ORDER_B, from_status: "confirmed", to_status: "awaiting_payment", actor_role: "system", note: null, payload: {}, created_at: "2026-10-12T03:00:00.123456+00:00" },
     { id: EV(5), order_id: ORDER_A, from_status: "pending", to_status: "cancelled", actor_role: "admin", note: "疑似假單", payload: {} },
     { id: EV(6), order_id: ORDER_A, from_status: "confirmed", to_status: "shipped", actor_role: "supplier", note: null, payload: { carrier: "黑貓宅急便", tracking_no: "9001" } },
     { id: EV(7), order_id: ORDER_A, from_status: "shipped", to_status: "completed", actor_role: "supplier", note: null, payload: {} },
@@ -286,6 +287,10 @@ describe("market-notify:狀態紀錄", () => {
     await s.call({ kind: "event", event_id: EV(4) });
     expect(s.send).toHaveBeenCalledTimes(1);
     expect(s.send.mock.calls[0][0].html).toContain("郵局(700) 帳號 0001234-5678901");
+    // 72 小時自動取消:匯款期限 = 這筆待匯款紀錄的 created_at + 72 小時(台北時間)
+    for (const body of [s.send.mock.calls[0][0].html, s.send.mock.calls[0][0].text]) {
+      expect(body).toContain("請在 2026/10/15 11:00\u{FF08}台北時間\u{FF09}前完成匯款,逾期訂單會自動取消。");
+    }
     // 回信一律到平台信箱
     expect(s.send.mock.calls[0][0].replyTo).toBe("ifoodmaptw@gmail.com");
   });

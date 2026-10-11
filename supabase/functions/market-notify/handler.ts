@@ -41,7 +41,7 @@ export interface MarketNotifyDeps {
 export const ORDER_COLUMNS =
   "id, checkout_id, supplier_id, status, buyer_name, buyer_email, ship_city, ship_address, buyer_note, subtotal, shipping_fee, total, payment_method, lookup_token_hash, paid_at";
 export const ITEM_COLUMNS = "product_name, spec, qty, unit_price, line_total";
-export const EVENT_COLUMNS = "id, order_id, from_status, to_status, actor_role, note, payload";
+export const EVENT_COLUMNS = "id, order_id, from_status, to_status, actor_role, note, payload, created_at";
 export const SUPPLIER_COLUMNS = "name, contact_email, phone";
 export const STORE_COLUMNS = "ship_days";
 export const TRANSFER_COLUMNS = "transfer_info";
@@ -300,6 +300,8 @@ const handleEvent = async (deps: MarketNotifyDeps, live: boolean, body: Row): Pr
     ? await one(deps.db.from("market_store_transfer").select(TRANSFER_COLUMNS).eq("supplier_id", order.supplier_id).maybeSingle())
     : null;
   const payload = (ev.payload && typeof ev.payload === "object" ? ev.payload : {}) as Row;
+  // 72 小時自動取消(migration 20261012100000):系統寫的取消紀錄 payload 帶 auto_expire = pending / awaiting_payment
+  const autoExpire = payload.auto_expire;
   const ctx: EventContext = {
     order: mailOrder,
     buyerName: str(order.buyer_name),
@@ -313,6 +315,8 @@ const handleEvent = async (deps: MarketNotifyDeps, live: boolean, body: Row): Pr
     supplierOrdersUrl: `${deps.config.siteUrl}/supplier/market/orders`,
     // 已收款:訂單上有 paid_at(套用狀態時寫入、之後不會清掉),或這筆紀錄本身就是從 paid 轉出(paid → cancelled)
     paid: (order.paid_at !== null && order.paid_at !== undefined) || ev.from_status === "paid",
+    autoExpire: toStatus === "cancelled" && (autoExpire === "pending" || autoExpire === "awaiting_payment") ? autoExpire : null,
+    eventCreatedAt: str(ev.created_at),
   };
 
   const supplierEmail = str(supplier?.contact_email);
