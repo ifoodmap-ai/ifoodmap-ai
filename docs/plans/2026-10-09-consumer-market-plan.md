@@ -17976,3 +17976,69 @@ gate / render / handler / index 與 `config.toml` 先照計畫的程式碼區塊
    - 供應商後台(`SupplierLayout`)的手機抽屜關著時移到畫面左邊外面,但裡面的連結還在 Tab 順序裡、螢幕閱讀器也讀得到(沒有 `inert` / `aria-hidden`),鍵盤使用者會 Tab 到看不見的連結;畫面實測時把它排除在檢查外。不是這次的範圍。
    - 倒數用瀏覽器的時鐘:使用者電腦的時間不準時,畫面上的時數會跟著偏(真正取消以資料庫為準,排程每 10 分鐘一次)。
    - 管理員的零售訂單總覽沒有加期限(這次沒有要求)。
+
+### 2026-10-12:Task 58 開放前檢查查詢與 `docs/DEPLOY.md` 第 3 階段(分支 `market`)
+
+**業主的決定(2026-10-12,派工者轉達)**:核准對外開放 —— 第 3 階段做完就打開下單、打開寄信閘門、合併形象站入口,條款用查證後的版本直接定稿;
+開放的操作由派工者另外指定的人執行。業主接受三項風險:條款沒有經過律師審閱、業主還沒完整實測過、Supabase 仍是免費方案(升級 Pro 改成業主要盡快自己處理的事)。
+同一天決定做 72 小時自動取消,跟 IP 退路、被擋的請求非同步 commit 一起放進 `20261012100000_market_hardening.sql`(另一位實作者在寫;寫這一節時是草稿 `fc25de1`,
+`market_hardening.test.sql`、`market_hardening_rollback.test.sql` 與還原檔還在寫、沒有 commit)。
+
+**跟計畫 Task 58 不一樣的地方**
+
+1. **在 `market` 分支做**(計畫寫在 main):照派工指示,commit 停在 `market`、不 push,由派工者跟資料庫加固一起推。
+2. **Step 1 的查詢照原文在正式庫跑不起來**:唯讀端點的角色沒有 `market_store_is_open()` 的執行權(120000 只開給 anon / authenticated / service_role),
+   2026-10-12 實測回 `42501: permission denied for function market_store_is_open`。改成直接寫它的條件(`market_stores.is_enabled AND suppliers.is_active`,跟函式內容一樣)。
+3. **Step 2 的 Expected 有兩個跟現況不一樣**:`image_policies` 是 **2**(第 1 階段勘誤:只剩 select / insert,不是 4);`stores_transfer_without_info`「一定是 0」不成立 ——
+   `ef1df39` 之後 guard 只在供應商建店或改付款方式時檢查,供應商可以事後刪掉轉帳資訊,所以改當營運數字(那幾家的轉帳結帳會回 `PAYMENT_NOT_ACCEPTED`)。
+4. **`stores_open_without_contact_email` 改成 `stores_open_bad_contact_email`**:空的**或格式不對**都算,規則跟 `market-notify` 寄信前的 `isDeliverableEmail` 一樣
+   (`_shared/supplier-mail.ts` 的 `EMAIL_PATTERN`、≤ 254 字、不去頭尾空白)—— 只看空字串的話,填錯格式的店家一樣收不到新訂單信卻查不出來。
+5. **多的項目**:`cron_cleans_blocks`、`rate_cleanup_last_run_ok`、`image_bucket_versioning`、`anon_can_read_transfer`、`api_can_touch_rate_tables`、
+   `tmp_ip_probe_absent`(第 2 階段部署時暫時建的 `market_tmp_ip_probe` 要刪掉)、`orders_by_status`、`orders_pending_over_72h`、`orders_awaiting_payment_over_72h`
+   (從最後一筆「待匯款」紀錄起算,跟 `market_expire_orders` 同一條規則)、`orders_paid_unshipped_over_3_days`、`rate_blocks_7_days`(今天與前 6 個台北日依規則加總)、
+   `noip_blocked_24h`(擋下紀錄以台北日記,看 24 小時前那一天到今天)、`noip_attempts_24h`(`noip|1h` 計數);加固之後才會有的 `expire_orders_cron`、
+   `expire_orders_last_run_ok`、`client_ip_ignores_xff`(函式定義裡不再有 `->>'x-forwarded-for'`;註解裡提到不算)、`blocked_async_commit`
+   (`market_rate_take` 或 `market_place_order` 的定義裡有 `synchronous_commit`)。`migrations` 的清單先放進 `20261012100000`(套用前是五個版本)。
+   `orders_pending_over_1_day`、`products_pending_over_2_days`、`notify_failed_7_days` 照計畫。
+6. 「只回數字與 true / false」:另外回不涉密的設定值(版本清單、排程字串、bucket 設定),跟計畫原本的查詢一樣;密鑰、鹽只檢查有沒有、格式對不對,不印值。
+
+**Step 2 實測**(2026-10-12 00:26:46 台北,唯讀端點;加固還沒套用):
+
+| 項目 | 值 |
+|---|---|
+| `migrations` | `20261009120000`、`120100`、`130000`、`130100`、`130200`(五個) |
+| `checkout_open` | `false` |
+| `notify_url_ok`、`notify_key_set`、`rate_salt_set` | `true`、`true`、`true` |
+| `rate_cleanup_cron`、`cron_cleans_blocks`、`rate_cleanup_last_run_ok` | `"50 19 * * *"`、`true`、`null`(130200 套用後還沒到第一次 19:50 UTC) |
+| `image_bucket`、`image_bucket_versioning`、`image_policies` | `{"public": true, "file_size_limit": 2097152, "mime_types": ["image/jpeg", "image/png", "image/webp"]}`、`"DISABLED"`、`2` |
+| `anon_can_read_orders`、`anon_can_read_transfer`、`anon_can_place_order`、`api_can_touch_rate_tables` | `false`、`false`、`true`、`false` |
+| `tmp_ip_probe_absent` | `true` |
+| `expire_orders_cron`、`expire_orders_last_run_ok`、`client_ip_ignores_xff`、`blocked_async_commit` | `null`、`null`、`false`、`false`(套用 20261012100000 之後才會是 `"*/10 * * * *"`、`true`、`true`、`true`) |
+| 營運數字(店家、商品、訂單、寄信失敗、擋下紀錄、noip) | 全部 `0`、`orders_by_status` 與 `rate_blocks_7_days` 是 `{}`、`noip_blocked_24h` 是 `false` |
+
+- 「加固之後」那一欄是 2026-10-12 在本機一次性的 Postgres(Homebrew 18、只開 Unix socket、資料放 scratchpad,用完刪掉;stub auth / roles / cron / pg_net / storage / app_config 等)
+  載入 120000–130200 原文與 `fc25de1` 的 20261012100000 草稿實測的(套用前同一份查詢是 `null` / `false`)。同一個環境也實測了:兩張超過 72 小時的單(待接單、待匯款)
+  被 `market_expire_orders()` 取消、原因與 `{"auto_expire": …}` 照 migration、庫存補回、兩筆通知排進 pg_net、再跑一次取消 0 張;供應商帶 `auto_expire` 取消被擋(22023 `auto_expire_invalid`)。
+  營運數字的每一項另外塞假資料驗過會數到(例如聯絡信箱前面多一個空白算格式不對、7 天前的擋下紀錄不算、30 小時前的 noip 計數不算)。
+- 業主實測的佐證查詢(Task 60 Step 4)也改寫成不用 heredoc 的版本,在正式庫唯讀跑過一次:四項都是空的。
+
+**Step 3:DEPLOY.md 不照抄第 16752–16769 行的區塊**,寫成現況:「第 3 階段」說明(業主核准與接受的三項風險、形象站入口、加固三件事、第 2 階段待辦 11 條的狀態對照表)、
+「部署(第 3 階段)」(加固的部署,照第 2 階段的格式;順序 `market-notify` → migration → 前端,照上一節的理由)、「還原(第 3 階段)」、「開放前檢查(第 3 階段)」
+(每一項的意義、現在的值、加固之後 / 開放時的值、遇到時怎麼辦)、「業主實測(第 3 階段)」(業主照著勾的清單)、「開放當天的順序(第 3 階段)」(8 步,每步有指令或位置)、
+「緊急關閉(第 3 階段)」。第 2 階段那幾節同時改:狀態流程加 72 小時自動取消、IP 來源加加固之後的順序、「怎麼查」加自動取消與排程的兩段查詢、待辦第 1–3 條寫上
+2026-10-12 的決定、第 5、11 條與第 6 條的 XFF 退路標成已處理(IPv6 /64 仍待辦)。Step 4 的 grep 只有一行(`### 第 3 階段:對外開放(…)`)。
+
+**給 Task 60 的修改**:
+
+- Step 2(push main)不做:Task 58 的檔由派工者跟加固一起推。Step 3 的判斷改用 DEPLOY.md「開放前檢查」的表。Step 4 改用 DEPLOY.md「業主實測」的清單與佐證查詢(業主已接受沒做完的風險,仍建議開放前做)。
+- Step 5 的五項業主已經核准,開放的指令寫在 DEPLOY.md「開放當天的順序」。🔴 Step 6 的驗收項「DEPLOY.md 沒有任何打開 `MARKET_NOTIFY_LIVE` 或 `market_checkout_open` 的指令」作廢:
+  現在只有「開放當天的順序」第 4、5 步與「緊急關閉」有這些指令,而且寫明由派工者指定的人執行;驗收改成「只有這兩節有,其他地方沒有」。
+
+**發現、沒有處理(記錄;都沒有改程式)**:
+
+- `market_checkout.test.sql` 第 86–87 行原本驗「再沒有才用 x-forwarded-for 第一段」(期待 `1.1.1.1`):加固之後 `market_client_ip()` 回 NULL,帶加固乾跑這一項會紅。
+  寫這一節時加固的實作者正在把它改成「只有 XFF 回 NULL」(還沒 commit);改好之後這支在加固套用前要帶 `--with-migration` 20261012100000 跑。
+- 第 2 階段待辦第 6 條原本的空購物車請求同時帶了偽造的 `CF-Connecting-IP`:第 2 階段部署時實測,用戶端自己帶這個標頭會被 Cloudflare 整個請求回 403 `error code: 1000`,
+  照原樣做會看不到結果。DEPLOY.md 改成只帶 `X-Forwarded-For`、`X-Real-IP`,候選清單拿掉 `cf-connecting-ip`。
+- 加固之後 `noip` 的意義變了:原本拿不到 cf / x-real-ip 時會退回 XFF,現在直接算 `noip`(全站共用每小時 60、每天 300)。正式請求都經過 Cloudflare,正常不會發生;
+  開放後「開放前檢查」的 `noip_attempts_24h` 不是 0 就要查。

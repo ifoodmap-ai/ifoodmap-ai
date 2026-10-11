@@ -1106,6 +1106,7 @@ where jobid = (select jobid from cron.job where jobname = 'ifoodmap-ai-guard-cle
     銀行轉帳:pending → confirmed →(自動)awaiting_payment → paid → shipped → completed
     pending → rejected(拒單,要原因)
     pending / confirmed / awaiting_payment / paid → cancelled(取消,要原因;店家或平台都能取消)
+    pending 超過 72 小時、awaiting_payment 超過 72 小時 → cancelled(系統自動取消;加固 20261012100000 套用之後,見「第 3 階段」)
     ```
     - guard(BEFORE):鎖訂單列;身分由伺服器決定(這家店的啟用中帳號 = supplier、`is_admin()` = admin、service_role / 資料庫直連 = system,前端送的 `actor_role` 不算);
       前端以為的狀態跟資料庫不一樣 → P0001 `stale_order_status`(畫面過期);(身分, 目前狀態, 目標狀態, 付款方式) 要在轉移表 `market_transition_rules()` 裡
@@ -1177,6 +1178,7 @@ IP / Email / 電話只以「加鹽 sha256 前 16 hex」落地(鹽在 `app_config
 - IP 取自 `market_client_ip()`:`cf-connecting-ip` → `x-real-ip` → `x-forwarded-for` 第一段。2026-10-11 部署時用暫時的探測函式驗過(IPv4,見「部署」第 9-5 步):
   實際用到的是 `cf-connecting-ip`(Cloudflare 覆寫;用戶端自己帶 `CF-Connecting-IP` 會被 Cloudflare 直接回 403 `error code: 1000`),
   `x-real-ip` 會被中間的 proxy 改寫成真實 IP,`x-forwarded-for` 第一段偽造得了但只是第三順位。IPv6 /64 還沒驗(見「對外開放前待辦」第 6 條)。
+  加固 20261012100000 套用之後順序改成 `cf-connecting-ip` → `x-real-ip` → NULL:不再信 `x-forwarded-for`,兩個都沒有就算進 `noip`(見「第 3 階段」)。
 - 計數表 `market_rate_counters`;**擋下次數** `market_rate_blocks_daily`(`day` 台北日、`rule` 規則種類 = bucket 冒號前的前綴、`hits`,主鍵 `(day, rule)`):
   被擋時把擋下的那種規則 +1,同一次請求被同一種的兩條擋下(例如 Email 每小時與每天)只算 1;沒被擋時不寫;只記次數、不記是誰。兩張表 anon / 登入者都碰不到。
 - 清理:pg_cron `ifoodmap-market-rate-cleanup` 每天 19:50 UTC(台北 03:50)刪 2 天前的計數、**90 天前**的擋下紀錄。
@@ -1411,6 +1413,21 @@ select id, status_code, timed_out, error_msg, left(content, 200) as content, cre
 from net._http_response order by id desc limit 10;
 ```
 
+72 小時自動取消(加固 20261012100000 套用之後才有;規則見「第 3 階段」):
+
+```sql
+-- 最近 7 天被系統自動取消的單(取消紀錄的身分是 system、payload 帶 auto_expire = 取消前的狀態 pending / awaiting_payment)
+select e.created_at, e.order_id, e.from_status, e.payload->>'auto_expire' as auto_expire, e.note
+from public.market_order_events e
+where e.to_status = 'cancelled' and e.actor_role = 'system' and e.payload ? 'auto_expire'
+  and e.created_at > now() - interval '7 days'
+order by e.created_at desc limit 20;
+
+-- 自動取消排程的執行紀錄(每 10 分鐘一次;status 不是 succeeded 就看 return_message)
+select status, return_message, start_time from cron.job_run_details
+where jobid = (select jobid from cron.job where jobname = 'ifoodmap-market-expire-orders') order by runid desc limit 5;
+```
+
 - `notifications` 是 `failed`:Resend 回錯誤(原因在 Dashboard → Edge Functions → `market-notify` → Logs,token 已遮掉)、同一個 Idempotency-Key 內容不同(409),
   或收件 Email 不合格(message 寫了原因)。寄信失敗不會自動重送。
 - `net._http_response`:`status_code` 200 = `market-notify` 收到並處理了(內容 `"live":false` = 閘門沒開;有 `"kinds"` 的是狀態信、有 `"orders"` 的是下單確認);
@@ -1503,32 +1520,39 @@ from net._http_response order by id desc limit 10;
 
 ### 對外開放前待辦(第 3 階段,需要業主核准)
 
-第 2 階段上線之後,下面每一條都要業主決定或核准。🔴 打開下單(`market_checkout_open` 改成 `'true'`)與寄信(`MARKET_NOTIFY_LIVE`)不在任何部署步驟裡,不要自己設定。
+第 2 階段上線之後,下面每一條都要業主決定或核准。**2026-10-12 業主已核准對外開放**,每一條現在的狀態見「第 3 階段」的對照表;
+🔴 打開下單(`market_checkout_open` 改成 `'true'`)與寄信(`MARKET_NOTIFY_LIVE`)只照「開放當天的順序(第 3 階段)」做,由派工者指定的人執行,其他任務不要自己設定。
 
 1. **Supabase 升級 Pro**:免費方案閒置會暫停,暫停期間市集打不開、下單失敗,等於關店。
+   (2026-10-12:業主接受用免費方案開放的風險;升級 Pro 是業主要盡快自己處理的事。)
 2. **服務條款與隱私權政策定稿**:`/market/terms`、`/market/privacy` 現在是工程擬的草稿(頁面上標「草稿」),七天解除權的例外、個資保存年限、平台責任範圍
    都要請法律專業確認後定稿(定稿時改 `src/lib/market/legal.ts`:文字 → `LEGAL_DRAFT = false` → 換新的 `TERMS_VERSION`)。
+   (2026-10-12:業主核准用查證後的版本直接定稿,沒有經過律師審閱,業主接受這個風險;做法見「開放當天的順序」第 2 步。)
 3. **`MARKET_NOTIFY_LIVE` 和 `market_checkout_open` 要一起打開**:查單頁寫著「店家接單後會寄信通知你」,只開下單、不開寄信,這句話就不實
    (消費者、店家都收不到任何信,消費者也拿不到下單確認信裡的查詢連結;結帳頁的轉帳說明、供應商後台的接單說明也都寫消費者會收到信)。
+   (2026-10-12:業主核准,開放當天一起打開,見「開放當天的順序」第 4、5 步。)
 4. **目前沒有人機驗證**:全站每天 500 單的上限,可以被「真的建單」的假訂單吃光 —— 每個 IPv4、每個 IPv6 /48 每天各 20 單,大約 25 個 IPv4 或 25 個 /48,
    加上一批假 Email 和電話(每個每天 10 單)就夠;吃光之後當天真的消費者全部下不了單。考慮加 Cloudflare Turnstile。
 5. **待接單沒有逾時自動取消**:假的貨到付款單會一直佔著庫存,直到店家拒單。
+   **已處理**(加固 20261012100000):待接單、或轉帳單待匯款超過 72 小時,pg_cron 每 10 分鐘自動取消、補庫存、通知消費者與店家(見「第 3 階段」)。
 6. **IP 標頭檢查**:限流靠的 IP 必須是偽造不了的那一個,偽造得了的話 IP 那幾條額度形同虛設(Email、電話、全站上限仍然有效)。
    IPv4 已在 2026-10-11 部署時用探測函式驗過、通過(見「部署」第 9-5 步);**還缺 IPv6**:找一個有 IPv6 的網路,照第 9-5 步用 `curl -6` 再做一次,
    確認 `used` 是 /64 的網段位址(若 Cloudflare 對這個網域開了 Pseudo IPv4,/64、/48 規則會失效)。
-   另外,`market_client_ip()` 的最後退路是 `x-forwarded-for` **第一段**,用戶端偽造得了;正常請求都經過 Cloudflare、用不到它,
-   但開放前建議另開 migration 把退路改成 XFF 最後一段或直接算進 `noip`(獨立驗收 2026-10-11 的建議)。開關打開之後**馬上**再用真的下單 RPC 做一次確認 ——
-   用「部署」第 9-2 步的 `$API`、`$PK` 送一個**空購物車**的請求(帶 token 與三個偽造的 IP 標頭;送請求和查自己的 IP 都用 IPv4,`-4`),
+   另外,`market_client_ip()` 的最後退路原本是 `x-forwarded-for` **第一段**,用戶端偽造得了(獨立驗收 2026-10-11 的建議)——
+   **已處理**(加固 20261012100000):順序改成 `cf-connecting-ip` → `x-real-ip` → NULL,不再信 XFF,NULL 算進 `noip`。**IPv6 /64 的實測仍是待辦。**
+   開關打開之後**馬上**再用真的下單 RPC 做一次確認(「開放當天的順序」第 7 步)——
+   用「部署」第 9-2 步的 `$API`、`$PK` 送一個**空購物車**的請求(帶 token 與偽造的 `X-Forwarded-For`、`X-Real-IP`;送請求和查自己的 IP 都用 IPv4,`-4`)。
+   🔴 **不要帶 `CF-Connecting-IP`**:用戶端自己帶它,Cloudflare 會整個請求回 403 `error code: 1000`(「部署」第 9-5 步實測),看不到結果。
    空購物車在 A 段之後才擋,只會寫 A 段的 `ip` 計數、不建單、不吃 B 段:
    ```bash
    MYIP=$(curl -s -4 https://api.ipify.org)
    TOKEN=$(node -e 'process.stdout.write(require("crypto").randomBytes(32).toString("base64url"))')
    curl -s -4 -X POST "$API/rpc/market_place_order" -H "apikey: $PK" -H "Content-Type: application/json" \
-     -H "X-Forwarded-For: 203.0.113.9" -H "X-Real-IP: 203.0.113.10" -H "CF-Connecting-IP: 203.0.113.11" \
+     -H "X-Forwarded-For: 203.0.113.9" -H "X-Real-IP: 203.0.113.10" \
      -d "{\"p_checkout\":{\"token\":\"$TOKEN\",\"buyer\":{\"name\":\"IP 檢查\",\"phone\":\"0900000000\",\"email\":\"ip-check@example.com\",\"city\":\"臺北市\",\"address\":\"只是檢查不會建單\"},\"items\":[],\"terms_version\":\"ip-check\"}}"; echo
    cd /Users/aimand/.gemini/File/ifoodmap && export SUPABASE_ACCESS_TOKEN="$(cat <token 檔>)" && Q=$(mktemp) && printf '%s\n' "
    WITH s AS (SELECT c.value AS salt FROM public.app_config c WHERE c.key = 'market_rate_salt'),
-        cand(source, ip) AS (VALUES ('real', '$MYIP'), ('x-forwarded-for', '203.0.113.9'), ('x-real-ip', '203.0.113.10'), ('cf-connecting-ip', '203.0.113.11'))
+        cand(source, ip) AS (VALUES ('real', '$MYIP'), ('x-forwarded-for', '203.0.113.9'), ('x-real-ip', '203.0.113.10'))
    SELECT json_agg(json_build_object('source', cand.source, 'counted', EXISTS (
             SELECT 1 FROM public.market_rate_counters r
              WHERE r.bucket = 'ip:' || left(encode(sha256(convert_to(cand.ip || '|' || s.salt, 'UTF8')), 'hex'), 16) || '|1h'
@@ -1538,7 +1562,7 @@ from net._http_response order by id desc limit 10;
    node scripts/supabase-sql.mjs ro "$Q"
    ```
    Expected:第一個請求回 `{"ok": false, "code": "EMPTY_CART"}`;查詢只有 `"source": "real"` 是 `"counted": true`、`noip_counted` 是 `false`。
-   偽造的有一個是 `true`(那個標頭偽造得了),或四個都是 `false`、`noip_counted` 是 `true`(PostgREST 拿不到 IP)→ 立刻把開關改回 `'false'`,
+   偽造的有一個是 `true`(那個標頭偽造得了),或三個都是 `false`、`noip_counted` 是 `true`(PostgREST 拿不到 IP)→ 立刻把開關改回 `'false'`(「緊急關閉」第 1 步),
    另開 migration 讓 `market_client_ip()` 只認 Supabase 實際使用、偽造不了的那個標頭。(這個請求與查詢 2026-10-11 在本機一次性的 Postgres 實測過:
    開關關著回 `MARKET_CLOSED`、打開後回 `EMPTY_CART`,計數只記在被採用的那個 IP;正式環境只能在開放時驗。)
 7. **量變大時看 `market_rate_blocks_daily`**(查詢見「怎麼查(第 2 階段)」):`ipo`、`ip48o` 每天 20 單最先會擋到真人(公司、學校、同一個手機業者的出口);
@@ -1550,3 +1574,314 @@ from net._http_response order by id desc limit 10;
 11. **被大量灌請求時,擋下紀錄會排隊**:每個被擋的請求都要更新 `market_rate_blocks_daily` 的同一列(今天、同一種規則),要等前一個交易 commit 才寫得進去,
     灌爆時被擋的請求會互相排隊。打開下單前,可以在被擋的那條路上加 `set_config('synchronous_commit', 'off', true)`(被擋的交易不建單,當機時少記幾筆無妨),
     等待時間會大幅縮短。目前下單開關是關的,沒有這個風險。
+    **已處理**(加固 20261012100000):被擋的請求改用非同步 commit(`synchronous_commit` off,只影響被擋、不建單的交易)。
+
+### 第 3 階段:對外開放(形象站入口;2026-10-12 業主核准)
+
+第 2 階段 2026-10-11 上線(origin/main fast-forward 到 `79a13aa`,之後只有文件,到 `df4fc84`),獨立驗收通過。
+
+🔴 **2026-10-12 業主核准對外開放**:第 3 階段的部署做完,就照下面「開放當天的順序」打開寄信閘門與下單、合併形象站入口;服務條款與隱私權政策用查證後的版本直接定稿。
+業主同時**接受三項風險**:
+
+1. 條款沒有經過律師審閱。
+2. 業主還沒完整實測過(下面「業主實測」仍建議在打開之前做一輪)。
+3. Supabase 仍是免費方案:閒置會暫停,暫停期間市集打不開、下單失敗(= 關店)。**升級 Pro 是業主要盡快自己處理的事**(Supabase Dashboard → 這個專案的 Organization → Billing)。
+
+開放的操作由派工者另外指定的人照「開放當天的順序」執行;這份文件寫了指令,不代表其他任務可以執行。
+
+- **形象站入口**:首頁「食材分類」標題旁的「個人也能買：逛食材市集 →」(英文「Buying for home? Visit the Food Market →」),網址 `marketUrl` = 產品站 `/market`
+  (跟其他產品站網址一樣從 `IFM_PRODUCT_BASE_URL` 推出來;`landing/index.html`、`landing/i18n.js`)。程式在分支 `market-launch`(另一位實作者正在做),
+  **開放當天第 6 步才合併到 main**(push main 會自動部署形象站)。
+- **加固 migration `20261012100000_market_hardening`**(第 3 階段唯一的資料庫變更;130000 / 130200 不改原檔,用 `CREATE OR REPLACE` 換掉三支函式、新增一支):
+  - **72 小時自動取消**(`market_expire_orders()`,pg_cron `ifoodmap-market-expire-orders` 每 10 分鐘 `*/10 * * * *`):待接單從下單時間起、轉帳單從進入待匯款
+    (最後一筆「待匯款」紀錄)起,超過 72 小時由系統寫一筆取消紀錄 —— 身分 system、payload `{"auto_expire": "pending" | "awaiting_payment"}`(取消前的狀態),
+    原因「店家超過 72 小時沒有接單,系統自動取消」/「超過 72 小時沒有完成匯款,系統自動取消」。補庫存(只補 `stock_deducted`)與通知走既有的 trigger:
+    消費者收到「訂單已自動取消(…)」、店家收到「零售訂單 #… 已逾時自動取消 — 請不要出貨」。每輪最多 200 張;有人正在操作的單(`FOR UPDATE SKIP LOCKED`)跳過,
+    下一輪再來;已接單(貨到付款)、已收款、已出貨都不動。`auto_expire` 只有系統的取消能帶,供應商、管理員帶了會被 guard 擋(22023 `auto_expire_invalid`)。
+    時數 72 只定義在 `market_expire_orders` 的常數,旁邊的 `-- @market-auto-cancel-hours 72` 由前端 `src/lib/market/autoCancel.ts` 與 `market-notify` 的測試對照。
+    對應第 2 階段待辦第 5 條。
+  - **`market_client_ip()` 不再信 `x-forwarded-for`**:順序 `cf-connecting-ip` → `x-real-ip` → NULL(NULL 算進 `noip`)。對應待辦第 6 條的 XFF 退路;IPv6 /64 實測仍是待辦。
+  - **被擋的請求用非同步 commit**:`market_rate_take` 擋下時先 `set_config('synchronous_commit', 'off', true)` 再寫擋下紀錄;建單的路不動。對應待辦第 11 條。
+- **跟 migration 一起上線的前端與通知信**:查單頁、供應商零售訂單頁、結帳頁寫出 72 小時的期限;`market-notify` 的新訂單、下單確認、待匯款信寫明期限,
+  自動取消信分得出是逾時取消。`market-notify` 改了,這次要重新部署(「部署(第 3 階段)」第 3 步)。
+
+**第 2 階段「對外開放前待辦」11 條的現況**(內容見那一節,這裡只寫狀態):
+
+| 條 | 2026-10-12 的狀態 |
+|---|---|
+| 1 | 業主接受用免費方案開放的風險;升級 Pro 由業主盡快自己處理 |
+| 2 | 業主核准用查證後的版本直接定稿(沒有律師審閱,業主接受);「開放當天的順序」第 2 步 |
+| 3 | 業主核准;「開放當天的順序」第 4、5 步一起打開 |
+| 4 | 沒做,仍是風險 |
+| 5 | 已處理(20261012100000 的 72 小時自動取消) |
+| 6 | XFF 退路已處理(20261012100000);IPv6 /64 實測仍待辦;「開放當天的順序」第 7 步用空購物車再驗一次 |
+| 7 | 營運時看(「開放前檢查」的 `rate_blocks_7_days`) |
+| 8 | 沒做,放量後改伺服器分頁 |
+| 9 | 刻意保留 |
+| 10 | 沒做(極少數) |
+| 11 | 已處理(20261012100000 被擋的請求非同步 commit) |
+
+### 部署(第 3 階段)
+
+🔴 會改正式庫、重新部署 `market-notify`、部署兩個網站。照順序做,任何一步的 Expected 對不上就停下來回報。**這一節不打開任何開關**:
+`market_checkout_open` 維持 `'false'`、不設 `MARKET_NOTIFY_LIVE`(那是「開放當天的順序」)。順序 **`market-notify` → migration → 前端**:
+新的 `market-notify` 沒看到 `auto_expire` 時照一般文案,可以先上;migration 先套的話,函式重新部署之前的自動取消會寄成一般的「平台已取消」信
+(計畫勘誤「market-notify 的 72 小時自動取消文案」);新前端會寫「72 小時沒接單會自動取消」,資料庫要先真的會取消。
+在 repo 根目錄跑、各自 export token、查詢寫檔的方式,都跟第 1 階段一樣。
+
+1. **確認本機乾淨、跟 origin 同步**:同第 1 階段第 1 步。
+2. **上線前最後一次乾跑**(🔴 已上線的 120000–130200 都不帶;依序跑、不要並行;每支之後都跑殘留檢查):
+   ```bash
+   cd /Users/aimand/.gemini/File/ifoodmap && export SUPABASE_ACCESS_TOKEN="$(cat <token 檔>)"
+   H=supabase/migrations/20261012100000_market_hardening.sql
+   RH=supabase/rollbacks/20261012100000_market_hardening.down.sql
+   node scripts/supabase-sql.mjs dry supabase/tests/database/market_hardening.test.sql --with-migration $H
+   node scripts/supabase-sql.mjs ro supabase/tests/database/market_residue.sql
+   node scripts/supabase-sql.mjs dry supabase/tests/database/market_orders.test.sql --with-migration $H
+   node scripts/supabase-sql.mjs ro supabase/tests/database/market_residue.sql
+   node scripts/supabase-sql.mjs dry supabase/tests/database/market_notify.test.sql --with-migration $H
+   node scripts/supabase-sql.mjs ro supabase/tests/database/market_residue.sql
+   node scripts/supabase-sql.mjs dry supabase/tests/database/market_checkout.test.sql --with-migration $H
+   node scripts/supabase-sql.mjs ro supabase/tests/database/market_residue.sql
+   node scripts/supabase-sql.mjs dry supabase/tests/database/market_hardening_rollback.test.sql --with-migration $H --with-rollback $RH
+   node scripts/supabase-sql.mjs ro supabase/tests/database/market_residue.sql
+   ```
+   Expected:全部 `失敗 0 項`、每次殘留五個 `0`;項數以計畫檔尾勘誤「20261012100000」那一節為準。
+   🔴 2026-10-12 寫這一步時,`market_hardening.test.sql`、`market_hardening_rollback.test.sql` 與還原檔還在寫、沒有 commit(檔名照 migration 檔頭);
+   `market_checkout.test.sql` 第 86–87 行的「再沒有才用 x-forwarded-for 第一段」也正在改成「只有 XFF 回 NULL」—— 改好之後這支要帶加固跑(不帶的話那一項會紅,屬預期),
+   沒改到的話帶加固跑那一項會紅,不能跳過。
+3. **重新部署 `market-notify`**(先於 migration,理由見本節開頭):同第 2 階段「部署」第 6 步的兩段指令
+   (🔴 一定要 `--no-verify-jwt --use-api`;部署後 `verify_jwt=false`、沒帶密鑰的 POST 回 `401`)。不用設定任何 secret,🔴 不要設 `MARKET_NOTIFY_LIVE`。
+4. **套 migration**:
+   ```bash
+   cd /Users/aimand/.gemini/File/ifoodmap && export SUPABASE_ACCESS_TOKEN="$(cat <token 檔>)"
+   node scripts/supabase-sql.mjs apply supabase/migrations/20261012100000_market_hardening.sql
+   ```
+   Expected:`已套用 20261012100000_market_hardening.sql;ledger:[{"version":"20261012100000","name":"market_hardening"}]`。出錯時的判斷同第 1 階段第 3 步。
+5. **確認線上**:跑「開放前檢查(第 3 階段)」那一節的指令,固定值要是表裡「加固之後」那一欄 —— `migrations` 六個版本、`expire_orders_cron` = `"*/10 * * * *"`、
+   `client_ip_ignores_xff`、`blocked_async_commit` = `true`,其餘固定值不變、`checkout_open` 還是 `false`;另跑
+   `SUPABASE_PROJECT_REF=cwvpehqcvbfuynabpqop node scripts/check-migrations.mjs`(✅,repo 47 個、線上 47 個)。
+   (這幾個「加固之後」的值,2026-10-12 在本機一次性的 Postgres 載入 120000–130200 與 20261012100000 草稿實測過;同時實測了兩張逾時的單被取消、
+   原因與 `auto_expire` 照上面寫的、庫存補回、通知排進 pg_net、再跑一次取消 0 張、供應商冒充 `auto_expire` 被擋。)
+6. **用線上 schema 再跑一次測試**(不帶 `--with-migration`)與還原檔的乾跑:
+   ```bash
+   cd /Users/aimand/.gemini/File/ifoodmap && export SUPABASE_ACCESS_TOKEN="$(cat <token 檔>)"
+   RH=supabase/rollbacks/20261012100000_market_hardening.down.sql
+   node scripts/supabase-sql.mjs dry supabase/tests/database/market_hardening.test.sql
+   node scripts/supabase-sql.mjs ro supabase/tests/database/market_residue.sql
+   node scripts/supabase-sql.mjs dry supabase/tests/database/market_orders.test.sql
+   node scripts/supabase-sql.mjs ro supabase/tests/database/market_residue.sql
+   node scripts/supabase-sql.mjs dry supabase/tests/database/market_notify.test.sql
+   node scripts/supabase-sql.mjs ro supabase/tests/database/market_residue.sql
+   node scripts/supabase-sql.mjs dry supabase/tests/database/market_checkout.test.sql
+   node scripts/supabase-sql.mjs ro supabase/tests/database/market_residue.sql
+   node scripts/supabase-sql.mjs dry supabase/tests/database/market_hardening_rollback.test.sql --with-rollback $RH
+   node scripts/supabase-sql.mjs ro supabase/tests/database/market_residue.sql
+   ```
+   Expected:同第 2 步。
+7. **push 前端**(2026-10-11 第 2 階段也是 fast-forward,沒有合併 commit):
+   ```bash
+   git -C /Users/aimand/.gemini/File/ifoodmap switch market
+   git -C /Users/aimand/.gemini/File/ifoodmap status --short                           # 沒有輸出才繼續
+   git -C /Users/aimand/.gemini/File/ifoodmap fetch origin
+   git -C /Users/aimand/.gemini/File/ifoodmap rev-list --count market..origin/main     # 0 才繼續
+   git -C /Users/aimand/.gemini/File/ifoodmap rev-parse origin/main                    # 記下推之前的版本(還原要用)
+   git -C /Users/aimand/.gemini/File/ifoodmap push origin market:main                  # 被拒就停,不要 --force、不要 rebase
+   git -C /Users/aimand/.gemini/File/ifoodmap rev-parse market                         # 記下這次上線的版本
+   ```
+   push 被 403 擋:同第 1 階段第 6 步的 `gh auth switch` 做法。
+8. **等 CI**:同第 1 階段第 7 步。
+9. **線上驗證**:
+   1. 新版真的上線了(只有新版的 bundle 才有這句;2026-10-12 部署前實測是舊版):
+      ```bash
+      js=$(curl -s https://app.ifoodmap.ai/market/cart | grep -o '/assets/index-[^"]*\.js' | head -1)
+      curl -s "https://app.ifoodmap.ai$js" | grep -c "小時內沒有接單,訂單會自動取消"
+      ```
+      Expected:`1`(舊版是 `0`)。
+   2. 再跑一次「開放前檢查」:固定值同第 5 步;套用超過 10 分鐘之後,`expire_orders_last_run_ok` = `true`。
+   3. 開關還是關的:同第 2 階段「部署」第 9-2 步的第一行,`market_checkout_status` = `{"open": false, "can_order": false}`。
+   4. 派一個沒參與實作的 agent 獨立驗收(只准讀、乾跑、唯讀查詢):上面每一步的 Expected、`MARKET_NOTIFY_LIVE` 不在 `supabase secrets list` 的名稱裡。
+
+### 還原(第 3 階段)
+
+只有前端有問題就只做第 1 步;加固本身出問題才往下做。順序 **前端 → `market-notify` → 資料庫 → repo**。
+
+1. **前端**:Vercel → `dish-to-supply`、`ifoodmap-admin` → Instant Rollback 到「部署」第 7 步記下的「推之前的版本」(新前端寫了 72 小時的期限)。
+2. **`market-notify`**:新版的新訂單、下單確認、待匯款信寫了「72 小時沒接單 / 沒匯款會自動取消」,資料庫退了就不成立,要一起退 ——
+   從「推之前的版本」的 checkout(例如 `git -C /Users/aimand/.gemini/File/ifoodmap worktree add <暫存資料夾> <推之前的版本>`)用第 2 階段「部署」第 6 步同一行指令部署
+   (`--no-verify-jwt --use-api`),確認 `verify_jwt=false` 後 `git worktree remove` 那個資料夾。
+3. **資料庫**:用第 2 階段還原第 2-3 步的 `send_sql` 送 `supabase/rollbacks/20261012100000_market_hardening.down.sql`,回 `[]` 才算成功。
+   還原之後 `market_client_ip()`、`market_rate_take`、`market_guard_event` 回到 130000 / 130200 的樣子,自動取消的函式與排程拆掉
+   (開放前檢查的 `expire_orders_cron` 變回 `null`、`client_ip_ignores_xff` 與 `blocked_async_commit` 變回 `false`)。
+   已經被自動取消的單照樣是已取消(紀錄只能新增)。🔴 還原檔進 repo 之後先讀它的檔頭,以檔頭寫的為準。
+4. **repo**:`git revert --no-commit <推之前的版本>..<這次上線的版本> && git commit -m "revert: 消費者食材市集第 3 階段"` 再 push
+   (同第 2 階段還原第 3 步的寫法;migration 跟前端一起退,`check-migrations` 才不會一直紅)。
+
+### 開放前檢查(第 3 階段)
+
+唯讀查詢 `supabase/tests/database/market_launch_readiness.sql`:只回數字、true / false 與不涉密的設定(版本、排程、bucket),不印任何密鑰、鹽、個資。
+開放前、開放當天、之後營運時(建議每天)都可以跑:
+
+```bash
+cd /Users/aimand/.gemini/File/ifoodmap && SUPABASE_ACCESS_TOKEN="$(cat <token 檔>)" node scripts/supabase-sql.mjs ro supabase/tests/database/market_launch_readiness.sql
+```
+
+**固定值**(每次都應該一樣;「現在」是 2026-10-12 00:26 在正式庫實測,當時加固還沒套用):
+
+| 項目 | 意義 | 現在 | 加固之後 / 開放時 | 不對時怎麼辦 |
+|---|---|---|---|---|
+| `migrations` | 市集的 migration 有哪些已經套用 | 120000、120100、130000、130100、130200 | 再多 `20261012100000` | 少了 = 那一階段的部署沒做完,停下來查 |
+| `checkout_open` | 下單開關 | `false` | 開放當天第 5 步之後 `true` | 還沒到第 5 步就是 `true` = 有人提早打開:照「緊急關閉」第 1 步關回去並回報 |
+| `notify_url_ok`、`notify_key_set` | 資料庫叫得到 `market-notify`(密鑰只檢查有沒有,不印值) | `true`、`true` | 同 | `false` = 一封信都不會寄,先查 `app_config` 的設定 |
+| `rate_salt_set` | 限流雜湊用的鹽 | `true` | 同 | `false` = 停下來回報 |
+| `rate_cleanup_cron`、`cron_cleans_blocks` | 限流計數與擋下紀錄的清理排程 | `"50 19 * * *"`、`true` | 同 | 不對 = 計數表會一直長大 |
+| `rate_cleanup_last_run_ok` | 清理排程最近一次成功 | `null`(還沒跑過) | `true` | `false` = 看 `cron.job_run_details` 的 `return_message` |
+| `image_bucket`、`image_bucket_versioning`、`image_policies` | 商品照片的 bucket:公開、2 MB、jpeg / png / webp、不開版本、2 條 policy(select、insert) | `{"public": true, "file_size_limit": 2097152, …}`、`"DISABLED"`、`2` | 同 | 不對 = 照片可能被覆寫或傳不上去,回報 |
+| `anon_can_read_orders`、`anon_can_read_transfer` | 未登入讀不到訂單、轉帳資訊 | `false`、`false` | 同 | `true` = 個資外洩:立刻「緊急關閉」並回報 |
+| `anon_can_place_order` | 未登入叫得到下單 RPC | `true` | 同 | `false` = 消費者下不了單 |
+| `api_can_touch_rate_tables` | 未登入 / 登入者碰得到限流的兩張表 | `false` | 同 | `true` = 可以把限流歸零,回報 |
+| `tmp_ip_probe_absent` | 第 2 階段部署時暫時建的 IP 探測函式已刪掉 | `true` | 同 | `false` = 回報派工者刪掉它(`DROP FUNCTION public.market_tmp_ip_probe();`,要寫入權限) |
+| `expire_orders_cron` | 72 小時自動取消的排程 | `null` | `"*/10 * * * *"` | 加固之後還是 `null` = 自動取消沒在跑 |
+| `expire_orders_last_run_ok` | 自動取消排程最近一次成功 | `null` | 套用 10 分鐘後 `true` | `false` = 看「怎麼查(第 2 階段)」的排程執行紀錄 |
+| `client_ip_ignores_xff` | `market_client_ip()` 已不讀 `x-forwarded-for` | `false` | `true` | 加固之後還是 `false` = 加固沒套到 |
+| `blocked_async_commit` | 被擋的請求非同步 commit | `false` | `true` | 同上 |
+
+**營運數字**(照實記;2026-10-12 00:26 全部是 0 / 空的:還沒有任何店家、商品、訂單):
+
+| 項目 | 意義 | 開放時 | 遇到時怎麼辦 |
+|---|---|---|---|
+| `stores_open` | 營業中的店家(零售啟用 + 供應商帳號啟用) | 至少 1 家 | 0 = 開了也沒東西賣,先請供應商開店 |
+| `stores_open_bad_contact_email` | 營業中、但聯絡信箱是空的或格式不對(跟 `market-notify` 寄信前的檢查同一條規則) | 0 | > 0 = 這幾家收不到新訂單信:請店家在供應商資料補正 Email |
+| `stores_transfer_without_info` | 收轉帳、轉帳資訊卻被店家刪掉 | 0 | > 0 = 那幾家的轉帳結帳會失敗(`PAYMENT_NOT_ACCEPTED`):請店家補轉帳資訊,或取消勾轉帳 |
+| `products_listed` | 消費者看得到的商品 | 至少 1 個 | 0 = 先審核、上架 |
+| `products_pending_review`、`products_pending_over_2_days` | 待審的商品、等超過 2 天的 | 照實 | 超過 2 天的 > 0 = 提醒管理員到「零售市集 › 商品審核」 |
+| `orders_total`、`orders_by_status` | 訂單總數、各狀態幾張 | 照實 | — |
+| `orders_pending_over_1_day` | 超過 1 天還沒接單 | 0 為佳 | > 0 = 提醒店家接單(滿 72 小時會被自動取消) |
+| `orders_pending_over_72h`、`orders_awaiting_payment_over_72h` | 該被自動取消、還沒取消的單 | 0(排程每 10 分鐘,最多晚 10 分鐘) | 持續 > 0 = 自動取消沒在跑:看排程執行紀錄(「怎麼查(第 2 階段)」) |
+| `orders_paid_unshipped_over_3_days` | 已收款超過 3 天還沒出貨 | 0 | > 0 = 收了錢沒出貨,客訴風險最高:聯絡店家 |
+| `notify_failed_7_days` | 7 天內零售通知寄失敗(含 Email 格式不對沒寄的) | 0 | > 0 = 管理後台「通知紀錄」或「怎麼查(第 2 階段)」看原因 |
+| `rate_blocks_7_days` | 今天與前 6 天,依規則加總的擋下次數 | `{}` 為佳 | `ipo` / `ip48o` 多 = 共用網路擋到真人,考慮調高(待辦第 7 條);`global` 有 = 那天 500 單滿了;`noip` 有 = 見下一列 |
+| `noip_blocked_24h`、`noip_attempts_24h` | 拿不到 IP 的請求:24 小時內被擋過、沒被擋的嘗試次數 | `false`、`0` | `true` / > 0 = IP 取得壞了(正式請求都該帶 `cf-connecting-ip`):查 Cloudflare / Supabase 的標頭,必要時「緊急關閉」 |
+
+- 欄位與函式都對照過 migration 120000 / 120100 / 130000 / 130100 / 130200 與 20261012100000(草稿)。店家「營業中」的條件直接寫(零售啟用 + 供應商帳號啟用),
+  沒有呼叫 `market_store_is_open()`:那支只開給 anon / authenticated / service_role,唯讀端點的角色叫它會 42501(2026-10-12 實測)。
+
+### 業主實測(第 3 階段)
+
+建議在「開放當天的順序」第 4 步之前做完:那時寄信閘門還關著(所有信只寄 `ifoodmaptw@gmail.com`、主旨開頭「[測試轉寄]」),
+下單開關也關著(只有平台管理員能下單)。業主自己在瀏覽器操作,每一步打勾,有問題就截圖。🔴 代理人不准替業主輸入任何密碼。
+
+1. **測試供應商開店、上架**(用測試用的供應商帳號登入 https://app.ifoodmap.ai,不要用真實店家)
+   - [ ] 「零售市集 › 店家設定」:勾配送縣市(例如臺北市)、填運費與免運門檻、勾「貨到付款」和「銀行轉帳」並填轉帳資訊、上傳 logo → 儲存。
+   - [ ] 「商品與價格 › 商品目錄」→「零售商品(給消費者)」分頁 →「新增零售商品」:填品名、規格、價格、各傳 1–2 張照片 →「送出審核」。新增 2 個,其中一個庫存填 3。
+2. **管理員核准**(平台管理員帳號登入管理員站 https://ifoodmap-admin.vercel.app)
+   - [ ] 「零售市集 › 商品審核」:每個商品按「查看」,等每張照片的主圖和縮圖都出現後按「核准上架」。
+3. **管理員在 /market 下單**
+   - [ ] 用無痕視窗開 https://app.ifoodmap.ai/market:看得到店家與兩個商品;加入購物車後,購物車寫「線上訂購還沒對外開放…」(開關關著,這是對的)。
+   - [ ] 用平台管理員帳號登入 https://app.ifoodmap.ai,再到 https://app.ifoodmap.ai/market/cart:寫「市集還沒對外開放;你是平台管理員,可以下測試單。」
+         →「前往結帳」→ 收件 Email 填你自己的 → 這家店選「銀行轉帳」→ 送出 → 看到「訂單已送出…」與查詢網址,按「複製連結」存起來。
+   - [ ] 再下一張「貨到付款」的單(等一下用來測拒單)。
+4. **供應商接單、出貨**(測試供應商帳號,「零售市集 › 零售訂單」)
+   - [ ] 轉帳那張:「接單」→ 狀態變「待匯款」(打開剛才的查詢網址,看得到匯款資訊與匯款期限)→「確認已收款」→「出貨」(填物流、單號)→「標記完成」。
+   - [ ] 貨到付款那張:「拒單」(填原因)→ 查詢頁顯示原因;限量那個商品的庫存加回來。
+5. **到 ifoodmaptw@gmail.com 確認測試轉寄信**(主旨都是「[測試轉寄]」開頭、內文最上面寫原本的收件人)
+   - [ ] 「訂單已送出」兩封(各附查詢連結,點得開)、「新的零售訂單」兩封(寄給店家的)、「請匯款」、「已出貨」、「店家無法接單」各一封;
+         確認已收款、標記完成不寄信。
+6. **收尾**
+   - [ ] 管理員站「零售市集 › 零售訂單」看得到這兩張單與時間軸。
+   - [ ] 管理員站「零售市集 › 零售店家」把測試店家「停用零售」(原因寫「測試店家」),消費者就看不到它的商品。測試訂單刪不掉(紀錄只能新增),留著無妨。
+
+業主做完後,代理人用唯讀查詢佐證(只看各狀態的數量,不印個資):
+
+```bash
+cd /Users/aimand/.gemini/File/ifoodmap && export SUPABASE_ACCESS_TOKEN="$(cat <token 檔>)" && Q=$(mktemp) && printf '%s\n' "
+SELECT json_build_object(
+  'orders_by_status', (SELECT COALESCE(json_object_agg(s.status, s.n ORDER BY s.status), '{}'::json)
+                         FROM (SELECT status, count(*) AS n FROM public.market_orders GROUP BY status) s),
+  'market_mails_24h', (SELECT COALESCE(json_object_agg(m.status, m.n ORDER BY m.status), '{}'::json)
+                         FROM (SELECT status, count(*) AS n FROM public.notifications
+                                WHERE message LIKE '零售%' AND created_at > now() - interval '1 day' GROUP BY status) m),
+  'forwarded_only', (SELECT bool_and(recipient = 'ifoodmaptw@gmail.com') FROM public.notifications
+                      WHERE message LIKE '零售%' AND status = 'sent' AND created_at > now() - interval '1 day'),
+  'net_status_codes_24h', (SELECT COALESCE(json_object_agg(COALESCE(r.status_code::text, 'none'), r.n), '{}'::json)
+                             FROM (SELECT status_code, count(*) AS n FROM net._http_response
+                                    WHERE created > now() - interval '1 day' GROUP BY status_code) r)
+) AS owner_test;" > "$Q"
+node scripts/supabase-sql.mjs ro "$Q"
+```
+
+Expected:`orders_by_status` 有 `completed` 1、`rejected` 1;`market_mails_24h` 只有 `sent`(沒有 `failed`);`forwarded_only` = `true`(閘門還關著,全部轉寄內部信箱);
+`net_status_codes_24h` 以 `200` 為主(`net._http_response` 只留最近幾小時,查不到不算失敗)。(2026-10-12 00:2x 在正式庫唯讀跑過一次:四項都是空的。)
+
+### 開放當天的順序(第 3 階段)
+
+🔴 **業主 2026-10-12 已核准,由派工者指定的人照順序做**;前提是上面「部署(第 3 階段)」已經做完、獨立驗收通過。每一步的 Expected 對不上就停,
+需要退的話照「緊急關閉」。先開寄信(第 4 步)再開下單(第 5 步),第一張真的訂單的確認信才會寄到消費者本人;兩步之間只有平台管理員能下單,不要隔太久。
+
+1. **再跑一次開放前檢查**(「開放前檢查」那一節的指令):固定值全部是「加固之後」那一欄;`stores_open`、`products_listed` 至少 1(不然開了沒東西賣);
+   `stores_open_bad_contact_email`、`stores_transfer_without_info`、`notify_failed_7_days` 是 0。另外確認寄信閘門還沒設(只看名稱):
+   ```bash
+   cd /Users/aimand/.gemini/File/ifoodmap && SUPABASE_ACCESS_TOKEN="$(cat <token 檔>)" supabase secrets list --project-ref cwvpehqcvbfuynabpqop | grep -c MARKET_NOTIFY_LIVE
+   ```
+   Expected:`0`。
+2. **條款定稿**(在 `market` 分支):
+   - `src/lib/market/legal.ts`:兩份文件(`/market/terms`、`/market/privacy`)的文字換成查證後的版本、`updated` 改成定稿日;`LEGAL_DRAFT = false`(頁面上的「草稿」提示就不會出現);
+     `TERMS_VERSION` 換新版本(20 字以內,例如 `2026-10-12`;訂單會記下消費者同意的版本,舊的測試單照樣是 `2026-10-draft`)。
+   - 測試跟著改:`src/pages/market/MarketLegalPage.test.tsx` 現在斷言 `LEGAL_DRAFT` 是 `true`、頁面上有「草稿:本文件待業主與法律專業確認後定稿。」(第 21–22、41–48 行),
+     改成斷言沒有草稿提示;`src/lib/market/checkout.test.ts` 裡的 `"2026-10-draft"` 只是測試資料,不用改。
+   - vitest 全套、tsc、eslint、兩種 build 照實作計畫「執行前必讀」F 節的指令跑,都過了才 commit(只帶改到的檔)。
+3. **推前端**:同「部署(第 3 階段)」第 7–8 步(fast-forward push `market:main`、記下版本、等 CI)。確認新版上線:
+   ```bash
+   js=$(curl -s https://app.ifoodmap.ai/market/terms | grep -o '/assets/index-[^"]*\.js' | head -1)
+   curl -s "https://app.ifoodmap.ai$js" | grep -c "2026-10-draft"
+   ```
+   Expected:`0`(2026-10-12 部署前實測是 `1`)。再用瀏覽器開 https://app.ifoodmap.ai/market/terms 與 `/market/privacy`:最上面沒有「草稿」提示、內容是定稿版。
+4. **打開寄信閘門 `MARKET_NOTIFY_LIVE`**(值一定要剛好是小寫的 `true`,`gate.ts` 只認這個字串;改 secret 會讓專案所有 Edge Function 重新部署一次):
+   ```bash
+   cd /Users/aimand/.gemini/File/ifoodmap && export SUPABASE_ACCESS_TOKEN="$(cat <token 檔>)"
+   supabase secrets set MARKET_NOTIFY_LIVE=true --project-ref cwvpehqcvbfuynabpqop
+   supabase secrets list --project-ref cwvpehqcvbfuynabpqop | grep -c MARKET_NOTIFY_LIVE
+   ```
+   Expected:`1`(只看名稱,第二欄是值的雜湊、不是值)。接著照第 2 階段「部署」第 6 步的確認指令,確認 `market-notify` 還是 `ACTIVE verify_jwt=false`。
+5. **打開下單 `market_checkout_open`**(用第 2 階段還原第 2-3 步的 `send_sql`,同一個 shell 先貼那個函式):
+   ```bash
+   cd /Users/aimand/.gemini/File/ifoodmap && export SUPABASE_ACCESS_TOKEN="$(cat <token 檔>)"
+   Q=$(mktemp) && printf '%s\n' "update public.app_config set value = 'true', updated_at = now() where key = 'market_checkout_open';" > "$Q" && send_sql "$Q"
+   ```
+   Expected:`[]`。接著照第 2 階段「部署」第 9-2 步取得 `$API`、`$PK`,`market_checkout_status` 應該是 `{"open": true, "can_order": true}`。
+6. **合併 `market-launch`(形象站入口)**:
+   ```bash
+   git -C /Users/aimand/.gemini/File/ifoodmap status --short                                   # 沒有輸出才繼續
+   git -C /Users/aimand/.gemini/File/ifoodmap fetch origin
+   git -C /Users/aimand/.gemini/File/ifoodmap diff --stat origin/main...market-launch          # 只動 landing/
+   git -C /Users/aimand/.gemini/File/ifoodmap switch main
+   git -C /Users/aimand/.gemini/File/ifoodmap merge --ff-only origin/main
+   git -C /Users/aimand/.gemini/File/ifoodmap merge --no-ff market-launch -m "Merge branch 'market-launch':形象站食材市集入口"
+   cd /Users/aimand/.gemini/File/ifoodmap/landing && npm test                                 # 全部 pass、0 fail
+   git -C /Users/aimand/.gemini/File/ifoodmap push origin main
+   git -C /Users/aimand/.gemini/File/ifoodmap rev-parse HEAD                                   # 記下合併 commit(緊急關閉要用)
+   git -C /Users/aimand/.gemini/File/ifoodmap switch market
+   git -C /Users/aimand/.gemini/File/ifoodmap merge --ff-only main
+   ```
+   等 `Landing – Deploy to Vercel (Production)` 綠燈(`gh run list --repo ifoodmap-ai/ifoodmap-ai --commit <合併 commit>`),再用瀏覽器開 https://ifoodmap.ai/ 與
+   https://ifoodmap.ai/en:「食材分類」標題旁有入口,點下去是 https://app.ifoodmap.ai/market。
+7. **開放當下的 IP 驗證**:照第 2 階段「對外開放前待辦」第 6 條的空購物車做法(🔴 不帶 `CF-Connecting-IP`)。Expected:`EMPTY_CART`;只有 `real` 被計數、
+   `noip_counted` = `false`。不對就立刻做「緊急關閉」第 1 步,另開 migration 處理。
+8. **開放後一小時內**再跑一次「開放前檢查」:`notify_failed_7_days`、`noip_attempts_24h` 是 0。有真的訂單之後再跑一次「業主實測」的佐證查詢:
+   `market_mails_24h` 只有 `sent`,`forwarded_only` 變成 `false`(閘門已開,信寄給消費者與店家本人)。
+
+### 緊急關閉(第 3 階段)
+
+照順序做;做完回報派工者與業主。已成立的訂單照常由店家處理,72 小時自動取消也照常跑。
+
+1. **下單開關改回關**(馬上生效,之後只有平台管理員能下單):
+   ```bash
+   cd /Users/aimand/.gemini/File/ifoodmap && export SUPABASE_ACCESS_TOKEN="$(cat <token 檔>)"
+   Q=$(mktemp) && printf '%s\n' "update public.app_config set value = 'false', updated_at = now() where key = 'market_checkout_open';" > "$Q" && send_sql "$Q"
+   ```
+   (`send_sql` 是第 2 階段還原第 2-3 步那個函式,同一個 shell 先貼上。)Expected:`[]`;`market_checkout_status` 變回 `{"open": false, "can_order": false}`。
+2. **寄信改回只寄內部信箱**:`supabase secrets unset MARKET_NOTIFY_LIVE --project-ref cwvpehqcvbfuynabpqop`(會讓所有 function 重新部署一次;
+   之後 `supabase secrets list` 的名稱裡沒有它)。🔴 unset 之後,已成立訂單的後續通知(接單、出貨、取消、自動取消)也改寄內部信箱,真的消費者收不到 ——
+   只是要停止接單的話做第 1 步就好,信件本身出問題才做這一步。
+3. (需要時)**形象站入口退掉**:`git -C /Users/aimand/.gemini/File/ifoodmap revert -m 1 --no-edit <開放當天第 6 步記下的合併 commit>` 再 push main
+   (會觸發形象站部署);或 Vercel → `ifoodmap-landing` 專案 → Instant Rollback 到合併之前那一版。
