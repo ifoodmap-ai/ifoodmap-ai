@@ -356,6 +356,25 @@ describe("market-notify:狀態紀錄", () => {
     expect(s3.send.mock.calls[0][0].text).toContain("如果已經匯款,請直接聯絡店家退款。");
   });
 
+  // 審查追加:notifications 寫入失敗要記 log(經過遮 token 的 log),但不影響寄信結果
+  it("notifications 寫入失敗:照樣算寄出,記一筆 log;下單確認那條 log 也會遮 token", async () => {
+    const failWith = (message: string): FakeDbOptions["fail"] => (table, op) => (table === "notifications" && op === "insert" ? { message } : undefined);
+    const s1 = setup({ fail: failWith("insert denied") });
+    const r1 = await s1.call({ kind: "event", event_id: EV(2) });
+    expect(r1.status).toBe(200);
+    expect(r1.body.data).toMatchObject({ sent: 1, total: 1 });
+    expect(s1.log).toHaveBeenCalledWith("error", expect.objectContaining({ step: "notifications", audience: "consumer", error: "insert denied" }));
+    // 下單確認:就算錯誤訊息夾帶了連結,log 也看不到 token(這條 log 走 redactLog)
+    const s2 = setup({ fail: failWith(`insert denied near https://app.ifoodmap.ai/market/orders/${TOKEN}`) });
+    const r2 = await s2.call({ kind: "placed", checkout_id: CHECKOUT, token: TOKEN });
+    expect(r2.body.data).toMatchObject({ sent: 1, total: 1 });
+    expect(s2.send).toHaveBeenCalledTimes(1);
+    const logged = JSON.stringify(s2.log.mock.calls);
+    expect(logged).toContain('"step":"notifications"');
+    expect(logged).toContain("/market/orders/***");
+    expect(logged).not.toContain(TOKEN.slice(0, 8));
+  });
+
   it("讀資料庫失敗 500(不洩漏細節)", async () => {
     const s = setup({ fail: (table) => (table === "market_orders" ? { message: "boom" } : undefined) });
     const r = await s.call({ kind: "event", event_id: EV(1) });

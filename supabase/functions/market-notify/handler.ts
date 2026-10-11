@@ -152,7 +152,16 @@ interface DeliveryResult {
   ok: boolean;
 }
 
-/** 經過閘門寄出,每封都記一筆 notifications(後台 /admin/notifications 看得到;不含 token) */
+/**
+ * 記一筆 notifications(後台 /admin/notifications 看得到;不含 token)。寫入失敗只記 log —— deps.log 在 placed
+ * 是遮 token 的 redactLog —— 不影響寄信結果(信已經寄出,不能因為紀錄寫不進去就當成沒寄)。
+ */
+const recordNotification = async (deps: MarketNotifyDeps, audience: MarketAudience, row: Row): Promise<void> => {
+  const { error } = await deps.db.from("notifications").insert(row);
+  if (error) deps.log("error", { fn: "market-notify", step: "notifications", audience, error: error.message });
+};
+
+/** 經過閘門寄出,每封都記一筆 notifications */
 const deliver = async (
   deps: MarketNotifyDeps,
   live: boolean,
@@ -173,7 +182,7 @@ const deliver = async (
       // 回信一律到平台信箱:🔴 店家的 contact_email 是收新訂單通知的信箱,不給消費者(要聯絡店家看信裡的店家電話)
       replyTo: deps.config.replyTo,
     });
-    await deps.db.from("notifications").insert({
+    await recordNotification(deps, d.audience, {
       recipient: d.to,
       channel: "email",
       title: d.subject,
