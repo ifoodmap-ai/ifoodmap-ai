@@ -39,6 +39,8 @@ const order = (over: Row): Row => ({
   buyer_note: null,
   payment_method: "cod",
   lookup_token_hash: HASH,
+  // 跟正式庫一樣:沒收款的單 paid_at 是 null(不是沒有這個欄位)
+  paid_at: null,
   ...over,
 });
 
@@ -456,6 +458,47 @@ describe("market-notify:狀態紀錄", () => {
     s.db.tables.market_orders[1].lookup_token_hash = "0".repeat(64);
     expect((await s.call({ kind: "placed", checkout_id: CHECKOUT, token: TOKEN })).status).toBe(403);
     expect(s.send).not.toHaveBeenCalled();
+  });
+
+  // 第 3 輪審查:handler 層沒有跑過「轉帳單還沒付款就取消」,fixture 的訂單又沒有 paid_at 這個欄位(正式庫回來的是 null)
+  // —— 判斷改成 order.paid_at !== undefined 也全綠,上線後每張取消的單都會說「店家已確認收款」
+  it("退款句只在已收款:貨到付款取消、轉帳單在 pending / confirmed / awaiting_payment 取消都沒有;paid → cancelled 才有", async () => {
+    const REFUND = /已確認收款|退款由店家處理|不經手款項/;
+    const cancel = (id: string, orderId: string, from: string, actor: string) => ({
+      id,
+      order_id: orderId,
+      from_status: from,
+      to_status: "cancelled",
+      actor_role: actor,
+      note: "取消原因",
+      payload: {},
+    });
+    const s = setup({ live: true });
+    s.db.tables.market_order_events.push(
+      cancel(EV(21), ORDER_A, "pending", "supplier"), // 貨到付款、店家取消
+      cancel(EV(22), ORDER_A, "confirmed", "admin"), // 貨到付款、平台取消
+      cancel(EV(23), ORDER_B, "pending", "admin"), // 轉帳、還沒接單
+      cancel(EV(24), ORDER_B, "confirmed", "supplier"), // 轉帳、剛接單
+      cancel(EV(25), ORDER_B, "awaiting_payment", "system"), // 轉帳、等匯款
+    );
+    const consumerMail = async (id: string) => {
+      const before = s.send.mock.calls.length;
+      await s.call({ kind: "event", event_id: id });
+      const mine = s.send.mock.calls.slice(before).map((c) => c[0]).filter((m) => m.to[0] === "buyer@example.com");
+      expect(mine, id).toHaveLength(1);
+      return mine[0];
+    };
+    for (const id of [EV(21), EV(22), EV(23), EV(24), EV(25)]) {
+      const m = await consumerMail(id);
+      expect(`${m.html}\n${m.text}`, id).not.toMatch(REFUND);
+      expect(m.text, id).toContain("如果已經匯款,請直接聯絡店家退款。");
+    }
+    // paid → cancelled:套用狀態之後,訂單上有 paid_at
+    Object.assign(s.db.tables.market_orders.find((o) => o.id === ORDER_B)!, { paid_at: "2026-10-11T03:00:00Z" });
+    s.db.tables.market_order_events.push(cancel(EV(26), ORDER_B, "paid", "supplier"));
+    const paid = await consumerMail(EV(26));
+    expect(paid.text).toMatch(/已確認收款,退款由店家處理/);
+    expect(paid.html).toMatch(/iFoodmap 平台不經手款項/);
   });
 
   it("讀資料庫失敗 500(不洩漏細節)", async () => {
