@@ -127,7 +127,8 @@ export interface OrderActionInput {
 
 /**
  * 送出前的檢查(跟 guard 同一套);回傳錯誤訊息或 null。
- * 原因用 hasVisibleText:guard 用 market_visible 判斷有沒有填,只有全形空白、零寬字元也算沒填(跟第 1 階段的商品欄位同一組字元)。
+ * 原因、物流用 hasVisibleText:guard 用 market_visible 判斷有沒有填,只有全形空白、零寬字元也算沒填(跟第 1 階段的商品欄位同一組字元)。
+ * 單號選填:只有看不見的字元時 guard 當成沒填(不存),這裡也不擋。
  */
 export const validateOrderAction = (to: OrderStatus, input: OrderActionInput): string | null => {
   const meta = ORDER_ACTIONS[to];
@@ -136,7 +137,7 @@ export const validateOrderAction = (to: OrderStatus, input: OrderActionInput): s
   const tracking = (input.trackingNo ?? "").trim();
   if (meta?.needsReason && !hasVisibleText(reason)) return "請填寫原因(會告知消費者)";
   if (reason.length > LIMITS.orderNote) return `原因最多 ${LIMITS.orderNote} 字`;
-  if (meta?.needsCarrier && !carrier) return "請填寫物流(例如:黑貓宅急便、自行配送)";
+  if (meta?.needsCarrier && !hasVisibleText(carrier)) return "請填寫物流(例如:黑貓宅急便、自行配送)";
   if (carrier.length > LIMITS.carrier) return `物流最多 ${LIMITS.carrier} 字`;
   if (tracking.length > LIMITS.trackingNo) return `物流單號最多 ${LIMITS.trackingNo} 字`;
   return null;
