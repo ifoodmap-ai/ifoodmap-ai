@@ -122,8 +122,11 @@ export const checkoutErrorMessage = (
   switch (r.code) {
     case "MARKET_CLOSED":
       return "線上訂購還沒對外開放,購物車會幫你保留。";
-    case "RATE_LIMITED":
-      return `下單次數太頻繁,請 ${Math.max(1, Math.ceil((r.retry_after ?? 60) / 60))} 分鐘後再試。`;
+    case "RATE_LIMITED": {
+      // retry_after 是秒;每天的上限可能要等好幾個小時(「510 分鐘」不好懂),2 小時以上改用小時,一律無條件進位
+      const minutes = Math.max(1, Math.ceil((r.retry_after ?? 60) / 60));
+      return minutes >= 120 ? `下單次數太頻繁,請 ${Math.ceil(minutes / 60)} 小時後再試。` : `下單次數太頻繁,請 ${minutes} 分鐘後再試。`;
+    }
     case "DAILY_CAP":
       return "今天的訂單量已達上限,請明天再試。";
     case "INVALID_INPUT":

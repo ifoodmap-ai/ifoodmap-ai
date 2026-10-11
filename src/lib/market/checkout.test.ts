@@ -18,10 +18,12 @@ import {
   placeOrder,
   validateBuyer,
   type BuyerForm,
+  type PlaceOrderResult,
 } from "./checkout";
 import { BEEF, CABBAGE, SALMON, SUPPLIER_A, SUPPLIER_B } from "./testFixtures";
 
 const MIGRATION = readFileSync(resolve(__dirname, "../../../supabase/migrations/20261009130000_market_orders.sql"), "utf8");
+const CHECKOUT_MIGRATION = readFileSync(resolve(__dirname, "../../../supabase/migrations/20261009130200_market_checkout.sql"), "utf8");
 const sqlRegex = (marker: string) => {
   const m = MIGRATION.match(new RegExp(`p ~ '([^']+)'\\s+-- @market-${marker}-regex`));
   if (!m) throw new Error(`migration 少了 @market-${marker}-regex`);
@@ -138,5 +140,43 @@ describe("checkoutErrorMessage", () => {
     [{ ok: false as const, code: "SOMETHING_NEW" }, "下單失敗,請稍後再試。"],
   ])("%o", (r, msg) => {
     expect(checkoutErrorMessage(r, name)).toBe(msg);
+  });
+
+  it("等待時間:不滿 1 分鐘算 1 分鐘、無條件進位;2 小時以上改用小時(每天的上限要等到隔天)", () => {
+    const msg = (retry_after: number) => checkoutErrorMessage({ ok: false, code: "RATE_LIMITED", retry_after }, name);
+    expect(msg(59)).toBe("下單次數太頻繁,請 1 分鐘後再試。");
+    expect(msg(61)).toBe("下單次數太頻繁,請 2 分鐘後再試。");
+    expect(msg(7140)).toBe("下單次數太頻繁,請 119 分鐘後再試。");
+    expect(msg(7200)).toBe("下單次數太頻繁,請 2 小時後再試。");
+    expect(msg(30590)).toBe("下單次數太頻繁,請 9 小時後再試。");
+  });
+
+  it("其餘代碼各一句(店名照順序接起來)", () => {
+    const msg = (r: Extract<PlaceOrderResult, { ok: false }>) => checkoutErrorMessage(r, name);
+    expect(msg({ ok: false, code: "DAILY_CAP", retry_after: 3600 })).toBe("今天的訂單量已達上限,請明天再試。");
+    expect(msg({ ok: false, code: "EMPTY_CART" })).toBe("購物車是空的。");
+    expect(msg({ ok: false, code: "TOO_MANY_ITEMS" })).toBe("一次最多結帳 50 種商品。");
+    expect(msg({ ok: false, code: "TOO_MANY_STORES" })).toBe("一次最多結帳 10 家店,請分次結帳。");
+    expect(msg({ ok: false, code: "PRODUCT_UNAVAILABLE", products: [CABBAGE.id] })).toBe("有商品剛剛下架了,請回購物車移除後再結帳。");
+    expect(msg({ ok: false, code: "OUT_OF_STOCK", products: [{ product_id: SALMON.id, available: 1 }] })).toBe(
+      "有商品庫存不足,已更新成最新庫存,請調整數量後再送出。",
+    );
+    expect(msg({ ok: false, code: "PAYMENT_NOT_ACCEPTED", stores: [SUPPLIER_A, SUPPLIER_B] })).toBe("A 店、B 店 不接受你選的付款方式,請重新選擇。");
+    expect(msg({ ok: false, code: "INVALID_INPUT", field: "terms_version" })).toBe("有欄位格式不對,請檢查後再送出。");
+  });
+
+  it("下單 RPC 回的每一種代碼都有自己的一句話,不會掉到「下單失敗,請稍後再試。」", () => {
+    // migration 130200 從 market_rate_take(RATE_LIMITED / DAILY_CAP)到 market_place_order 結束;
+    // 後面的 market_get_orders(查單)另有 NOT_FOUND,由查單頁處理,不算在這裡
+    const start = CHECKOUT_MIGRATION.indexOf("FUNCTION public.market_rate_take(");
+    const end = CHECKOUT_MIGRATION.indexOf("FUNCTION public.market_checkout_status(");
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const codes = [...new Set([...CHECKOUT_MIGRATION.slice(start, end).matchAll(/'code', '([A-Z_]+)'/g)].map((m) => m[1]))];
+    expect(codes.length).toBeGreaterThanOrEqual(13);
+    const fallback = checkoutErrorMessage({ ok: false, code: "SOMETHING_NEW" }, name);
+    const messages = codes.map((code) => checkoutErrorMessage({ ok: false, code, stores: [SUPPLIER_A] }, name));
+    messages.forEach((m, i) => expect(m, codes[i]).not.toBe(fallback));
+    expect(new Set(messages).size).toBe(codes.length);
   });
 });
