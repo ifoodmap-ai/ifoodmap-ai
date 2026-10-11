@@ -11,7 +11,12 @@ import { useCart } from "@/lib/market/useCart";
 import { MARKET_FOCUS_RING, MARKET_PRIMARY_BUTTON } from "./MarketLayout";
 import QtyStepper from "./QtyStepper";
 
+/** 換商品就整個重來(數量、「已加入購物車」):路由的 :productId 換了時 React 會沿用同一個元件,狀態會留到下一個商品 */
 export default function AddToCart({ product }: { product: MarketProductRow }) {
+  return <AddToCartPanel key={product.id} product={product} />;
+}
+
+function AddToCartPanel({ product }: { product: MarketProductRow }) {
   const { lines, add } = useCart();
   const [qty, setQty] = useState(1);
   const [added, setAdded] = useState(false);

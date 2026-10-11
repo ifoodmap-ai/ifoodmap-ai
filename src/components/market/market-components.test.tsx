@@ -10,6 +10,7 @@ vi.mock("@/integrations/supabase/client", () => ({ supabase: {} }));
 import { BEEF, CABBAGE, STORE_A } from "@/lib/market/testFixtures";
 import { cartStore } from "@/lib/market/useCart";
 import { createMemoryStorage } from "@/test/memory-storage";
+import AddToCart from "./AddToCart";
 import CategoryChips from "./CategoryChips";
 import MarketImage from "./MarketImage";
 import MarketLayout, { useMarketTitle } from "./MarketLayout";
@@ -285,6 +286,52 @@ describe("QtyStepper", () => {
     fireEvent.click(screen.getByRole("button", { name: "增加一件" })); // fireEvent 不移動焦點
     expect(screen.getByTestId("qty")).toHaveTextContent(/^6$/);
     expect(input).toHaveValue(6);
+  });
+
+  it("打字之後數量被外面改掉(加入購物車後歸 1、別的分頁改了;框沒有失去焦點):框裡顯示新的數量", async () => {
+    const External = () => {
+      const [qty, setQty] = useState(1);
+      return (
+        <>
+          <QtyStepper value={qty} max={10} onChange={setQty} label="有機高麗菜 數量" />
+          <button type="button" onClick={() => setQty(1)}>
+            歸 1
+          </button>
+        </>
+      );
+    };
+    render(<External />);
+    const input = screen.getByRole("spinbutton", { name: "數量" });
+    await userEvent.clear(input);
+    await userEvent.type(input, "5");
+    fireEvent.click(screen.getByRole("button", { name: "歸 1" })); // 不移動焦點
+    expect(input).toHaveValue(1);
+  });
+});
+
+describe("AddToCart", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    cartStore.resetForTests();
+  });
+
+  it("同一個元件換成另一個商品時,不殘留上一個商品的「已加入購物車」", async () => {
+    vi.stubGlobal("localStorage", createMemoryStorage());
+    cartStore.resetForTests();
+    const { rerender } = render(
+      <MemoryRouter>
+        <AddToCart product={CABBAGE} />
+      </MemoryRouter>,
+    );
+    await userEvent.click(screen.getByRole("button", { name: "加入購物車" }));
+    expect(screen.getByText(/已加入購物車/)).toBeInTheDocument();
+    rerender(
+      <MemoryRouter>
+        <AddToCart product={BEEF} />
+      </MemoryRouter>,
+    );
+    expect(screen.getByRole("group", { name: "牛肉片 數量" })).toBeInTheDocument();
+    expect(screen.queryByText(/已加入購物車/)).toBeNull();
   });
 });
 

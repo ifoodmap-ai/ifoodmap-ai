@@ -1,5 +1,5 @@
 // /market/p/:productId:商品資訊、店家卡、照片切換;沒上架的顯示預覽;找不到、壞網址。
-import { cleanup, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -74,6 +74,20 @@ describe("MarketProductPage", () => {
     expect(cartStore.get()).toEqual([{ productId: CABBAGE.id, qty: 2 }]);
     expect(screen.getByText(/已加入購物車/)).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "看購物車" })).toHaveAttribute("href", "/market/cart");
+  });
+
+  it("數量框打 5 再按加入購物車(iOS 點按鈕不會讓框失去焦點):加 5 件,框回到 1,再按一次加的就是框裡的 1 件", async () => {
+    vi.mocked(fetchMarketProduct).mockResolvedValue(CABBAGE);
+    renderAt(CABBAGE.id);
+    const stepper = await screen.findByRole("group", { name: "有機高麗菜 數量" });
+    const input = within(stepper).getByRole("spinbutton", { name: "數量" });
+    await userEvent.clear(input);
+    await userEvent.type(input, "5");
+    fireEvent.click(screen.getByRole("button", { name: "加入購物車" })); // fireEvent 不移動焦點
+    expect(cartStore.get()).toEqual([{ productId: CABBAGE.id, qty: 5 }]);
+    expect(input).toHaveValue(1);
+    fireEvent.click(screen.getByRole("button", { name: "加入購物車" }));
+    expect(cartStore.get()).toEqual([{ productId: CABBAGE.id, qty: 6 }]);
   });
 
   it("數量上限是庫存(鮭魚剩 3 件);已售完不能按", async () => {
