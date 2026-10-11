@@ -1,6 +1,7 @@
 // 市集共用元件:版面的地標與跳到主要內容、照片的退回順序、商品卡、分類切換、店家條件。
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useState } from "react";
 import { MemoryRouter, Route, Routes, useNavigate } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -13,6 +14,7 @@ import CategoryChips from "./CategoryChips";
 import MarketImage from "./MarketImage";
 import MarketLayout, { useMarketTitle } from "./MarketLayout";
 import ProductCard from "./ProductCard";
+import QtyStepper from "./QtyStepper";
 import StoreInfoList from "./StoreInfoList";
 
 afterEach(cleanup);
@@ -238,6 +240,41 @@ describe("CategoryChips", () => {
   it("available 只列這家店有的分類", () => {
     render(<CategoryChips value={null} onChange={vi.fn()} available={["fruit"]} />);
     expect(screen.getAllByRole("button").map((b) => b.textContent)).toEqual(["全部", "水果"]);
+  });
+});
+
+describe("QtyStepper", () => {
+  const Harness = ({ max = 10 }: { max?: number }) => {
+    const [qty, setQty] = useState(1);
+    return (
+      <>
+        <QtyStepper value={qty} max={max} onChange={setQty} label="有機高麗菜 數量" />
+        <span data-testid="qty">{qty}</span>
+      </>
+    );
+  };
+
+  it("數量框可以先清空再打新的數字(不會先跳回 1、接著打成 15)", async () => {
+    render(<Harness max={99} />);
+    const input = screen.getByRole("spinbutton", { name: "數量" });
+    await userEvent.clear(input);
+    await userEvent.type(input, "5");
+    expect(screen.getByTestId("qty")).toHaveTextContent(/^5$/);
+    expect(input).toHaveValue(5);
+  });
+
+  it("打超過上限的數字:數量用上限,離開欄位後框裡也顯示上限;清空就離開則顯示原本的數量", async () => {
+    render(<Harness max={10} />);
+    const input = screen.getByRole("spinbutton", { name: "數量" });
+    await userEvent.clear(input);
+    await userEvent.type(input, "50");
+    expect(screen.getByTestId("qty")).toHaveTextContent(/^10$/);
+    await userEvent.tab();
+    expect(input).toHaveValue(10);
+    await userEvent.clear(input);
+    await userEvent.tab();
+    expect(input).toHaveValue(10);
+    expect(screen.getByTestId("qty")).toHaveTextContent(/^10$/);
   });
 });
 
