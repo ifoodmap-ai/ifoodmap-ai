@@ -161,7 +161,7 @@ CREATE TABLE IF NOT EXISTS public.market_order_events (
 CREATE INDEX IF NOT EXISTS market_order_events_order_idx ON public.market_order_events (order_id, created_at);
 
 COMMENT ON TABLE public.market_order_events IS
-  '零售訂單狀態紀錄(只能新增)。actor_role / actor_id / from_status 由 market_guard_event 依登入身分與目前狀態改寫,前端送什麼都不算。';
+  '零售訂單狀態紀錄(只能新增)。actor_role / actor_id / from_status / created_at 由 market_guard_event 依登入身分、目前狀態與伺服器時間(clock_timestamp,同一張單嚴格遞增)改寫,前端送什麼都不算。';
 
 -- ---------------------------------------------------------------------
 -- 2. 轉移表(唯一來源;前端 MARKET_TRANSITIONS 由 vitest 對照)、狀態中文
@@ -280,6 +280,7 @@ DECLARE
   v_actor    text;
   v_carrier  text;
   v_tracking text;
+  v_last     timestamptz;
 BEGIN
   -- 鎖住訂單這一列:同一張單的並發操作在這裡排隊,後到的會讀到新狀態
   SELECT * INTO v_order FROM public.market_orders o WHERE o.id = NEW.order_id FOR NO KEY UPDATE;
@@ -293,14 +294,17 @@ BEGIN
   NEW.note := CASE WHEN public.market_visible(NEW.note) THEN public.market_trim(NEW.note) END;
   NEW.actor_id := v_uid;
 
+  -- 這張單上一筆紀錄的時間(NULL = 還沒有紀錄)。訂單列已經鎖住,同一張單的紀錄一筆一筆排隊寫,讀到的就是最新的
+  SELECT max(e.created_at) INTO v_last FROM public.market_order_events e WHERE e.order_id = NEW.order_id;
+
   -- 第一筆紀錄:訂單只能由 market_place_order 建立,建好的當下(同一個交易裡)還沒有任何紀錄
-  IF NOT EXISTS (SELECT 1 FROM public.market_order_events e WHERE e.order_id = NEW.order_id) THEN
+  IF v_last IS NULL THEN
     IF NEW.to_status <> 'pending' OR NEW.from_status IS NOT NULL THEN
       RAISE EXCEPTION '訂單的第一筆紀錄只能是「待接單」' USING ERRCODE = '42501', HINT = 'transition_not_allowed';
     END IF;
     NEW.actor_role := 'consumer';
     NEW.payload := '{}'::jsonb;
-    NEW.created_at := now();
+    NEW.created_at := clock_timestamp();
     RETURN NEW;
   END IF;
 
@@ -324,9 +328,10 @@ BEGIN
     NEW.actor_id := NULL;
   END IF;
   NEW.actor_role := v_actor;
-  IF v_actor <> 'system' THEN
-    NEW.created_at := now();
-  END IF;
+  -- 紀錄時間一律由伺服器決定(前端、API 送來的值都不算,system 也一樣):用 clock_timestamp() 而不是 now() ——
+  -- now() 是交易開始的時間,同一個交易寫的「已接單」與自動補的「待匯款」會一模一樣,查單頁依隨機 id 排序先後就亂了。
+  -- 再保證比這張單上一筆晚至少 1 微秒(同一微秒、或主機時鐘被往回調時也分得出先後)。
+  NEW.created_at := GREATEST(clock_timestamp(), v_last + interval '1 microsecond');
 
   -- 畫面過期:前端以為的狀態跟資料庫不一樣
   IF NEW.from_status IS NOT NULL AND NEW.from_status IS DISTINCT FROM v_order.status THEN

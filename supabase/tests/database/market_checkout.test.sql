@@ -430,3 +430,10 @@ SELECT pg_temp.expect('查單回應沒有 contact_email;兩家店的店名、電
           (SELECT bool_and(o -> 'store' ? 'phone') FROM jsonb_array_elements(r -> 'orders') o)::text
      FROM (SELECT pg_temp.lookup(v ->> 'token') AS r FROM _ctx WHERE k = 'happy') x),
   'true|市集測試 A 店,市集測試 B 店|true');
+-- 5-2 查單回傳的紀錄順序固定(同一個交易寫的「已接單」與自動補的「待匯款」也分得出先後)
+SELECT pg_temp.expect('查單的紀錄順序:B 店轉帳單 pending → confirmed → awaiting_payment',
+  (SELECT string_agg(t.ev ->> 'to_status', '>' ORDER BY t.ord)
+     FROM _ctx, jsonb_array_elements(pg_temp.lookup(v ->> 'token') -> 'orders') o,
+          jsonb_array_elements(o -> 'events') WITH ORDINALITY AS t(ev, ord)
+    WHERE k = 'happy' AND o ->> 'payment_method' = 'transfer'),
+  'pending>confirmed>awaiting_payment');

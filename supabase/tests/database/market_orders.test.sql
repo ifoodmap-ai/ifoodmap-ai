@@ -370,3 +370,28 @@ SELECT pg_temp.expect('……庫存加回去(13 + 2 = 15)、原因與結束時�
      FROM public.market_orders o, public.market_products p
     WHERE o.id = 'a9600000-0000-4000-8000-000000000010' AND p.id = 'a9300000-0000-4000-8000-0000000000a1'),
   'cancelled|15|缺貨,已全額退款|true');
+
+-- ---------------------------------------------------------------------
+-- 5. 第 2 階段審查修正(2026-10-11)
+-- ---------------------------------------------------------------------
+-- 5-1 紀錄時間由伺服器用 clock_timestamp() 決定,同一個交易裡後寫的一定比較晚
+--     (原本 now() 是交易開始的時間:轉帳單的「已接單」和自動補的「待匯款」時間完全相同,依隨機 id 排序先後就亂了)
+SELECT pg_temp.expect('轉帳單接單:自動補的待匯款時間嚴格晚於已接單',
+  (SELECT (aw.created_at > cf.created_at)::text
+     FROM public.market_order_events aw, public.market_order_events cf
+    WHERE aw.order_id = 'a9600000-0000-4000-8000-000000000002' AND aw.to_status = 'awaiting_payment'
+      AND cf.order_id = 'a9600000-0000-4000-8000-000000000002' AND cf.to_status = 'confirmed'),
+  'true');
+SELECT pg_temp.expect('……整張單依時間排序就是寫入順序,而且每筆時間都不一樣',
+  (SELECT string_agg(e.to_status, '>' ORDER BY e.created_at, e.id) || '|' || (count(DISTINCT e.created_at) = count(*))::text
+     FROM public.market_order_events e WHERE e.order_id = 'a9600000-0000-4000-8000-000000000002'),
+  'pending>confirmed>awaiting_payment>paid>shipped|true');
+SELECT pg_temp.expect('system 自己帶的時間也不算(資料庫擁有者帶 2000-01-01 出貨):記成伺服器時間、比上一筆晚',
+  pg_temp.as_val('postgres', '', $q$
+    WITH e AS (INSERT INTO public.market_order_events (order_id, from_status, to_status, payload, created_at)
+               VALUES ('a9600000-0000-4000-8000-000000000009', 'paid', 'shipped', '{"carrier":"自行配送"}', '2000-01-01')
+               RETURNING actor_role, created_at)
+    SELECT actor_role || '|' || (created_at > (SELECT max(x.created_at) FROM public.market_order_events x
+                                               WHERE x.order_id = 'a9600000-0000-4000-8000-000000000009' AND x.to_status = 'paid'))::text
+      FROM e$q$),
+  'system|true');
