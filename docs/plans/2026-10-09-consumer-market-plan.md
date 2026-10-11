@@ -17475,3 +17475,39 @@ gate / render / handler / index 與 `config.toml` 先照計畫的程式碼區塊
 - 下單 RPC 的 Email 仍用 `btrim`:結尾夾全形空白的 Email 會回 `INVALID_INPUT` `buyer.email`,不會幫忙去掉(前端 JS 的 `trim()` 本來就會去掉 U+3000,正常流程不受影響)。
 - 帶 130100 跑 `market_orders.test.sql` 時,每筆狀態紀錄會在交易裡把通知排到真的 market-notify 網址(跟著 ROLLBACK 消失、不會送出;殘留檢查只看 `127.0.0.1:9`)—— Task 57 Step 5 套用後不帶 migration 重跑也是同一回事。
 - 「待匯款記成 system」靠 `pg_trigger_depth() > 1` 認 apply trigger;之後若有別的 trigger 也寫 `confirmed → awaiting_payment`,一樣會記成 system。
+
+### 2026-10-11:Task 43–47 訂單狀態、購物車、加入購物車、結帳邏輯(commit `e1bde03`、`54aa8e9`、`209d6ab`、`274be41`、`a5f6c94`;自查修正 `b926ac5`、`39c2013`、`4bbf42b`、`98af078`,分支 `market`)
+
+五個 Task 先照計畫做(每個都先看到失敗才實作),程式碼跟計畫的區塊相同,只有勘誤指定的地方不一樣;之後的自查修正各自一個 commit,每一項都先寫測試、看到失敗才改。**以 repo 為準。** 沒有乾跑、沒有查正式庫。
+
+**A. 照勘誤調整的地方**
+
+1. **Task 43**:`constants.test.ts` 加 migration 130000 的對照 `ORDER_LIMIT_PREFIXES`(`buyer_name` BETWEEN、`ship_address` BETWEEN 的兩個數字、`buyer_note` <=、`market_order_events.note` <=、`v_carrier` >、`v_tracking` >),跟 120000 那份合成 `LIMIT_SOURCES`;第一項合併兩份後跟 `{ ...LIMITS }` 比,「數字真的是從 migration 讀出來的」也跑新的對照,項數不變(10)。測試先寫:實作前 constants 這兩項紅(LIMITS 少 7 個 key;`buyerName: expected 51 to be NaN`)、orders `Failed to resolve import "./orders"`。Step 4 的 Expected `Tests  15 passed (15)` → **`Tests  20 passed (20)`**(orders 10 + constants 10)。突變驗證:`trackingNo` 100 → 99 兩項都紅。130000 之後的修正(`f04df17`、`a5174c1`、`a763553`)沒有動狀態、轉移表、狀態中文與這幾個上限,對照照樣過。
+2. **Task 44**:`catalog.test.ts` 的 import 加在 `fetchMarketStore,` 後面、新測試放在「公開查詢」最後(勘誤第 17232–17233 行)。Step 2 是 1 failed / 16 passed,Step 4 **`Tests  32 passed (32)`**,跟勘誤一樣。
+3. **Task 45**:照計畫,`Tests  4 passed (4)`(自查修正後是 6,見 B-1)。
+4. **Task 46**:`MarketLayout.tsx` 的 `ShoppingCart` / `useCart` import 加在 react-router-dom 那行後面,`const { count } = useCart();` 放在函式第一行(勘誤第 17234–17235 行)。Step 2 是 3 failed / 24 passed,Step 4 **`Tests  27 passed (27)`**,跟勘誤一樣(自查修正後商品頁是 13 項,見 B-4)。
+5. **Task 47**:照計畫,`Tests  15 passed (15)`(自查修正後是 16,見 B-3)。電話 / Email 的正規式標記在 130000 第 0 節,之後的修正沒有動。已 commit 的 130200(`27650e0`、`4b54124`)跟前端的介面一致:`market_place_order(p_checkout jsonb)`、`market_checkout_status()` 回 `{open, can_order}`,13 種錯誤代碼 `checkoutErrorMessage` 都有中文(`INVALID_INPUT` 的 `buyer` / `checkout` / `payments` / `expected_totals` / `terms_version` 用通用句)。
+
+**B. 自查修正**
+
+1. **購物車跨分頁同步:沒有人訂閱的期間漏掉別的分頁的修改**(`b926ac5`):`useCart` 只在有元件訂閱時聽 `storage` 事件。SPA 裡離開 `/market`(例如供應商從後台點「看消費者看到的店家頁」再按上一頁)期間別的分頁改了購物車,回到市集會顯示舊的,下一次加入還會拿舊的那份覆寫 localStorage(別的分頁加的商品不見)。改成第一個訂閱者進來時重讀一次 localStorage(內容一樣就沿用原本的陣列);這個分頁最後一次寫入沒存進 localStorage(無痕、額度滿)時不重讀,記憶體裡的才是對的。`useCart.test.tsx` 4 → **6**:「離開再回來讀到新的、加入不蓋掉」修之前紅;「寫不進去時回來記憶體裡的還在」修之前就過,是防「一律重讀」的回歸(拿掉 `!persisted` 會紅)。測試另外補 `afterEach(cleanup)`:vitest 沒開 `globals`,Testing Library 不會自動卸載,上一個測試的 hook 一直訂閱,「沒有人訂閱」的情境原本測不到(原本 4 項不受影響)。
+2. **拒單 / 取消原因只有全形空白、零寬字元也算沒填**(`39c2013`):guard 改用 `market_visible`(`a763553`)之後,前端 `trim()` 去不掉 U+200B,會送出去再被 `reason_required` 擋。`validateOrderAction` 改用 `productForm.ts` 的 `hasVisibleText`。`orders.test.ts` 10 → **11**。
+3. **結帳姓名、地址同上**(`4bbf42b`,即上一節第 8 點「給 Task 43–47」):`validateBuyer` 的姓名、地址改用 `hasVisibleText`,只有看不見字元時顯示「請填寫收件人姓名」「請填寫完整的收件地址(5–200 字)」,不用等伺服器回 `INVALID_INPUT`。`checkout.test.ts` 15 → **16**。備註沒改(伺服器當成沒填,不會擋)。
+4. **手機的加入購物車列蓋住頁尾的條款連結**(`98af078`):計畫的 `fixed inset-x-0 bottom-0` 一直蓋在畫面最下面,`pb-32` 只保護商品頁自己的內容,保護不到 MarketLayout 的頁尾 —— 捲到最底時 Task 46 新加的「服務條款」「隱私權政策」被蓋住(點不到,Tab 到也看不到;WCAG 2.4.11)。改成 `sticky bottom-0 -mx-4`(在商品資訊那一欄裡黏在畫面底部,捲過就回到原位;`-mx-4` 抵掉頁面左右留白,手機滿版;`min-[881px]:mx-0` 還原),拿掉不再需要的 `pb-32`。實測方式:本機 vite 開一個不進 git 的驗證頁(真的 `MarketLayout` + `MarketProductPage`,react-query 先放好商品資料、`staleTime: Infinity`,環境變數用 ci-placeholder,不連任何資料庫),headless Chrome(DevTools Protocol)量位置 —— 改之前 390×844 捲到最底,兩個連結中心點的 `elementFromPoint` 是數量按鈕;改之後 390×844、360×640 都 visible,最上面時列黏在畫面底部(390 寬:763–844、滿版)、沒有橫向捲動(`scrollWidth` = 視窗寬),1280×800 跟原本一樣 static。`MarketProductPage.test.tsx` 12 → **13**(釘住 `sticky bottom-0 min-[881px]:static`、不准 `fixed`)。
+
+**C. 數字**
+
+- 乾淨副本(`git archive` `98af078`)全套 vitest 連跑 2 次都是 **106 檔 / 1639 項**全過(含其他實作者同時 commit 的 market-notify 3 檔 / 42 項)。這五個 Task 照計畫是 4 檔 / 48 項(orders 10、cart 15、useCart 4、checkout 15,catalog +1、market-components +1、MarketProductPage +2),自查修正再 +5 項(檔數不變):「F. 共用指令與基準數字」第 2、3 階段的總數,在其他各節的調整之外再**多 5 項**。
+- tsc 錯誤 **72**、eslint 錯誤 **10**(新檔與改到的檔都沒有 error,warning 只有原本就有的 `react-refresh/only-export-components`),兩種 build 都 exit 0(前台站 bundle 有「加入購物車」,管理員站沒有)。
+- Task 48 之後的「找到 → 換成」只動 `App.tsx`、`App.market-routes.test.tsx`、`AdminLayout(.test).tsx`、`AdminRoutes.test.tsx`、`SupplierLayout(.test).tsx` 與形象站,不受這幾個 Task 影響;`cart.ts` / `useCart.ts` / `checkout.ts` / `orders.ts` export 的名稱與簽名都跟計畫一樣。
+
+**D. 自查核對過、一致(不用改)**
+
+- 運費、免運、最低金額跟 130200 一樣:小計 ≥ 免運門檻(門檻不是 null)→ 運費 0,否則店家的固定運費;最低金額比的是小計(不含運費),`subtotal < min_order_amount` 才擋;`expected_totals` 送每店的小計 + 運費(伺服器用字串比對 `->>`,JSON 整數沒有小數點);「已下架」的條件(已核准、上架中、店家啟用、供應商啟用)= 伺服器的 `PRODUCT_UNAVAILABLE`;每項 1–99、最多 50 種跟伺服器一樣。測試釘住 999 / 1000 的免運邊界、剛好等於最低金額、沒有門檻的店、運費 0 的店。
+
+**E. 自查發現、沒有處理(記錄)**
+
+- 長度用 JS 的 `.length`(UTF-16)、資料庫用 `char_length`(碼位):罕用字(擴充區 B 以後)一個字算 2,上限比資料庫嚴、地址下限 5 字比資料庫鬆(伺服器回 `buyer.address`);跟第 1 階段表單同一個慣例。
+- 兩個分頁在 storage 事件送達之前(毫秒級)同時加入購物車,後寫的會蓋掉先寫的(localStorage 沒有原子的讀改寫)。
+- 超過庫存的那一列照樣算進小計、運費、免運與最低金額;這家店已經因為「超過庫存」不能結帳,改了數量就重算,只影響顯示。
+- `buildCart` 沒有檢查一次最多 10 家店(`CART_LIMITS.maxStores`):Task 50 結帳頁送出前檢查,伺服器也會回 `TOO_MANY_STORES`。
