@@ -17762,3 +17762,38 @@ gate / render / handler / index 與 `config.toml` 先照計畫的程式碼區塊
 - 🔴 **送出時斷線可能建出重複訂單**:`market_place_order` 沒有冪等鍵(`checkout_id` 由伺服器 `gen_random_uuid()` 產生)。RPC 已經 commit、只是回應在路上掉了時,頁面顯示「連線失敗,請檢查網路後再試一次」,照做再按一次就是第二組訂單、庫存再扣一次、確認信寄兩封(寄信閘門沒開時消費者也收不到第一封確認信,無從判斷)。根治要改 RPC:前端帶一個 uuid(例如 `checkout_id`)、資料庫加 UNIQUE,重送時回第一次的結果。文案怎麼寫(「可能已送出,請勿重複送出」或「請重新送出」)兩邊都有風險,留給業主與資料庫修正者決定。
 - IPv4 的 A 段限流「同一 IP 每小時 5 次」:台灣行動網路的 IPv4 多半是很多人共用一個 IP(CGNAT),流量大了正常買家可能第一次送出就被擋(`3ff02c2` 只放寬 IPv6 /48)。
 - 時間軸「比到微秒」現在有兩份寫法:查單頁用 `lookup.ts` 的 `sortEvents`,Task 55 的管理員頁(`src/pages/admin/AdminMarketOrdersPage.tsx`)另寫一份;之後要改排序規則時兩處要一起改,可以考慮收成一支。
+
+### 2026-10-11:審查修正補充(三)—— IPv4 共用位址(CGNAT)、下單冪等(token 改由瀏覽器產生)(commit `1f9a2e9`、`b0eb303`,分支 `market`)
+
+接上一節。前端實作者回報、協調者同意的兩項,130200 套用前修。每一項都先寫測試、看到失敗才改。**以 repo 為準。**
+
+1. **IPv4 共用位址(CGNAT)**(`1f9a2e9`,只改 130200):手機業者的 IPv4 常是一大群人共用一個,原本 A 段同一個 IP 每小時 5 / 每天 20 會誤擋同一個出口後面的正常買家。
+   - A 段(只防灌爆,失敗的嘗試也算,回 `RATE_LIMITED`):`ip`(IPv4 完整位址、IPv6 /64)每小時 30,拿掉每天;`ip48` 每小時 200、`noip` 每小時 60 / 每天 300 照舊。
+   - B 段(只算成單):`email` 每小時 3 / 每天 10、`phone` 每天 10、新增 `ipo`(只有 IPv4)同一個 IPv4 每天 20 單、`ip48o`(只有 IPv6)每天 20 單、`global` 每天 500。A 段(`ip` / `ip48` / `noip`)與 B 段(`email` / `phone` / `ipo` / `ip48o` / `global`)名稱不重疊。
+   - 130200 檔頭寫明每一條的用意,以及量變大時另開一支 migration、用 `CREATE OR REPLACE FUNCTION public.market_place_order` 改數字。
+   - 測試(修之前 3 項紅):第 2 節原本的「同一個 IP 一小時第 6 次 RATE_LIMITED」改成「同一個 IPv4 一小時內 6 個買家各下一單都照常」;同一個 IPv4 失敗嘗試 29 次後第 30 次照樣下單、第 31 次 `RATE_LIMITED`;同一個 IPv4 當天第 21 單 `RATE_LIMITED`、不建單、不動庫存、`ipo` 計數 20。
+2. **下單冪等**(`b0eb303`;130000、130200、`checkout.ts`、`checkout.test.ts` 與三支乾跑測試同一個 commit):原本每次呼叫都新建 checkout 與 token,訂單已經存進去、回應卻在路上斷掉時,買家重按會多一張單、再扣一次庫存。
+   - `p_checkout.token` 必填,`^[A-Za-z0-9_-]{43}$`(32 bytes 的 base64url,由瀏覽器產生,一次結帳一個,重送時沿用);缺少、格式不對、不是字串 → `{ok:false, code:'INVALID_INPUT', field:'token'}`。伺服器不再自己產生 token,照樣只存 sha256、放進下單確認通知、在回應裡回傳。
+   - 欄位檢查之後、開關與限流之前:`pg_advisory_xact_lock(hashtextextended('ifoodmap:market_place_order:' || token 雜湊, 0))` 讓同一個 token 的並發請求排隊(交易結束才放),再查這個雜湊有沒有既有訂單:
+     - 指紋相同 → 回第一次的 `{ok:true, token, checkout_id, orders}`,再加 `duplicate:true`;不扣任何限流額度、不動庫存、不再排通知;開關後來關了也照樣回。
+     - 指紋不同 → `{ok:false, code:'TOKEN_REUSED'}`,什麼都不寫。
+   - 請求指紋 = 正規化後內容的 sha256 hex:合併後的商品(依 product_id 排序、數量)、`payments` 物件、收件資料(去頭尾後的姓名、去掉空白 / 括號 / - 的電話、小寫 Email、縣市、地址、備註);不含 `expected_totals` 與 `terms_version`。存在 `market_orders.request_fingerprint`(`text NOT NULL`,hex 64 CHECK),同一次結帳的每張單都一樣。另加 `UNIQUE (lookup_token_hash, supplier_id)` 當儲存層的第二道(原本的 `market_orders_token_idx` 拿掉,改用這個 UNIQUE 的索引查 token)。
+   - 因為指紋要用合併後的商品,購物車的格式檢查(最多 50 行 → `TOO_MANY_ITEMS`、每行 uuid 與 1–99 的整數 → `INVALID_INPUT` `items`)與合併移到冪等之前(開關與 A 段之前,不算進 A 段);空購物車(`EMPTY_CART`)照樣在 A 段之後。步驟變成:欄位 → 冪等 → 開關(第 4 步,`market_checkout_status` 的註解跟著改)→ A 段 → 購物車 → 店家 → B 段 → 建單;鎖的順序:token 的 advisory lock → A 段計數列 → 依 id 鎖商品 → B 段計數列。
+   - 並發在乾跑(單一連線)測不到,程式與註解寫明靠 advisory lock 排隊。
+   - `checkout.ts` 加 `TOKEN_REUSED`:「這筆結帳剛才已經送出過了,請查看訂單。」(`checkout.test.ts` 會從 130200 抓每一種錯誤碼對照。)`field: 'token'` 沒有專屬訊息(落到「有欄位格式不對」),token 是程式產生的,正常不會出現。
+   - 測試(修之前 7 項紅):同 token、同內容重送(Email 大小寫不同、電話有 -、同一商品拆兩行、換 IP、`expected_totals` 與條款版本不同)→ `duplicate:true`,token、checkout_id、orders 跟第一次一樣,訂單數 / 庫存 / 限流計數總和 / 通知佇列都不變;同 token、地址不同 → `TOKEN_REUSED`、什麼都沒寫;token 缺少、42 字、有 `=`、是數字 → `INVALID_INPUT` `token`;開關關掉後同 token 重送照樣回既有結果。另在 130000 測:指紋不是 hex 64 存不進去、同一個 token 同一家店第二張單被 UNIQUE 擋(23505)。訂單測試的 `mk_order` 改成每張單各自的 token 雜湊、直接寫訂單的 fixture 都補上 `request_fingerprint`(130100 的測試同樣)。
+   - 🔴 **給前端(結帳頁、`checkout.ts` 的 `buildCheckoutPayload`)**:在送出前產生 token(`crypto.getRandomValues` 32 bytes → base64url 去掉 `=`),同一次結帳的重送(逾時、斷線)沿用同一個 token,購物車或收件資料改了就換新 token;收到 `duplicate:true` 照成功處理。前端補上之前,所有結帳都會回 `INVALID_INPUT` `token`(130200 還沒套用,開關也還關著)。
+3. **審查員的攻擊測試**:兩份副本的 `pg_temp.co()` 都加上隨機 token(必填);`atk_r2` 副本的 R3b 把「IP 每天」改成驗 B 段的 `ipo`(= 1)、R13 的格式正規式加上 `ipo`;`atk_checkout` 副本 33 / 33、`atk_r2` 副本 24 / 24、`atk_rollback_fp` 2 / 2。原版因為沒有 token,下單一律 `INVALID_INPUT`,`atk_r2` 原版跑到 R9c 會因為沒有訂單、直接寫紀錄時 order_id 是 NULL 而整支中止(預期中)。
+
+**數字**
+
+| 乾跑 | 上一節 | 現在 |
+|---|---|---|
+| `market_orders` | 65 | **67**(指紋 CHECK、同 token 同店 UNIQUE) |
+| `market_notify` | 9 | 9 |
+| `market_checkout` | 79 | **88**(CGNAT +2、冪等 +7;第 2 節「第 6 次 RATE_LIMITED」改寫) |
+| `market_phase2_rollback` | 4 | 4 |
+
+- **Task 57** Step 2(第 16560 行)的 Expected 改成依序 `共 67 項` / `共 9 項` / `共 88 項` / `共 4 項`,Step 5(第 16611 行)改成 `共 67 項` / `共 9 項` / `共 88 項`(上一節的 65 / 79 作廢);「F. 共用指令與基準數字」第 116 行同樣改成 67 / 9 / 88 / 4。
+- 每支乾跑之後殘留五個 0;第 1 階段 `market_catalog` 112、`market_images_storage` 20;唯讀查正式庫沒有任何第 2 階段的物件。vitest:`b0eb303` 的乾淨副本全套連跑 2 次都是 **115 檔 / 1772 項**全過;tsc 錯誤 72、eslint 錯誤 10,兩種 build 都 exit 0。
+- `b0eb303` 的過程中,我的腳本在 130200 寫進 `TOKEN_REUSED` 之後、`checkout.ts` 還沒改之前中止(fixture 的自我檢查擋下),「每一種代碼都有自己的一句話」在工作目錄紅了約一分鐘,已補上。
