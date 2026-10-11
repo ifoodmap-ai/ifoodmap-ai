@@ -17928,3 +17928,27 @@ gate / render / handler / index 與 `config.toml` 先照計畫的程式碼區塊
 - 「C. 關鍵技術決定」第 1 點(第 45 行)與「待業主決定」第 7 點(第 17075 行)的限流額度還是舊數字(每 IP 每小時 5 / 每天 20 等);現行數字以 130200 與 DEPLOY.md 的限流表為準。
 - 閘門關著時,結帳頁(`MarketCheckoutPage.tsx` 第 324 行的轉帳說明)、查單頁(`MarketOrderLookupPage.tsx` 第 86 行)、供應商零售訂單頁(`SupplierMarketOrdersPage.tsx`
   第 85 行)與接單視窗(`OrderActionDialog.tsx` 第 35–36 行)都說消費者會收到信。開關關著時只有業主的測試單,影響不大;DEPLOY.md 待辦第 3 條要求兩個閘門一起開。
+
+### 2026-10-12:market-notify 的 72 小時自動取消文案(commit `c7fab76`、`5a6f0d3`,分支 `market`)
+
+業主決定做「72 小時自動取消」,第 3 階段做完直接對外開放、打開寄信閘門,所以信件文案在開放前改好。資料庫端是 migration `20261012100000_market_hardening.sql`(commit `fc25de1`:`market_expire_orders` 每 10 分鐘跑,待接單看下單時間、待匯款看最後一筆進入待匯款的紀錄;取消紀錄 actor = system、payload `{"auto_expire": "pending" | "awaiting_payment"}`)。只動 `supabase/functions/market-notify/`。**以 repo 為準。**
+
+1. **時數只有一個常數**:`render.ts` 的 `MARKET_AUTO_CANCEL_HOURS = 72`,信裡提到時限一律用它。`render.test.ts` 掃全部 migration 的 `-- @market-auto-cancel-hours`:要剛好一處、在 `20261012100000_market_hardening.sql`、數字相同(標記 commit 前用 skipIf 跳過,`fc25de1` 之後改成一直開;把 migration 改成 48 這項會紅)。
+2. **新增的句子**(html 與 text 都有):
+   - 店家的新訂單信:「請在 72 小時內接單,超過時間系統會自動取消這張訂單。」
+   - 消費者的下單確認信:「店家會在 72 小時內確認訂單;超過時間沒有接單,訂單會自動取消。」
+   - 消費者的待匯款信:「請在 2026/10/15 11:00(台北時間)前完成匯款,逾期訂單會自動取消。」—— 期限 = 這筆待匯款紀錄的 `created_at` + 72 小時(handler 多讀 `market_order_events.created_at`);讀不到時間改寫「請在 72 小時內完成匯款,逾期訂單會自動取消。」
+   - 期限寫法照 `_shared/supplier-mail.ts` 的 `taipeiTime`(`YYYY/MM/DD HH:mm(台北時間)`),但用 `formatToParts` 逐欄組、固定 `hourCycle: "h23"`、日期與時間之間一律一般空白:不靠執行環境時區(Edge Function 跑在 UTC)、午夜寫 00:00。新版 ICU(Node 25)的 `taipeiTime` 在日期與時間之間放 U+2009 細空白,Deno 的 ICU 可能不同,所以不直接用它。測試涵蓋跨日(UTC 15 日 = 台北 16 日)、跨月、跨年加午夜、`+08:00` 寫法、PostgREST 的微秒格式、TZ = UTC / America/Los_Angeles。
+3. **自動取消的信**(紀錄 `to_status = cancelled` 而且 `payload.auto_expire` 是 pending / awaiting_payment 才算;沒有標記或值不認得照一般取消):
+   - 消費者:主旨「訂單已自動取消(店家逾時未接單)— 零售訂單 #…」/「訂單已自動取消(逾時未完成匯款)— 零售訂單 #…」;內文「您的訂單 零售訂單 #…(「店名」):店家超過 72 小時沒有接單,訂單已自動取消。」加「這張訂單不會成立,您不需要付款。」/「…:因為超過 72 小時沒有完成匯款,訂單已自動取消。」加「這張訂單不會成立,不需要再匯款;如果您已經匯款,請直接聯絡店家。」,再附店家電話。不寫成店家取消,也沒有任何「退款」的字(就算資料說已收款,結構上也不放)。
+   - 店家:主旨「零售訂單 #… 已逾時自動取消 — 請不要出貨」;內文「訂單 零售訂單 #…(消費者 …):這張訂單超過 72 小時沒有接單(或:消費者超過 72 小時沒有完成匯款),系統因逾時自動取消。請不要出貨。」加「訂單裡的商品庫存已經自動補回(只限有設定庫存的商品)。」
+   - 資料庫寫進 note 的原因(半形逗號)信裡不另外顯示,信裡的句子已經說明原因。
+   - 待匯款被取消的單:`paid_at` 是 null、from_status 是 awaiting_payment,現有的已收款判斷不會成立(handler 層測試確認),自動取消的信本身也不放退款句。
+4. **閘門照舊**:「每一種值」的閘門測試多走兩種自動取消(消費者與店家各兩封,共 14 封),`MARKET_NOTIFY_LIVE` 不是 `"true"` 時一樣只寄 ifoodmaptw@gmail.com、主旨加「[測試轉寄]」。
+5. **突變驗證**(全部紅):handler 不看 auto_expire、任何值都當自動取消、自動取消信繞過閘門、消費者寫成「店家取消」、自動取消信放退款句、店家信沒寫庫存補回、時數改 48、期限用 UTC 顯示、期限用 h24、待匯款信沒有期限句、新訂單信 text 沒有 72 小時句、不讀 `created_at`。
+
+**數字**
+
+- market-notify vitest:**4 檔 / 107 項**(gate 8、send 3、render 46、handler 50;上一節是 85 項)→ Task 42 Step 4 的 Expected 改成 **`Tests  107 passed (107)`**;「F. 共用指令與基準數字」第 2、3 階段的總數比計畫多 **77 項、1 檔**(取代上一節的 55 項)。
+- 全套:`c4f8da7` 的乾淨副本(`git archive`)連跑兩次 **116 檔 / 1843 項**全過;tsc strict 兩份設定 0 error,eslint 沒有輸出。
+- 🔴 部署:這兩個 commit 要重新部署 market-notify 才生效。函式可以比 `20261012100000` 先部署(還沒有 auto_expire 時照一般文案,待匯款信本來就讀得到 `created_at`);migration 先套的話,函式重新部署之前的自動取消會寄成一般的「平台已取消」信。
