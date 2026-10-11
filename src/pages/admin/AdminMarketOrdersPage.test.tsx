@@ -1,6 +1,7 @@
 // 管理後台「零售訂單」(唯讀總覽,處理客訴用):預設進行中、換篩選重新抓、搜尋、查看完整內容(含店家聯絡方式)與時間軸。
 // 🔴 這一頁沒有任何寫入動作 —— 每一種狀態 × 付款方式打開來都沒有改訂單的按鈕、從頭到尾沒有寫入、原始碼也不碰寫入的函式。
-// 另外釘住:時間軸只依 created_at 排(到微秒,不看資料回來的順序)、載入失敗可以重新載入、慢回來的舊查詢不蓋掉新清單。
+// 另外釘住:時間軸只依 created_at 排(到微秒,不看資料回來的順序)、載入失敗可以重新載入、慢回來的舊查詢不蓋掉新清單、
+// 清單到上限時提示更早的單搜尋不到。
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -24,7 +25,7 @@ vi.mock("@/lib/market/orders", async (importOriginal) => ({
 }));
 
 import { makeOrder } from "@/lib/market/orderFixtures";
-import { addOrderEvent, fetchAdminOrders, ORDER_ACTIONS, ORDER_STATUSES, type MarketOrderRow } from "@/lib/market/orders";
+import { addOrderEvent, fetchAdminOrders, ORDER_ACTIONS, ORDER_LIST_LIMIT, ORDER_STATUSES, type MarketOrderRow } from "@/lib/market/orders";
 import { formatOrderNo } from "@/lib/order-number";
 import AdminMarketOrdersPage from "./AdminMarketOrdersPage";
 import pageSource from "./AdminMarketOrdersPage.tsx?raw";
@@ -181,5 +182,17 @@ describe("AdminMarketOrdersPage", () => {
     await new Promise((r) => setTimeout(r, 0));
     expect(screen.queryByText(`${formatOrderNo(PENDING.id)}・市集測試 A 店`)).toBeNull();
     expect(screen.getByText(`${formatOrderNo(SHIPPED.id)}・市集測試 A 店`)).toBeInTheDocument();
+  });
+
+  it("清單到上限(一次最多抓的張數)時提示更早的單不會出現在清單與搜尋結果;沒到上限不提示", async () => {
+    const many = Array.from({ length: ORDER_LIST_LIMIT }, () => makeOrder({ market_stores: STORE }));
+    vi.mocked(fetchAdminOrders).mockResolvedValue(many);
+    render(<AdminMarketOrdersPage />);
+    expect(await screen.findByText(`只載入最新的 ${ORDER_LIST_LIMIT} 張;更早的訂單不會出現在清單與搜尋結果裡。`)).toBeInTheDocument();
+    cleanup();
+    vi.mocked(fetchAdminOrders).mockResolvedValue(many.slice(0, ORDER_LIST_LIMIT - 1));
+    render(<AdminMarketOrdersPage />);
+    expect(await screen.findByText(`${formatOrderNo(many[0].id)}・市集測試 A 店`)).toBeInTheDocument();
+    expect(screen.queryByText(/只載入最新/)).toBeNull();
   });
 });
