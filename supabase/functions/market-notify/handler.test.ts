@@ -351,6 +351,11 @@ describe("market-notify:狀態紀錄", () => {
     s2.db.tables.market_order_events.push(paidCancel(EV(11), "supplier"));
     await s2.call({ kind: "event", event_id: EV(11) });
     expect(s2.send.mock.calls[0][0].text).toContain("退款由店家處理");
+    // 只看訂單的 paid_at 也算(現在的轉移表只有 paid → cancelled,之後若開放別的狀態取消已收款的單也不會漏)
+    const s4 = setup({ live: true });
+    Object.assign(s4.db.tables.market_orders.find((o) => o.id === ORDER_A)!, { paid_at: "2026-10-11T03:00:00Z" });
+    await s4.call({ kind: "event", event_id: EV(5) }); // from_status = pending
+    expect(s4.send.mock.calls[0][0].text).toContain("退款由店家處理");
     // 還沒收款的取消不變
     const s3 = setup({ live: true });
     await s3.call({ kind: "event", event_id: EV(5) });
