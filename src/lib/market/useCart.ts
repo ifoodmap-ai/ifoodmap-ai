@@ -57,7 +57,12 @@ const resync = () => {
 
 const onStorage = (e: StorageEvent) => {
   if (e.key !== null && e.key !== CART_STORAGE_KEY) return;
-  cache = read();
+  try {
+    cache = parseCart(window.localStorage.getItem(CART_STORAGE_KEY));
+    persisted = true; // 記憶體又跟 localStorage 一樣了:之後重新訂閱時要再對(不然寫入失敗過一次就永遠不對)
+  } catch {
+    cache = [];
+  }
   emit();
 };
 

@@ -6,7 +6,7 @@ import { createMemoryStorage } from "@/test/memory-storage";
 vi.mock("@/integrations/supabase/client", () => ({ supabase: {} }));
 
 import { CART_STORAGE_KEY } from "./cart";
-import { BEEF, CABBAGE } from "./testFixtures";
+import { BEEF, CABBAGE, SALMON } from "./testFixtures";
 import { cartStore, useCart } from "./useCart";
 
 let storage: Storage;
@@ -89,6 +89,47 @@ describe("useCart", () => {
     first.unmount();
     const again = renderHook(() => useCart());
     expect(again.result.current.lines).toEqual([{ productId: CABBAGE.id, qty: 1 }]);
+  });
+
+  it("寫入失敗過、後來收到別的分頁的修改(又跟 localStorage 一致):離開再回來照樣跟 localStorage 對一次", () => {
+    const backing = createMemoryStorage();
+    let failWrites = true;
+    vi.stubGlobal("localStorage", {
+      getItem: (k: string) => backing.getItem(k),
+      setItem: (k: string, v: string) => {
+        if (failWrites) throw new Error("QuotaExceededError");
+        backing.setItem(k, v);
+      },
+    });
+    cartStore.resetForTests();
+    const first = renderHook(() => useCart());
+    act(() => first.result.current.add(CABBAGE.id, 1)); // 寫不進去:只在記憶體
+    backing.setItem(CART_STORAGE_KEY, JSON.stringify([{ productId: BEEF.id, qty: 2 }])); // 別的分頁寫進去了
+    act(() => {
+      window.dispatchEvent(new StorageEvent("storage", { key: CART_STORAGE_KEY }));
+    });
+    expect(first.result.current.lines).toEqual([{ productId: BEEF.id, qty: 2 }]);
+    first.unmount();
+    failWrites = false;
+    // 沒有人在聽的期間,別的分頁又加了鮭魚
+    backing.setItem(
+      CART_STORAGE_KEY,
+      JSON.stringify([
+        { productId: BEEF.id, qty: 2 },
+        { productId: SALMON.id, qty: 2 },
+      ]),
+    );
+    const again = renderHook(() => useCart());
+    expect(again.result.current.lines).toEqual([
+      { productId: BEEF.id, qty: 2 },
+      { productId: SALMON.id, qty: 2 },
+    ]);
+    act(() => again.result.current.add(CABBAGE.id, 1));
+    expect(JSON.parse(backing.getItem(CART_STORAGE_KEY) ?? "[]")).toEqual([
+      { productId: BEEF.id, qty: 2 },
+      { productId: SALMON.id, qty: 2 },
+      { productId: CABBAGE.id, qty: 1 },
+    ]);
   });
 
   it("localStorage 一碰就丟例外(無痕、封鎖):當成空的,加入照樣有效(只在記憶體)", () => {
