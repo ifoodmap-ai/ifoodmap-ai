@@ -6,6 +6,7 @@
 // 狀態只能經 market_order_events 改變:前端只「新增一筆紀錄」,資料庫的 guard 再檢查身分、目前狀態(畫面過期會擋)、原因、物流。
 import { LIMITS, type PaymentMethod, type Temperature, type TwCity } from "./constants";
 import { marketDb, unwrap } from "./db";
+import { hasVisibleText } from "./productForm";
 
 export const ORDER_STATUSES = [
   "pending",
@@ -123,13 +124,16 @@ export interface OrderActionInput {
   trackingNo?: string;
 }
 
-/** 送出前的檢查(跟 guard 同一套);回傳錯誤訊息或 null */
+/**
+ * 送出前的檢查(跟 guard 同一套);回傳錯誤訊息或 null。
+ * 原因用 hasVisibleText:guard 用 market_visible 判斷有沒有填,只有全形空白、零寬字元也算沒填(跟第 1 階段的商品欄位同一組字元)。
+ */
 export const validateOrderAction = (to: OrderStatus, input: OrderActionInput): string | null => {
   const meta = ORDER_ACTIONS[to];
   const reason = (input.reason ?? "").trim();
   const carrier = (input.carrier ?? "").trim();
   const tracking = (input.trackingNo ?? "").trim();
-  if (meta?.needsReason && !reason) return "請填寫原因(會告知消費者)";
+  if (meta?.needsReason && !hasVisibleText(reason)) return "請填寫原因(會告知消費者)";
   if (reason.length > LIMITS.orderNote) return `原因最多 ${LIMITS.orderNote} 字`;
   if (meta?.needsCarrier && !carrier) return "請填寫物流(例如:黑貓宅急便、自行配送)";
   if (carrier.length > LIMITS.carrier) return `物流最多 ${LIMITS.carrier} 字`;

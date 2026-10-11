@@ -115,6 +115,12 @@ describe("validateOrderAction", () => {
     expect(validateOrderAction("shipped", { carrier: "黑貓" })).toBeNull();
     expect(validateOrderAction("confirmed", {})).toBeNull();
   });
+
+  it("原因只有全形空白、零寬字元也算沒填(資料庫的 market_visible 一樣會擋成 reason_required)", () => {
+    expect(validateOrderAction("rejected", { reason: "\u{3000}\u{200B}" })).toBe("請填寫原因(會告知消費者)");
+    expect(validateOrderAction("cancelled", { reason: "\u{FEFF}\u{2060}" })).toBe("請填寫原因(會告知消費者)");
+    expect(validateOrderAction("cancelled", { reason: "\u{200B}缺貨" })).toBeNull();
+  });
 });
 
 describe("寫入與查詢", () => {
