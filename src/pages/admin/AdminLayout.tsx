@@ -145,7 +145,7 @@ const SECTIONS: AdminSection[] = [
     ],
   },
   {
-    // 消費者食材市集(B2C,2026-10):商品審核、零售店家(第 2 階段加零售訂單)
+    // 消費者食材市集(B2C,2026-10):商品審核、零售店家、零售訂單
     key: 'market',
     to: '/admin/market/products',
     label: '零售市集',
@@ -154,6 +154,7 @@ const SECTIONS: AdminSection[] = [
     tabs: [
       { label: '商品審核', path: '/admin/market/products' },
       { label: '零售店家', path: '/admin/market/stores' },
+      { label: '零售訂單', path: '/admin/market/orders' },
     ],
   },
   {

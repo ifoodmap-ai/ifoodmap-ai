@@ -71,6 +71,7 @@ import AdminGrowthPage from "./pages/admin/AdminGrowthPage";
 import AdminCampaignsPage from "./pages/admin/AdminCampaignsPage";
 import AdminMarketProductsPage from "./pages/admin/AdminMarketProductsPage";
 import AdminMarketStoresPage from "./pages/admin/AdminMarketStoresPage";
+import AdminMarketOrdersPage from "./pages/admin/AdminMarketOrdersPage";
 
 // 供應商後台(僅前台站)
 import SupplierRoute from "./components/SupplierRoute";
@@ -139,6 +140,7 @@ const AdminRoutes = () => (
       {/* 消費者食材市集(B2C) */}
       <Route path="market/products" element={<AdminMarketProductsPage />} />
       <Route path="market/stores" element={<AdminMarketStoresPage />} />
+      <Route path="market/orders" element={<AdminMarketOrdersPage />} />
     </Route>
     <Route path="*" element={<Navigate to="/" replace />} />
   </Routes>
