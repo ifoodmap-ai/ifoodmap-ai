@@ -260,3 +260,138 @@ CREATE POLICY "market order events party insert" ON public.market_order_events
 
 REVOKE ALL ON FUNCTION public.market_transition_rules() FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION public.market_order_status_label(text) FROM PUBLIC, anon, authenticated;
+
+-- ---------------------------------------------------------------------
+-- 4. 狀態紀錄寫入前的檢查(guard)、只能新增、同一個 INSERT 同一張單只能一筆
+-- ---------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION public.market_guard_event()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+DECLARE
+  v_order    public.market_orders%ROWTYPE;
+  v_uid      uuid := auth.uid();
+  v_actor    text;
+  v_carrier  text;
+  v_tracking text;
+BEGIN
+  -- 鎖住訂單這一列:同一張單的並發操作在這裡排隊,後到的會讀到新狀態
+  SELECT * INTO v_order FROM public.market_orders o WHERE o.id = NEW.order_id FOR NO KEY UPDATE;
+  IF NOT FOUND THEN
+    RETURN NEW;  -- 交給外鍵報錯
+  END IF;
+
+  NEW.note := NULLIF(btrim(COALESCE(NEW.note, '')), '');
+  NEW.actor_id := v_uid;
+
+  -- 第一筆紀錄:訂單只能由 market_place_order 建立,建好的當下(同一個交易裡)還沒有任何紀錄
+  IF NOT EXISTS (SELECT 1 FROM public.market_order_events e WHERE e.order_id = NEW.order_id) THEN
+    IF NEW.to_status <> 'pending' OR NEW.from_status IS NOT NULL THEN
+      RAISE EXCEPTION '訂單的第一筆紀錄只能是「待接單」' USING ERRCODE = '42501', HINT = 'transition_not_allowed';
+    END IF;
+    NEW.actor_role := 'consumer';
+    NEW.payload := '{}'::jsonb;
+    NEW.created_at := now();
+    RETURN NEW;
+  END IF;
+
+  -- 身分由伺服器決定(前端送的 actor_role 不算)
+  IF public.is_admin() THEN
+    v_actor := 'admin';
+  ELSIF v_uid IS NOT NULL AND EXISTS (
+          SELECT 1 FROM public.supplier_accounts a
+           WHERE a.user_id = v_uid AND a.is_active AND a.supplier_id = v_order.supplier_id) THEN
+    v_actor := 'supplier';
+  ELSIF v_uid IS NULL AND COALESCE(auth.role(), 'service_role') = 'service_role' THEN
+    v_actor := 'system';
+  ELSE
+    RAISE EXCEPTION '這張零售訂單不是你家的,不能操作' USING ERRCODE = '42501', HINT = 'not_order_party';
+  END IF;
+  NEW.actor_role := v_actor;
+  IF v_actor <> 'system' THEN
+    NEW.created_at := now();
+  END IF;
+
+  -- 畫面過期:前端以為的狀態跟資料庫不一樣
+  IF NEW.from_status IS NOT NULL AND NEW.from_status IS DISTINCT FROM v_order.status THEN
+    RAISE EXCEPTION '這張訂單已經是「%」了,畫面上的資料過期,請重新整理', public.market_order_status_label(v_order.status)
+      USING ERRCODE = 'P0001', HINT = 'stale_order_status';
+  END IF;
+  NEW.from_status := v_order.status;
+
+  IF NOT EXISTS (
+       SELECT 1 FROM public.market_transition_rules() r
+        WHERE r.actor = v_actor AND r.from_status = v_order.status AND r.to_status = NEW.to_status
+          AND r.payment IN ('any', v_order.payment_method)) THEN
+    RAISE EXCEPTION '不能把訂單從「%」改成「%」',
+        public.market_order_status_label(v_order.status), public.market_order_status_label(NEW.to_status)
+      USING ERRCODE = '42501', HINT = 'transition_not_allowed';
+  END IF;
+
+  IF NEW.to_status IN ('rejected', 'cancelled') AND NEW.note IS NULL THEN
+    RAISE EXCEPTION '拒單或取消要填寫原因(會告知消費者)' USING ERRCODE = '22023', HINT = 'reason_required';
+  END IF;
+
+  IF NEW.to_status = 'shipped' THEN
+    v_carrier  := NULLIF(btrim(COALESCE(NEW.payload->>'carrier', '')), '');
+    v_tracking := NULLIF(btrim(COALESCE(NEW.payload->>'tracking_no', '')), '');
+    IF v_carrier IS NULL OR char_length(v_carrier) > 50 THEN
+      RAISE EXCEPTION '出貨要填寫物流(50 字以內)' USING ERRCODE = '22023', HINT = 'carrier_required';
+    END IF;
+    IF v_tracking IS NOT NULL AND char_length(v_tracking) > 100 THEN
+      RAISE EXCEPTION '物流單號太長(100 字以內)' USING ERRCODE = '22023', HINT = 'tracking_too_long';
+    END IF;
+    NEW.payload := jsonb_strip_nulls(jsonb_build_object('carrier', v_carrier, 'tracking_no', v_tracking));
+  ELSE
+    NEW.payload := '{}'::jsonb;
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_market_guard_event ON public.market_order_events;
+CREATE TRIGGER trg_market_guard_event
+BEFORE INSERT ON public.market_order_events
+FOR EACH ROW EXECUTE FUNCTION public.market_guard_event();
+
+CREATE OR REPLACE FUNCTION public.market_events_immutable()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = ''
+AS $$
+BEGIN
+  RAISE EXCEPTION '零售訂單的狀態紀錄只能新增,不能修改或刪除' USING ERRCODE = '42501', HINT = 'events_append_only';
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_market_events_immutable ON public.market_order_events;
+CREATE TRIGGER trg_market_events_immutable
+BEFORE UPDATE OR DELETE ON public.market_order_events
+FOR EACH ROW EXECUTE FUNCTION public.market_events_immutable();
+
+CREATE OR REPLACE FUNCTION public.market_events_one_per_order()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM new_events GROUP BY order_id HAVING count(*) > 1) THEN
+    RAISE EXCEPTION '同一張訂單一次只能寫一筆紀錄,請一步一步來' USING ERRCODE = 'P0001', HINT = 'one_event_per_order';
+  END IF;
+  RETURN NULL;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_market_events_one_per_order ON public.market_order_events;
+CREATE TRIGGER trg_market_events_one_per_order
+AFTER INSERT ON public.market_order_events
+REFERENCING NEW TABLE AS new_events
+FOR EACH STATEMENT EXECUTE FUNCTION public.market_events_one_per_order();
+
+REVOKE ALL ON FUNCTION public.market_guard_event() FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.market_events_immutable() FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.market_events_one_per_order() FROM PUBLIC, anon, authenticated;

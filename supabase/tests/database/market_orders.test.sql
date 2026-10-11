@@ -127,3 +127,55 @@ SELECT pg_temp.expect('A 不能自己建訂單',
     VALUES (gen_random_uuid(), 'a9200000-0000-4000-8000-00000000000a', '假單', '0912345678', 'a@market-test.invalid', '臺北市',
             '測試路 1 號', 100, 0, 100, 'cod', repeat('c', 64), 'v1')$q$),
   'ERR 42501');
+
+-- ---------------------------------------------------------------------
+-- 2. 狀態紀錄的 guard
+-- ---------------------------------------------------------------------
+SELECT pg_temp.expect('第一筆紀錄的身分是消費者',
+  (SELECT actor_role FROM public.market_order_events WHERE order_id = 'a9600000-0000-4000-8000-000000000001'), 'consumer');
+SELECT pg_temp.expect('已經有紀錄的單不能再寫「待接單」',
+  pg_temp.as_exec('postgres', '', $q$
+    INSERT INTO public.market_order_events (order_id, to_status) VALUES ('a9600000-0000-4000-8000-000000000001', 'pending')$q$),
+  'ERR 42501:transition_not_allowed');
+SELECT pg_temp.expect('B 不能操作 A 的單',
+  pg_temp.as_exec('authenticated', pg_temp.ub(), $q$
+    INSERT INTO public.market_order_events (order_id, from_status, to_status)
+    VALUES ('a9600000-0000-4000-8000-000000000001', 'pending', 'confirmed')$q$),
+  'ERR 42501:not_order_party');
+SELECT pg_temp.expect('anon 不能寫紀錄',
+  pg_temp.as_exec('anon', pg_temp.anon(), $q$
+    INSERT INTO public.market_order_events (order_id, to_status) VALUES ('a9600000-0000-4000-8000-000000000001', 'confirmed')$q$),
+  'ERR 42501');
+SELECT pg_temp.expect('A 不能從待接單直接出貨',
+  pg_temp.as_exec('authenticated', pg_temp.ua(), $q$
+    INSERT INTO public.market_order_events (order_id, from_status, to_status, payload)
+    VALUES ('a9600000-0000-4000-8000-000000000001', 'pending', 'shipped', '{"carrier":"黑貓"}')$q$),
+  'ERR 42501:transition_not_allowed');
+SELECT pg_temp.expect('畫面過期(前端以為已經接單)被擋',
+  pg_temp.as_exec('authenticated', pg_temp.ua(), $q$
+    INSERT INTO public.market_order_events (order_id, from_status, to_status, payload)
+    VALUES ('a9600000-0000-4000-8000-000000000001', 'confirmed', 'shipped', '{"carrier":"黑貓"}')$q$),
+  'ERR P0001:stale_order_status');
+SELECT pg_temp.expect('拒單沒填原因被擋',
+  pg_temp.as_exec('authenticated', pg_temp.ua(), $q$
+    INSERT INTO public.market_order_events (order_id, from_status, to_status, note)
+    VALUES ('a9600000-0000-4000-8000-000000000001', 'pending', 'rejected', '   ')$q$),
+  'ERR 22023:reason_required');
+SELECT pg_temp.expect('同一個 INSERT 對同一張單寫兩筆被擋',
+  pg_temp.as_exec('authenticated', pg_temp.ua(), $q$
+    INSERT INTO public.market_order_events (order_id, from_status, to_status, note) VALUES
+      ('a9600000-0000-4000-8000-000000000005', 'pending', 'confirmed', NULL),
+      ('a9600000-0000-4000-8000-000000000005', 'pending', 'rejected', '重複')$q$),
+  'ERR P0001:one_event_per_order');
+SELECT pg_temp.expect('紀錄不能修改',
+  pg_temp.as_exec('postgres', '', $q$
+    UPDATE public.market_order_events SET note = '竄改' WHERE order_id = 'a9600000-0000-4000-8000-000000000001'$q$),
+  'ERR 42501:events_append_only');
+SELECT pg_temp.expect('紀錄不能刪除(所以訂單也刪不掉)',
+  pg_temp.as_exec('postgres', '', $q$
+    DELETE FROM public.market_orders WHERE id = 'a9600000-0000-4000-8000-000000000001'$q$),
+  'ERR 42501:events_append_only');
+SELECT pg_temp.expect('供應商連 UPDATE 紀錄的權限都沒有',
+  pg_temp.as_exec('authenticated', pg_temp.ua(), $q$
+    UPDATE public.market_order_events SET note = '竄改' WHERE order_id = 'a9600000-0000-4000-8000-000000000001'$q$),
+  'ERR 42501');
