@@ -17388,3 +17388,7 @@ Task 23–25 先照計畫做完(三個 commit 跟計畫的程式碼區塊逐字�
 - 店家 logo / 封面沒有審核流程(上傳就公開);runbook 寫的是先停用店家再刪檔。
 - 派工時給的 token 檔(「執行前必讀」B 節的 scratchpad `.sbp`)在 2026-10-11 00:00 左右不見了;Task 29 要用 token 的乾跑都在那之前跑完。
   Task 31 開工前要先向派工者確認新的 token 檔。
+
+### 2026-10-11:Supabase Storage 2026-10-10 更新後的測試修正(commit `c261a85`,分支 `market`)
+
+Supabase 在 2026-10-10 23:48(台北)自動更新 Storage schema(storage migration 72 `drop-bucketid-objname-index`),拿掉 `storage.objects` 的 `(bucket_id, name)` unique index、只剩帶條件的 `idx_objects_current_version (bucket_id, name COLLATE "C") WHERE archived_at IS NULL`,`market_images_storage.test.sql` 原本的 `ON CONFLICT (bucket_id, name)` 因此回 42P10:upsert 覆寫那項改成 Storage 現在的寫法 `ON CONFLICT (bucket_id, name COLLATE "C") WHERE archived_at IS NULL`(仍是 42501),並新增一項不綁 ON CONFLICT 的檢查「同一路徑直接再 INSERT 被擋(23505 或 42501 都算)」,乾跑 19 → **20** 項(前面要改成 19 的 Expected 一律改成 20);migration 120100 只有 `storage.buckets` 的 `ON CONFLICT (id)`,不受影響。🔴 不要在 Dashboard 打開 `market-images` 的版本功能:打開後關不回 DISABLED,「照片只能寫一次」就不成立。
