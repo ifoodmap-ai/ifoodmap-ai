@@ -1,4 +1,6 @@
-// 商品頁的「加入購物車」:數量 + 按鈕。手機(≤ 880px)固定在畫面底部,桌機跟著內容走。
+// 商品頁的「加入購物車」:數量 + 按鈕。手機(≤ 880px)黏在畫面底部,桌機跟著內容走。
+// 用 sticky 不用 fixed:fixed 一直蓋在畫面最下面,捲到底時會蓋住頁尾的服務條款 / 隱私權政策連結(點不到、Tab 到也看不到);
+// sticky 只在商品資訊那一欄的範圍裡黏著,捲過了就回到原位,不會蓋到店家卡和頁尾。-mx-4 抵掉頁面的左右留白,手機上滿版。
 // 售完、預覽中(還沒上架)、購物車滿了都不能加;加入後用 role="status" 告訴螢幕閱讀器,並給「看購物車」連結。
 import { useState } from "react";
 import { Link } from "react-router-dom";
@@ -24,7 +26,7 @@ export default function AddToCart({ product }: { product: MarketProductRow }) {
     max === 0 ? "已售完" : remaining === 0 ? `購物車裡已經有 ${inCart} 件(已達可購買上限)` : full ? `購物車最多 ${CART_LIMITS.maxLines} 種商品` : null;
 
   return (
-    <div className="fixed inset-x-0 bottom-0 z-20 border-t border-slate-200 bg-white p-3 shadow-[0_-2px_8px_rgba(0,0,0,0.06)] min-[881px]:static min-[881px]:border-0 min-[881px]:p-0 min-[881px]:shadow-none">
+    <div className="sticky bottom-0 z-20 -mx-4 border-t border-slate-200 bg-white p-3 shadow-[0_-2px_8px_rgba(0,0,0,0.06)] min-[881px]:static min-[881px]:mx-0 min-[881px]:border-0 min-[881px]:p-0 min-[881px]:shadow-none">
       <div className="mx-auto flex max-w-6xl flex-wrap items-center gap-3">
         <QtyStepper value={Math.min(qty, Math.max(1, remaining))} max={Math.max(1, remaining)} onChange={setQty} label={`${product.name} 數量`} disabled={!!reason} />
         <button

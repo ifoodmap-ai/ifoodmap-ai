@@ -1,5 +1,5 @@
 // /market/p/:productId 商品頁:照片(最多 5 張)、品名、規格、價格、溫層、庫存、產地、保存方式、保存期限、說明,
-// 加入購物車(手機固定在畫面底部)、店家卡(店名、配送縣市、運費、免運門檻、最低訂購金額、出貨天數、付款方式)。
+// 加入購物車(手機黏在畫面底部)、店家卡(店名、配送縣市、運費、免運門檻、最低訂購金額、出貨天數、付款方式)。
 // 供應商 / 管理員打開自家還沒上架的商品時,照樣顯示但加「預覽」提示(消費者看不到,RLS 擋)。
 import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
@@ -56,7 +56,7 @@ export default function MarketProductPage() {
   ];
 
   return (
-    <div className="mx-auto max-w-6xl px-4 pb-32 pt-6 min-[881px]:pb-6">
+    <div className="mx-auto max-w-6xl px-4 py-6">
       <nav aria-label="麵包屑" className="mb-4 text-sm text-slate-600">
         <ol className="flex flex-wrap items-center gap-1">
           <li>

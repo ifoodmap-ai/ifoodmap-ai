@@ -127,6 +127,16 @@ describe("MarketProductPage", () => {
   });
 });
 
+describe("MarketProductPage:手機的加入購物車列", () => {
+  it("黏在畫面底部用 sticky、不用 fixed:fixed 捲到最底會蓋住頁尾的服務條款 / 隱私權政策(headless Chrome 390×844 實測)", async () => {
+    vi.mocked(fetchMarketProduct).mockResolvedValue(CABBAGE);
+    renderAt(CABBAGE.id);
+    const bar = (await screen.findByRole("group", { name: "有機高麗菜 數量" })).parentElement?.parentElement as HTMLElement;
+    expect(bar).toHaveClass("sticky", "bottom-0", "min-[881px]:static");
+    expect(bar).not.toHaveClass("fixed");
+  });
+});
+
 describe("MarketProductPage:縮圖列的焦點框", () => {
   it("縮圖列(橫向捲動)四周留出焦點框的空間,捲到邊緣時也留 scroll-padding", async () => {
     vi.mocked(fetchMarketProduct).mockResolvedValue({ ...CABBAGE, photos: [PHOTO(1), PHOTO(2)] });
