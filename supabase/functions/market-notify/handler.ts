@@ -23,7 +23,7 @@ import {
   renderEventMail,
   resolveEventMails,
 } from "./render.ts";
-import type { MarketSendMail } from "./send.ts";
+import { createRetryBudget, type MarketSendMail, type RetryBudget, TOTAL_WAIT_CAP_MS } from "./send.ts";
 
 export interface MarketNotifyDeps {
   db: Db;
@@ -36,6 +36,14 @@ export interface MarketNotifyDeps {
   isLive: () => boolean;
   log: LogFn;
 }
+
+/** 這次呼叫(一個 pg_net 請求)專用:log 在下單確認是遮 token 的 redactLog;budget 是這次呼叫所有信共用的等待額度 */
+interface RequestDeps extends MarketNotifyDeps {
+  budget: RetryBudget;
+}
+
+/** 連線失敗後重試、Resend 回 409:同一個 key 的第一次請求可能還在處理、其實已經寄出(send.ts 的 maybeDelivered) */
+const MAYBE_DELIVERED_NOTE = "(重試時 Resend 回 409,第一次可能已經寄出,人工補寄前請先確認收件人沒收到)";
 
 // 讀資料用的欄位(handler.test.ts 會對照 migration 的 CREATE TABLE,打錯字測試就會失敗;測試的假資料庫也照這些字串只回傳選到的欄位)
 export const ORDER_COLUMNS =
@@ -207,7 +215,7 @@ const recordSkipped = async (
 
 /** 經過閘門寄出,每封都記一筆 notifications */
 const deliver = async (
-  deps: MarketNotifyDeps,
+  deps: RequestDeps,
   live: boolean,
   recipient: { email: string; audience: MarketAudience },
   mail: Mail,
@@ -228,6 +236,8 @@ const deliver = async (
       // 回信一律到平台信箱:🔴 店家的 contact_email 是收新訂單通知的信箱,不給消費者(要聯絡店家看信裡的店家電話)
       replyTo: deps.config.replyTo,
       idempotencyKey,
+      // 這次呼叫所有信共用的等待額度(5 秒截止時間):整次呼叫落在 pg_net 的 8 秒逾時以內
+      budget: deps.budget,
       // 被限速(429)、伺服器錯誤或連線失敗時 send.ts 會重試(同一個 key);每次重試記一筆,只有狀態碼與第幾次
       // (deps.log 在下單確認是遮 token 的 redactLog)
       onRetry: ({ status, attempt }) => deps.log("info", { fn: "market-notify", step: "send-retry", audience: d.audience, status, attempt }),
@@ -236,7 +246,7 @@ const deliver = async (
       recipient: d.to,
       channel: "email",
       title: d.subject,
-      message: logMessage + (forwarded ? `(測試轉寄,原收件人:${original})` : ""),
+      message: logMessage + (forwarded ? `(測試轉寄,原收件人:${original})` : "") + (!r.ok && r.maybeDelivered ? MAYBE_DELIVERED_NOTE : ""),
       status: r.ok ? "sent" : "failed",
       sent_at: r.ok ? new Date().toISOString() : null,
     });
@@ -249,7 +259,7 @@ const deliver = async (
 const summary = (live: boolean, results: { ok: boolean }[], extra: Row = {}) =>
   json({ data: { live, sent: results.filter((r) => r.ok).length, total: results.length, ...extra } });
 
-const handlePlaced = async (deps: MarketNotifyDeps, live: boolean, body: Row): Promise<Response> => {
+const handlePlaced = async (deps: RequestDeps, live: boolean, body: Row): Promise<Response> => {
   const checkoutId = str(body.checkout_id);
   const token = str(body.token);
   if (!UUID_RE.test(checkoutId) || !TOKEN_RE.test(token)) return json({ message: "checkout_id 或 token 格式不對" }, 400);
@@ -281,7 +291,7 @@ const handlePlaced = async (deps: MarketNotifyDeps, live: boolean, body: Row): P
   return summary(live, results, { orders: mailOrders.length });
 };
 
-const handleEvent = async (deps: MarketNotifyDeps, live: boolean, body: Row): Promise<Response> => {
+const handleEvent = async (deps: RequestDeps, live: boolean, body: Row): Promise<Response> => {
   const eventId = str(body.event_id);
   if (!UUID_RE.test(eventId)) return json({ message: "event_id 格式不對" }, 400);
 
@@ -344,6 +354,8 @@ const handleEvent = async (deps: MarketNotifyDeps, live: boolean, body: Row): Pr
 export const createMarketNotifyHandler =
   (deps: MarketNotifyDeps) =>
   async (req: Request): Promise<Response> => {
+    // 這次呼叫所有信共用的等待額度:從收到請求就開始算(讀資料庫、寄信本身的時間都算在內),5 秒截止
+    const budget = createRetryBudget(TOTAL_WAIT_CAP_MS);
     if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
     if (req.method !== "POST") return json({ message: "Method not allowed" }, 405);
     if (!deps.secret) return json({ message: "NOTIFY_SECRET 未設定" }, 503);
@@ -353,7 +365,7 @@ export const createMarketNotifyHandler =
     const live = deps.isLive();
     // 🔴 帶了格式正確的 token(placed)時,這次請求的 log 一律先遮掉 token(格式不對的在 handlePlaced 直接 400,不會寫 log)
     const token = body?.kind === "placed" && typeof body.token === "string" && TOKEN_RE.test(body.token) ? body.token : "";
-    const reqDeps: MarketNotifyDeps = token ? { ...deps, log: redactLog(deps.log, token) } : deps;
+    const reqDeps: RequestDeps = { ...deps, log: token ? redactLog(deps.log, token) : deps.log, budget };
     try {
       if (body?.kind === "placed") return await handlePlaced(reqDeps, live, body);
       if (body?.kind === "event") return await handleEvent(reqDeps, live, body);

@@ -803,6 +803,160 @@ describe("market-notify:狀態紀錄", () => {
     }
   });
 
+  // ---- 第 3 階段審查:一次呼叫(一個 pg_net 請求)裡的信共用一個 5 秒的等待額度,整次呼叫落在 pg_net 的 8 秒逾時以內 ----
+  /** 用假的 timer 推時間;每推 50 毫秒前先讓真的非同步(驗密鑰、算雜湊的 crypto)跑完 */
+  const drive = async (isDone: () => boolean, maxMs = 12_000) => {
+    const yieldReal = () => new Promise<void>((resolve) => setImmediate(resolve));
+    for (let t = 0; t <= maxMs && !isDone(); t += 50) {
+      for (let i = 0; i < 30; i += 1) await yieldReal();
+      if (isDone()) break;
+      await vi.advanceTimersByTimeAsync(50);
+    }
+  };
+  /** 假的 Resend:到達時依「這一秒已經收了幾個」決定收或回 429,回應要等 latencyMs(假的 timer) */
+  const fakeResend = (perSecond: number, latencyMs: number) => {
+    const accepted: { key: string; at: number }[] = [];
+    const rejected: { key: string; at: number }[] = [];
+    const fetchImpl = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const at = Date.now();
+      const key = (init?.headers as Record<string, string>)["Idempotency-Key"];
+      const ok = accepted.filter((a) => Math.floor(a.at / 1000) === Math.floor(at / 1000)).length < perSecond;
+      (ok ? accepted : rejected).push({ key, at });
+      await new Promise<void>((done) => setTimeout(done, latencyMs));
+      return ok
+        ? new Response(JSON.stringify({ id: `re_${accepted.length}` }), { status: 200 })
+        : new Response('{"name":"rate_limit_exceeded"}', { status: 429 });
+    }) as typeof fetch;
+    return { fetchImpl, accepted, rejected };
+  };
+  /** 每封信各自建寄信包裝(真的重試邏輯,等待走假的 setTimeout),記下每個 key 等了多久 */
+  const timedSender = (fetchImpl: typeof fetch, random: () => number) => {
+    const waits = new Map<string, number>();
+    const send: MarketSendMail = (msg) =>
+      createMarketResendSender("re_key", fetchImpl, {
+        random,
+        sleep: (ms) => {
+          waits.set(msg.idempotencyKey, (waits.get(msg.idempotencyKey) ?? 0) + ms);
+          return new Promise<void>((done) => setTimeout(done, ms));
+        },
+      })(msg);
+    return { send, waits };
+  };
+
+  it("同一次呼叫的信共用一個 5 秒額度:平台取消(兩封)遇到 Resend 一直 429,整次呼叫的等待加起來不超過 5 秒", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    vi.setSystemTime(new Date("2026-10-12T03:00:00Z"));
+    try {
+      const fetchImpl = (async () => new Response('{"name":"rate_limit_exceeded"}', { status: 429 })) as unknown as typeof fetch;
+      const t = timedSender(fetchImpl, () => 0.5);
+      const s = setup({ live: true, send: t.send });
+      const started = Date.now();
+      let elapsed = -1;
+      const pending = s.call({ kind: "event", event_id: EV(5) }).then((r) => {
+        elapsed = Date.now() - started;
+        return r;
+      });
+      await drive(() => elapsed >= 0);
+      const r = await pending;
+      expect(r.body.data).toMatchObject({ sent: 0, total: 2 });
+      expect([...t.waits.values()].reduce((a, b) => a + b, 0)).toBeLessThanOrEqual(5_000); // 兩封加起來(原本每封各 5 秒,共 10 秒)
+      expect(elapsed).toBeLessThanOrEqual(5_000);
+      expect(s.db.tables.notifications.map((n) => n.status)).toEqual(["failed", "failed"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // 第 3 階段審查 M6
+  it("連線失敗後重試、Resend 回 409:記 failed,message 寫清楚第一次可能已經寄出;其他 409 照原本", async () => {
+    let n = 0;
+    const flaky = (async () => {
+      n += 1;
+      if (n === 1) throw new TypeError("connection reset");
+      return new Response('{"name":"concurrent_idempotent_requests"}', { status: 409 });
+    }) as unknown as typeof fetch;
+    const s = setup({ live: true, send: createMarketResendSender("re_key", flaky, { sleep: async () => undefined, random: () => 0 }) });
+    await s.call({ kind: "event", event_id: EV(2) });
+    expect(s.db.tables.notifications[0]).toMatchObject({ status: "failed", sent_at: null });
+    expect(String(s.db.tables.notifications[0].message)).toContain("(重試時 Resend 回 409,第一次可能已經寄出,人工補寄前請先確認收件人沒收到)");
+    const conflict = (async () => new Response('{"name":"invalid_idempotent_request"}', { status: 409 })) as unknown as typeof fetch;
+    const s2 = setup({ live: true, send: createMarketResendSender("re_key", conflict, { sleep: async () => undefined }) });
+    await s2.call({ kind: "event", event_id: EV(2) });
+    expect(s2.db.tables.notifications[0]).toMatchObject({ status: "failed" });
+    expect(String(s2.db.tables.notifications[0].message)).not.toContain("第一次可能已經寄出");
+  });
+
+  /** 可重現的亂數(mulberry32) */
+  const seeded = (seed: number) => () => {
+    seed = (seed + 0x6d2b79f5) | 0;
+    let x = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    x = (x + Math.imul(x ^ (x >>> 7), 61 | x)) ^ x;
+    return ((x ^ (x >>> 14)) >>> 0) / 4294967296;
+  };
+
+  it.each([
+    ["沒有抖動", () => 0],
+    ["抖動一半", () => 0.5],
+    ["抖動最大", () => 0.999],
+    ...[1, 2, 3, 4, 5, 6, 7, 8].map((seed) => [`亂數 seed ${seed}`, seeded(seed)] as [string, () => number]),
+  ])("模擬:Resend 每秒只收 2 個請求、每個請求 0.3 秒;3 張單同時被取消(6 封信、3 次呼叫)— %s", async (_label, random) => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    vi.setSystemTime(new Date("2026-10-12T03:00:00Z"));
+    try {
+      const resend = fakeResend(2, 300);
+      const t = timedSender(resend.fetchImpl, random);
+      const s = setup({ live: true, send: t.send });
+      // 第三家店 C;三家店都有聯絡信箱;三張單同一刻被系統自動取消(待接單逾時)
+      const SUP_C = "a9200000-0000-4000-8000-00000000000c";
+      const ORDER_C = "a9600000-0000-4000-8000-0000000000c1";
+      s.db.tables.suppliers[1].contact_email = "store-b@example.com";
+      s.db.tables.suppliers.push({ id: SUP_C, name: "市集測試 C 店", contact_email: "store-c@example.com", phone: null });
+      s.db.tables.market_stores.push({ supplier_id: SUP_C, ship_days: 1 });
+      s.db.tables.market_orders.push(order({ id: ORDER_C, supplier_id: SUP_C, subtotal: 300, shipping_fee: 0, total: 300 }));
+      s.db.tables.market_order_items.push({ order_id: ORDER_C, product_name: "土雞蛋", spec: "10 顆", qty: 1, unit_price: 300, line_total: 300 });
+      const events = [
+        [EV(51), ORDER_A],
+        [EV(52), ORDER_B],
+        [EV(53), ORDER_C],
+      ] as const;
+      for (const [id, orderId] of events) {
+        s.db.tables.market_order_events.push({
+          id,
+          order_id: orderId,
+          from_status: "pending",
+          to_status: "cancelled",
+          actor_role: "system",
+          note: "店家超過 72 小時沒有接單,系統自動取消",
+          payload: { auto_expire: "pending" },
+        });
+      }
+      const started = Date.now();
+      const elapsed: Record<string, number> = {};
+      const all = Promise.all(
+        events.map(([id]) =>
+          s.call({ kind: "event", event_id: id }).then((r) => {
+            elapsed[id] = Date.now() - started;
+            return r;
+          }),
+        ),
+      );
+      await drive(() => Object.keys(elapsed).length === 3);
+      const results = await all;
+      expect(results.map((r) => r.status)).toEqual([200, 200, 200]);
+      for (const [id] of events) {
+        expect(elapsed[id], `${id} 整次呼叫`).toBeLessThan(8_000); // pg_net 的逾時
+        const waited = (t.waits.get(`market-notify:${id}:consumer`) ?? 0) + (t.waits.get(`market-notify:${id}:supplier`) ?? 0);
+        expect(waited, `${id} 等待`).toBeLessThanOrEqual(5_000);
+      }
+      expect(resend.rejected.length).toBeGreaterThan(0); // 真的碰到限速
+      const statuses = s.db.tables.notifications.map((n) => n.status);
+      expect(statuses).toHaveLength(6);
+      expect(statuses.filter((x) => x === "sent")).toHaveLength(6); // 6 封都記成 sent
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("讀資料庫失敗 500(不洩漏細節)", async () => {
     const s = setup({ fail: (table) => (table === "market_orders" ? { message: "boom" } : undefined) });
     const r = await s.call({ kind: "event", event_id: EV(1) });

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { createMarketResendSender, retryAfterMs, type MarketRetryInfo } from "./send.ts";
+import { createMarketResendSender, createRetryBudget, retryAfterMs, type MarketRetryInfo, type RetryBudget } from "./send.ts";
 
 describe("createMarketResendSender(Resend + Idempotency-Key)", () => {
   const msg = {
@@ -75,16 +75,26 @@ describe("遇到限速、伺服器錯誤、連線失敗會重試(最多 3 次、
     return { impl, keys };
   };
   /** 注入假的 sleep(只記下要等多久,不真的等)與固定的亂數 */
-  const make = (impl: ReturnType<typeof scripted>["impl"], random = () => 0) => {
+  /** 注入假的時鐘與 sleep(sleep 只把假時鐘往前推,不真的等)與固定的亂數;額度是照時鐘算的截止時間 */
+  const make = (impl: ReturnType<typeof scripted>["impl"], random = () => 0, clock = { t: 0 }) => {
     const waits: number[] = [];
     const retries: MarketRetryInfo[] = [];
+    const now = () => clock.t;
     const send = createMarketResendSender("re_key", impl as unknown as typeof fetch, {
       sleep: async (ms) => {
         waits.push(ms);
+        clock.t += ms;
       },
       random,
+      now,
     });
-    return { waits, retries, run: () => send({ ...msg, onRetry: (info) => retries.push(info) }) };
+    return {
+      waits,
+      retries,
+      clock,
+      now,
+      run: (budget?: RetryBudget) => send({ ...msg, onRetry: (info) => retries.push(info), ...(budget ? { budget } : {}) }),
+    };
   };
   const total = (xs: number[]) => xs.reduce((a, b) => a + b, 0);
 
@@ -170,6 +180,56 @@ describe("遇到限速、伺服器錯誤、連線失敗會重試(最多 3 次、
     const s3 = make(f3.impl);
     await expect(s3.run()).resolves.toMatchObject({ ok: true });
     expect(s3.waits).toEqual([2000, 2000, 1000]); // 第 3 次只剩 1 秒額度
+  });
+
+  // 第 3 階段審查 M5:有 retry-after 時也加抖動(最多 0.5 秒),被擋的信不會在同一刻一起重試
+  it("有 retry-after 時也加最多 0.5 秒的抖動(retry-after 先封頂 3 秒再加)", async () => {
+    const s1 = make(scripted(reply(429, "{}", { "retry-after": "1" }), ok).impl, () => 0.999);
+    await expect(s1.run()).resolves.toMatchObject({ ok: true });
+    expect(s1.waits).toEqual([1499]);
+    const s2 = make(scripted(reply(429, "{}", { "retry-after": "30" })).impl, () => 0.999);
+    await s2.run();
+    expect(s2.waits).toEqual([3499, 1501]); // 第 2 次只剩 5000 − 3499 毫秒
+  });
+
+  // 第 3 階段審查 Important:一次呼叫(一個 pg_net 請求)裡的信共用一個 5 秒的額度,寄信本身的時間也算在內
+  it("同一次呼叫的兩封信共用一個 5 秒額度:不管寄幾封,等待加起來不超過 5 秒", async () => {
+    const clock = { t: 0 };
+    const first = make(scripted(reply(429)).impl, () => 0, clock);
+    const second = make(scripted(reply(429)).impl, () => 0, clock);
+    const budget = createRetryBudget(5_000, () => clock.t);
+    await expect(first.run(budget)).resolves.toMatchObject({ ok: false });
+    await expect(second.run(budget)).resolves.toMatchObject({ ok: false });
+    expect(first.waits).toEqual([700, 1500, 2500]);
+    expect(second.waits).toEqual([300]); // 第一封用掉 4.7 秒,第二封只剩 0.3 秒
+    expect(total([...first.waits, ...second.waits])).toBe(5_000);
+    expect(budget.remainingMs()).toBe(0);
+  });
+
+  it("寄信本身的時間也算進額度(額度是截止時間,不是等待的加總)", async () => {
+    const clock = { t: 0 };
+    const keys: string[] = [];
+    const slow = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      keys.push((init?.headers as Record<string, string>)["Idempotency-Key"]);
+      clock.t += 1_000; // 每次請求要 1 秒
+      return new Response("{}", { status: 429 });
+    });
+    const s = make(slow, () => 0, clock);
+    await expect(s.run()).resolves.toMatchObject({ ok: false });
+    // 0–1 秒請求、等 0.7、1.7–2.7 秒請求、等 1.5、4.2–5.2 秒請求;這時已過截止時間,不再等也不再重試
+    expect(s.waits).toEqual([700, 1500]);
+    expect(slow).toHaveBeenCalledTimes(3);
+    expect(clock.t).toBe(5_200);
+  });
+
+  // 第 3 階段審查 M6:連線失敗之後重試,Resend 回 409 表示第一次的請求可能還在處理、其實已經寄出
+  it("連線失敗後重試回 409:回失敗、標記第一次可能已經寄出;其他 409 照原本", async () => {
+    const r1 = await make(scripted(boom, reply(409, '{"name":"concurrent_idempotent_requests"}')).impl).run();
+    expect(r1).toEqual({ ok: false, id: null, error: 'Resend 409: {"name":"concurrent_idempotent_requests"}', maybeDelivered: true });
+    const r2 = await make(scripted(reply(409)).impl).run();
+    expect(r2).toEqual({ ok: false, id: null, error: "Resend 409: {}" });
+    const r3 = await make(scripted(reply(503), reply(409)).impl).run();
+    expect(r3).toEqual({ ok: false, id: null, error: "Resend 409: {}" });
   });
 
   it("retry-after 的寫法:秒數(可以有小數)、HTTP 日期;讀不出來回 null、過去的時間是 0", () => {

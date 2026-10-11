@@ -1,6 +1,6 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { formatOrderNo } from "../../../src/lib/order-number.ts";
 import { taipeiTime } from "../_shared/supplier-mail.ts";
 import {
@@ -422,6 +422,36 @@ describe("匯款期限:待匯款那筆紀錄的建立時間 + 72 小時,一律�
 
   // taipeiTime 直接用 Intl 的格式:新版 ICU(Node 25)在日期與時間之間放的是 U+2009 細空白,別的 ICU 版本可能是一般空白;
   // 這裡逐欄組、一律用一般空白,不管跑在哪個 runtime 都一樣 —— 所以比對時把空白類字元都當成一般空白
+  // 第 3 階段審查 M2:日期格式物件是載入模組時建好的,上面那項是載入「之後」才換時區(拿掉 timeZone 照樣綠)。
+  // 這裡先把預設時區換成 UTC 再重新載入模組:拿掉 timeZone 的話,格式物件會用 UTC,這項就紅
+  it("在別的時區(UTC)載入模組,期限照樣是台北時間", async () => {
+    const before = process.env.TZ;
+    process.env.TZ = "UTC";
+    try {
+      vi.resetModules();
+      expect(new Intl.DateTimeFormat().resolvedOptions().timeZone).toBe("UTC"); // 這時候預設時區真的是 UTC
+      const fresh = await import("./render.ts");
+      expect(fresh.paymentDeadline("2026-10-12T17:30:00Z")).toBe("2026/10/16 01:30\u{FF08}台北時間\u{FF09}");
+      expect(fresh.taipeiDateTime(new Date("2026-10-15T16:30:00Z"))).toBe("2026/10/16 00:30\u{FF08}台北時間\u{FF09}");
+      const m = fresh.renderEventMail("consumer_awaiting_payment", CTX);
+      expect(m.text).toContain("請在 2026/10/15 11:00\u{FF08}台北時間\u{FF09}前完成匯款");
+    } finally {
+      if (before === undefined) delete process.env.TZ;
+      else process.env.TZ = before;
+      vi.resetModules();
+    }
+  });
+
+  // 第 3 階段審查 M3:卡在分鐘邊界 —— 無條件捨去到分鐘(不四捨五入),跟前端 src/lib/market/autoCancel.ts 一樣用 Intl 只取到分鐘
+  it.each([
+    ["2026-10-12T02:59:59.999999+00:00", "2026/10/15 10:59"], // 差 1 微秒就 11:00:捨去
+    ["2026-10-12T02:59:30.000000+00:00", "2026/10/15 10:59"], // 30 秒也捨去
+    ["2026-10-12T15:59:59.999999Z", "2026/10/15 23:59"], // 捨去不會進到隔天
+    ["2026-10-12T03:00:00.000000+00:00", "2026/10/15 11:00"], // 剛好整分
+  ])("分鐘邊界 %s → %s(捨去,不進位)", (createdAt, expected) => {
+    expect(paymentDeadline(createdAt)).toBe(`${expected}\u{FF08}台北時間\u{FF09}`);
+  });
+
   it("寫法跟信裡現有的日期一樣(_shared/supplier-mail.ts 的 taipeiTime;空白一律用一般空白)", () => {
     for (const iso of ["2026-10-15T03:00:00Z", "2026-10-16T05:07:00Z"]) {
       expect(taipeiDateTime(new Date(iso))).toBe(taipeiTime(iso).replace(/\s/gu, " "));
