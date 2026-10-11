@@ -179,6 +179,8 @@ export interface EventContext {
   transferInfo: string;
   /** 供應商後台的訂單連結(只放在寄給供應商的信) */
   supplierOrdersUrl: string;
+  /** 這張單已收款(paid_at 有值,或這筆紀錄是從 paid 轉過來的):取消信要說明退款由店家處理 */
+  paid: boolean;
 }
 
 const LOOKUP_HINT = "訂單進度請用「下單確認信」裡的「查看訂單」連結查看。";
@@ -235,8 +237,16 @@ const eventMail = (kind: EventMailKind, c: EventContext): Mail => {
     }
     case "consumer_cancelled": {
       const subject = `訂單已取消 — ${label}`;
-      const html = shell("訂單已取消", p(`您在「${esc(o.storeName)}」的訂單 ${esc(label)} 已取消。`) + box("原因", c.reason || "(沒有填寫)") + p(esc("如果已經匯款,請直接聯絡店家退款。")) + phoneHtml(o));
-      const text = [`您在「${o.storeName}」的訂單 ${label} 已取消。`, `原因:${c.reason || "(沒有填寫)"}`, "如果已經匯款,請直接聯絡店家退款。", phoneText(o)].filter(Boolean).join("\n");
+      // 已收款的單被取消(paid → cancelled):退款由店家處理、平台不經手款項,電話寫在同一句裡
+      const refund = c.paid
+        ? `這張訂單店家已確認收款,退款由店家處理,請直接聯絡店家${o.storePhone ? `(店家電話:${o.storePhone})` : ""}。iFoodmap 平台不經手款項。`
+        : "如果已經匯款,請直接聯絡店家退款。";
+      const contact = c.paid ? "" : phoneText(o);
+      const html = shell(
+        "訂單已取消",
+        p(`您在「${esc(o.storeName)}」的訂單 ${esc(label)} 已取消。`) + box("原因", c.reason || "(沒有填寫)") + p(esc(refund)) + (contact ? p(esc(contact)) : ""),
+      );
+      const text = [`您在「${o.storeName}」的訂單 ${label} 已取消。`, `原因:${c.reason || "(沒有填寫)"}`, refund, contact].filter(Boolean).join("\n");
       return { subject, html, text };
     }
     case "supplier_cancelled_by_platform": {

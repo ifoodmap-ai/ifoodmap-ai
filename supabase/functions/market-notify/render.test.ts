@@ -24,6 +24,7 @@ const CTX: EventContext = {
   trackingNo: "9001",
   transferInfo: "台灣銀行 004\n帳號 0123-456-789",
   supplierOrdersUrl: "https://app.ifoodmap.ai/supplier/market/orders",
+  paid: false,
 };
 
 describe("resolveEventMails", () => {
@@ -285,6 +286,40 @@ describe("給消費者的信附店家電話(不給店家的 contact_email)", () 
     for (const m of [placed, ...CONSUMER.map((k) => renderEventMail(k, { ...CTX, order }))]) {
       expect(m.html, m.subject).not.toContain("店家電話");
       expect(m.text, m.subject).not.toContain("店家電話");
+    }
+  });
+});
+
+describe("已收款的單被取消(paid → cancelled)", () => {
+  it("給消費者的取消信:退款由店家處理、請直接聯絡店家(附電話)、平台不經手款項", () => {
+    const m = renderEventMail("consumer_cancelled", { ...CTX, paid: true });
+    for (const body of [m.html, m.text]) {
+      expect(body).toContain("店家已確認收款");
+      expect(body).toContain("退款由店家處理,請直接聯絡店家(店家電話:02-2345-6789)");
+      expect(body).toContain("iFoodmap 平台不經手款項");
+      expect(body).not.toContain("如果已經匯款");
+    }
+  });
+
+  it("店家沒有填電話:照樣說明退款由店家處理,不寫電話", () => {
+    const m = renderEventMail("consumer_cancelled", { ...CTX, paid: true, order: { ...ORDER, storePhone: "" } });
+    expect(m.text).toContain("退款由店家處理,請直接聯絡店家。iFoodmap 平台不經手款項。");
+    expect(m.html).not.toContain("店家電話");
+  });
+
+  it("還沒收款的取消信不變(如果已經匯款,請直接聯絡店家退款)", () => {
+    const m = renderEventMail("consumer_cancelled", CTX);
+    expect(m.text).toContain("如果已經匯款,請直接聯絡店家退款。");
+    expect(`${m.html}${m.text}`).not.toContain("不經手款項");
+  });
+
+  it("寄給誰不看是不是已收款:店家取消只通知消費者,管理員 / 系統取消也通知店家不要出貨", () => {
+    expect(resolveEventMails({ toStatus: "cancelled", actorRole: "supplier", paymentMethod: "transfer" })).toEqual(["consumer_cancelled"]);
+    for (const actorRole of ["admin", "system"]) {
+      expect(resolveEventMails({ toStatus: "cancelled", actorRole, paymentMethod: "transfer" }), actorRole).toEqual([
+        "consumer_cancelled",
+        "supplier_cancelled_by_platform",
+      ]);
     }
   });
 });

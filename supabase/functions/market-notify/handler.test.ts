@@ -290,6 +290,45 @@ describe("market-notify:狀態紀錄", () => {
     }
   });
 
+  // 審查追加(新規則):已收款的轉帳單也能取消(paid → cancelled;店家、管理員、系統都能做,原因必填)
+  it("已收款的單被取消:消費者的信說明退款由店家處理(附電話、平台不經手款項);管理員 / 系統取消也通知店家", async () => {
+    const paidCancel = (id: string, actor: string, orderId = ORDER_A) => ({
+      id,
+      order_id: orderId,
+      from_status: "paid",
+      to_status: "cancelled",
+      actor_role: actor,
+      note: "缺貨無法出貨",
+      payload: {},
+    });
+    const s = setup({ live: true });
+    s.db.tables.market_order_events.push(paidCancel(EV(11), "supplier"), paidCancel(EV(12), "admin"), paidCancel(EV(13), "system"));
+    Object.assign(s.db.tables.market_orders.find((o) => o.id === ORDER_A)!, { payment_method: "transfer", paid_at: "2026-10-11T03:00:00Z" });
+    const kinds: unknown[] = [];
+    for (const id of [EV(11), EV(12), EV(13)]) kinds.push((await s.call({ kind: "event", event_id: id })).body.data.kinds);
+    expect(kinds).toEqual([
+      ["consumer_cancelled"],
+      ["consumer_cancelled", "supplier_cancelled_by_platform"],
+      ["consumer_cancelled", "supplier_cancelled_by_platform"],
+    ]);
+    const msgs = s.send.mock.calls.map((c) => c[0]);
+    expect(msgs.map((m) => m.to[0])).toEqual(["buyer@example.com", "buyer@example.com", "store-a@example.com", "buyer@example.com", "store-a@example.com"]);
+    for (const m of msgs.filter((x) => x.to[0] === "buyer@example.com")) {
+      expect(m.text).toContain("退款由店家處理,請直接聯絡店家(店家電話:02-2345-6789)");
+      expect(m.text).toContain("iFoodmap 平台不經手款項");
+      expect(m.html).toContain("iFoodmap 平台不經手款項");
+    }
+    // 只看紀錄的 from_status 也算(paid_at 沒帶到的情況)
+    const s2 = setup({ live: true });
+    s2.db.tables.market_order_events.push(paidCancel(EV(11), "supplier"));
+    await s2.call({ kind: "event", event_id: EV(11) });
+    expect(s2.send.mock.calls[0][0].text).toContain("退款由店家處理");
+    // 還沒收款的取消不變
+    const s3 = setup({ live: true });
+    await s3.call({ kind: "event", event_id: EV(5) });
+    expect(s3.send.mock.calls[0][0].text).toContain("如果已經匯款,請直接聯絡店家退款。");
+  });
+
   it("讀資料庫失敗 500(不洩漏細節)", async () => {
     const s = setup({ fail: (table) => (table === "market_orders" ? { message: "boom" } : undefined) });
     const r = await s.call({ kind: "event", event_id: EV(1) });

@@ -37,7 +37,7 @@ export interface MarketNotifyDeps {
 
 // 讀資料用的欄位(handler.test.ts 會對照 migration 的 CREATE TABLE,打錯字測試就會失敗)
 export const ORDER_COLUMNS =
-  "id, checkout_id, supplier_id, status, buyer_name, buyer_email, ship_city, ship_address, buyer_note, subtotal, shipping_fee, total, payment_method, lookup_token_hash";
+  "id, checkout_id, supplier_id, status, buyer_name, buyer_email, ship_city, ship_address, buyer_note, subtotal, shipping_fee, total, payment_method, lookup_token_hash, paid_at";
 export const ITEM_COLUMNS = "product_name, spec, qty, unit_price, line_total";
 export const EVENT_COLUMNS = "id, order_id, from_status, to_status, actor_role, note, payload";
 
@@ -246,6 +246,8 @@ const handleEvent = async (deps: MarketNotifyDeps, live: boolean, body: Row): Pr
     trackingNo: str(payload.tracking_no),
     transferInfo: str(transfer?.transfer_info),
     supplierOrdersUrl: `${deps.config.siteUrl}/supplier/market/orders`,
+    // 已收款:訂單上有 paid_at(套用狀態時寫入、之後不會清掉),或這筆紀錄本身就是從 paid 轉出(paid → cancelled)
+    paid: (order.paid_at !== null && order.paid_at !== undefined) || ev.from_status === "paid",
   };
 
   const supplierEmail = str(supplier?.contact_email);
