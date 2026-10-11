@@ -17558,3 +17558,44 @@ gate / render / handler / index 與 `config.toml` 先照計畫的程式碼區塊
 - 審查員的突變腳本(`scratchpad/review-notify/mutate.mjs`,51 處):修改前 36 殺 / 15 存活;修改後同一份清單 **46 殺 / 0 存活**、5 處的 find 字串已不存在(這次改寫的 G13、A1、A2、E4、E5)。v2 腳本(`scratchpad/review-notify-v2/mutate2.mjs`:那 5 處照新程式改寫、另加 14 處這次的新功能)65 處 **64 殺、1 存活**(N3:下單確認的主旨沒有任何變數,拿掉 oneLine 輸出不變,等價)。原本存活的 15 處全部變紅,含可以扣掉的 G15(等價後門)、T3(等價)、S3(文案)。
 - 審查員的 e2e(`scratchpad/review-notify/e2e/e2e.test.ts` 原檔,程式換成新版):19 / 20,唯一紅的是記錄舊行為的「店名的 CRLF 原樣進主旨」(第 4 點修掉了);把那項反過來、另加一項「每個 Resend 請求都帶 Idempotency-Key」的改版(`review-notify-v2/e2e/e2e-adapted.test.ts`)21 / 21。
 - 🔴 在 scratchpad 跑突變 / e2e 要固定 vitest 版本:repo 的 `node_modules/.bin` 在 16:07 左右短暫消失過(有人在重裝),那段時間 scratchpad 裡的 `npx vitest` 會改用 npx 快取的 **vitest 4.1.11**,同一組測試固定多 3 項失敗,讓每個突變都看起來被殺了。改用 `node /Users/aimand/.gemini/File/ifoodmap/node_modules/vitest/vitest.mjs`(2.1.9)跑,上面的數字都是這樣得到的。
+
+### 2026-10-11:第 2 階段三支 migration 審查修正(commit `2e843dd`、`5a6ce74`、`8db6138`、`9c820d1`、`4efbf5b`、`f1487ac`、`51d6087`、`b792648`、`4b73061`、`d55b19c`、`6e0e208`,分支 `market`)
+
+審查沒有 Critical;下面每一項都先寫測試、看到失敗才改(只補測試的用突變驗證)。130000、130200 都還沒套正式庫,直接改原檔。**以 repo 為準。** 乾跑一律不帶 120000 / 120100。
+
+1. **已收款的轉帳單也能取消**(`2e843dd`):設計文件與計畫的狀態機只寫到「待匯款 → 取消」,店家收了錢卻出不了貨時這張單會卡死。130000 轉移表三種身分各加 `('paid', 'cancelled', 'transfer')`(30 → 33 條),原因必填、庫存照補,跟其他取消一樣;前端鏡像 `src/lib/market/orders.ts` 的 `MARKET_TRANSITIONS` 與 `orders.test.ts` 同一個 commit 一起改(已收款:供應商「出貨 / 取消」、管理員「取消」)。消費者的取消信補「已匯款,退款由店家處理」由 market-notify 修正者處理。
+   - **給 Task 53**(供應商零售訂單):已收款狀態多一顆「取消訂單」(要填原因;`supplierActions` 已經回 `["shipped", "cancelled"]`)。Task 55 管理員的「平台取消」在已收款也會出現(`adminActions`)。
+2. **限流重排**(`d55b19c`,Important 1):`market_place_order` 改成 欄位檢查 → 開關 → A 段 → 購物車 / 商品 / 店家檢查與算錢 → B 段 → 建單。「C. 關鍵技術決定」第 1 點的「限流放在下單開關之前,開放前的嘗試一樣會被計數」作廢。
+   - 開關關著:回 `MARKET_CLOSED`,不寫任何計數。
+   - A 段(同一個網路的嘗試次數,失敗的嘗試也算,回 `RATE_LIMITED`):IP(IPv4 完整位址、IPv6 取 /64)每小時 5 / 每天 20;IPv6 另加 /48 彙總(bucket 種類 `ip48`)每小時 20 / 每天 80;拿不到 IP 跳過整段。
+   - B 段(所有檢查都過、準備建單時才扣,一次結帳不論幾家店都算 1):Email 每小時 3 / 每天 10、電話每天 10、全站每天 500(`DAILY_CAP`)。B 段被擋 → 不建單、不動庫存,A 段已扣的照算。`PRICE_CHANGED`、`OUT_OF_STOCK`、`EMPTY_CART`、`ORDER_TOO_LARGE`、配送不到、未達最低金額等都不吃 B 段。管理員照樣不限流。
+   - 鎖的順序:A 段計數列 → 依 id 鎖商品(FOR UPDATE)→ B 段計數列;兩段的 bucket 不重疊,所有結帳同一個順序。
+   - 測試證明四件事(修之前 6 項紅):失敗的嘗試(缺貨、價格變了、未達最低金額)不吃 Email / 電話 / 全站(同一個 Email 先失敗 3 次、第 4 次照樣成功;計數 Email 1、電話 1、全站 +1、IP 4);開關關著不寫任何計數;B 段超額 → `RATE_LIMITED`、不建單、庫存不變、A 段照算 1;同一個 /48 的 21 個 /64 → 第 21 次 `RATE_LIMITED`、另一個 /48 照常。突變驗證:B 段被擋也照樣建單 →「B 段超額」紅。
+3. **`stock_deducted`**(`51d6087`、`b792648`,Minor a / e):`market_order_items` 加 `stock_deducted integer NOT NULL DEFAULT 0`、CHECK `stock_deducted BETWEEN 0 AND qty`;下單時商品有設庫存記 qty、不限量記 0;拒單 / 取消依商品加總 `stock_deducted` 補回,商品現在是不限量就不動(審查員的情境:下單時不限量 → 店家改成 10 → 取消,原本變 12,現在維持 10)。補庫存前先 `ORDER BY p.id FOR UPDATE` 鎖住商品再 UPDATE(跟下單同一個鎖順序;死結在單一連線的乾跑重現不了,跟計畫「下單 RPC 有鎖商品列」一樣用函式定義釘住)。訂單測試裡代表「扣過庫存」的明細 fixture 補上 `stock_deducted`。
+4. **`ORDER_TOO_LARGE`**(`4b73061`、`6e0e208`,Minor b):小計改用 bigint(`sum(price * qty)` 不再 `::integer`),任一家店「小計 + 運費」超過 1,000,000 → `{ok:false, code:'ORDER_TOO_LARGE', stores:[{supplier_id, total}]}`,在任何 `::integer` 轉型之前檢查,不丟例外、不建單、庫存不變(22 件百萬元商品各 99 個實測);剛好 1,000,000 照樣能下單。`market_orders_money` 另加 `total <= 1000000` 當第二道。前端 `checkout.ts` 加「A 店 這張訂單超過 NT$1,000,000,請減少數量或分開下單。」—— `00977ae` 的「每一種代碼都有自己的一句話」在 `4b73061` 到 `6e0e208` 之間是紅的(約 30 分鐘)。
+5. **查單不給 `contact_email`**(`9c820d1`,Minor c):`market_get_orders` 的 `store` 只留 `supplier_id`、`name`、`phone`、`ship_days`、`return_policy`;測試釘住回應裡沒有 `contact_email`。
+   - **給 Task 51**(查單頁):lookup 的型別與畫面都不要有 `contact_email`(店家聯絡方式只顯示店名、電話)。
+6. **事件時間**(`4efbf5b`,協調者追加):guard 原本用 `now()`(交易開始的時間)覆寫 `created_at`,轉帳單的「已接單」和自動補的「待匯款」完全相同,`market_get_orders` 的 `ORDER BY created_at, id` 由隨機 uuid 決定先後(上面「Task 43–47 補充」第 7 點記的就是這個)。改成 `GREATEST(clock_timestamp(), 這張單上一筆 + 1 微秒)`,同一張單嚴格遞增(同一微秒、主機時鐘被往回調也一樣),一律由伺服器決定 —— system 原本可以自己帶時間,現在也不行(不然自動補的待匯款會停在交易開始的時間、排到已接單前面;突變驗證 4 項紅);第一筆紀錄是 `clock_timestamp()`。前端照 `created_at` 排序就是寫入順序,不用再拿狀態順序當第二排序;`fetchAdminOrders` 內嵌的 `market_order_events` 仍要自己依 `created_at` 排序(PostgREST 內嵌不保證順序)。
+7. **權限與出貨欄位**(`f1487ac`,Minor f):`market_phone_ok` / `market_email_ok` 收回 PUBLIC / anon / authenticated(只給 `market_orders` 的 CHECK 與 SECURITY DEFINER 的下單 RPC 用,以擁有者身分執行;乾跑全綠,anon 經 RPC 下單照常)。出貨的物流、單號改用 `market_visible` 判斷有沒有填、`market_trim` 去頭尾(只填全形空白 → `carrier_required`),`char_length(v_carrier) > 50` / `char_length(v_tracking) > 100` 的寫法沒動(`constants.test.ts` 逐字讀)。
+8. **測試盲點**(`5a6ce74`、`8db6138`,Minor d):`market_checkout.test.sql`「任何一條超過就整批退回:另一條也不加」拆成一句做、一句讀(同一句的子查詢看句子開始時的快照,永遠讀到 0);突變驗證:130200 改成超額不回滾,拆開前照樣綠、拆開後紅。另外「計數表裡沒有明文」原本用 `'09[0-9]{8}'` 找電話,十六進位的雜湊偶爾也會出現「09 + 8 位數字」(鹽每次隨機,實測紅過一次),改成每個 bucket 都要是「種類:16 位雜湊|窗格」或 `global|day`(突變:不雜湊時紅)。
+9. 這次不做(協調者決定,寫進 DEPLOY.md 的開放前待辦):待接單逾時自動取消、Turnstile。
+
+**數字**
+
+| 乾跑 | 上一節(Task 35–39) | 現在 |
+|---|---|---|
+| `market_orders` | 53 | **65**(`2e843dd` +3、`4efbf5b` +3、`f1487ac` +3、`51d6087` +1、`b792648` +1、`4b73061` +1) |
+| `market_notify` | 9 | 9 |
+| `market_checkout` | 60 | **74**(`5a6ce74` +1、`9c820d1` +1、`4efbf5b` +1、`51d6087` +2、`4b73061` +2、`d55b19c` +7;`8db6138` 改寫不加項) |
+| `market_phase2_rollback` | 4 | 4(沒有新函式;`stock_deducted` 跟著表一起拆) |
+
+- **Task 57** Step 2(第 16560 行)的 Expected 改成依序 `共 65 項` / `共 9 項` / `共 74 項` / `共 4 項`,Step 5(第 16611 行)改成 `共 65 項` / `共 9 項` / `共 74 項`(上一節的 53 / 60 作廢;命令裡的 `$C` 照前兩節拿掉)。「F. 共用指令與基準數字」第 116 行同樣改成 65 / 9 / 74 / 4。
+- 第 1 階段:`market_catalog` **112**、`market_images_storage` **20**,不帶 migration 與帶三支各跑一次都失敗 0;每次乾跑之後殘留五個 0;唯讀查正式庫沒有任何第 2 階段的物件。
+- 審查員的攻擊測試(scratchpad `market-review/p2-db/`):`atk_checkout` 33 項,修之前 6 項紅(A3、B4、C1、D5、F4、H1);修之後原版剩 4 項紅,都是審查員的期待跟這次的設計不同 —— B3(原本期待 500 次空購物車吃光全站額度;有 /48 彙總後是 20 次空購物車、485 次 `RATE_LIMITED`)、C1(代碼 `TOO_EXPENSIVE` → `ORDER_TOO_LARGE`、Email 計數 1 → 0)、C2(原本期待 22003 例外 + 整筆回滾 → 建單前就回 `ORDER_TOO_LARGE`,一樣沒有半套、庫存 10)、F2(已收款不能取消 → 可以)。只改這 4 項期待值的副本(scratchpad `atk-adapted/`)33 / 33 全過;`atk_rollback_fp` 2 / 2(還原後第 1 階段與共用物件的指紋跟線上一樣)。
+- vitest:`6e0e208` 的乾淨副本(`git archive`)全套連跑 2 次都是 **109 檔 / 1694 項**全過(含其他實作者同時 commit 的檔);tsc 錯誤 **72**、eslint 錯誤 **10**,兩種 build 都 exit 0。
+
+**沒有處理(記錄,請審查決定)**
+
+- 拿不到 IP 時 A 段整段跳過,B 段又只算真的建單:沒有 IP 的失敗嘗試(每次都會鎖商品列、跑完整檢查)完全不限流。Task 57 若驗出 PostgREST 拿不到可信的 IP,建議加一個寬鬆的全站「無 IP 嘗試」bucket。
+- 商品單價上限 1,000,000 跟單店總額上限 1,000,000 一樣:沒有免運門檻(或門檻 > 1,000,000)的店,一件 1,000,000 元的商品加上運費就超過上限,永遠下不了單。要嘛總額上限只看小計,要嘛把單價上限調低。
+- /48 每小時 20 次:同一個 /48 背後可能是公司或校園的網段,正式開放後依實際量調整。
