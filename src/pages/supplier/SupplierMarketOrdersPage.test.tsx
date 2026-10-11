@@ -456,7 +456,7 @@ describe("SupplierMarketOrdersPage:72 小時自動取消", () => {
     expect(card(PENDING).getByText("23 小時內沒接單會自動取消")).toBeInTheDocument();
   });
 
-  it("待接單不到 1 小時(含已經過了、排程還沒跑到):寫「即將自動取消」", async () => {
+  it("待接單不到 1 小時(還剩 35 分鐘):寫「即將自動取消」", async () => {
     useClock("2026-10-12T03:30:00Z"); // 還剩 35 分鐘
     vi.mocked(fetchSupplierOrders).mockImplementation(serve([PENDING]));
     renderPage();
@@ -474,6 +474,48 @@ describe("SupplierMarketOrdersPage:72 小時自動取消", () => {
     expect(card(AWAIT_WITH_EVENTS).getByText("消費者需在 10/12 13:00 前匯款,逾期自動取消")).toBeInTheDocument();
     expect(card(CONFIRMED).queryByText(/自動取消/)).toBeNull();
     expect(card(PAID).queryByText(/自動取消/)).toBeNull();
+  });
+
+  // 到了期限、排程還沒跑到(平常最多晚 10 分鐘,積壓時更久):每一種都要寫「即將自動取消」
+  const AWAIT_AT_5 = makeOrder({
+    status: "awaiting_payment",
+    payment_method: "transfer",
+    market_order_events: [
+      { to_status: "confirmed", created_at: "2026-10-09T05:00:00Z" },
+      { to_status: "awaiting_payment", created_at: "2026-10-09T05:00:00Z" },
+    ],
+  }); // 期限 2026-10-12T05:00Z(台北 10/12 13:00)
+
+  it.each([
+    ["剛好到期", "2026-10-12T04:05:00Z"],
+    ["過期 30 分鐘(排程還沒跑到)", "2026-10-12T04:35:00Z"],
+  ])("待接單%s:寫「即將自動取消」,不寫幾小時內", async (_label, now) => {
+    useClock(now);
+    vi.mocked(fetchSupplierOrders).mockImplementation(serve([PENDING]));
+    renderPage();
+    expect(await screen.findByText("即將自動取消")).toBeInTheDocument();
+    expect(card(PENDING).getByText("即將自動取消")).toBeInTheDocument();
+    expect(screen.queryByText(/小時內沒接單/)).toBeNull();
+  });
+
+  it.each([
+    ["剛好到期", "2026-10-12T05:00:00Z"],
+    ["過期 30 分鐘(排程還沒跑到)", "2026-10-12T05:30:00Z"],
+  ])("待匯款%s:寫「已超過匯款期限,即將自動取消」,不再寫匯款期限", async (_label, now) => {
+    useClock(now);
+    vi.mocked(fetchSupplierOrders).mockImplementation(serve([AWAIT_AT_5]));
+    renderPage();
+    expect(await screen.findByText("已超過匯款期限,即將自動取消")).toBeInTheDocument();
+    expect(card(AWAIT_AT_5).getByText("已超過匯款期限,即將自動取消")).toBeInTheDocument();
+    expect(screen.queryByText(/前匯款,逾期自動取消/)).toBeNull();
+  });
+
+  it("待匯款到期前 1 分鐘:照樣寫匯款期限(過了才改)", async () => {
+    useClock("2026-10-12T04:59:00Z");
+    vi.mocked(fetchSupplierOrders).mockImplementation(serve([AWAIT_AT_5]));
+    renderPage();
+    expect(await screen.findByText("消費者需在 10/12 13:00 前匯款,逾期自動取消")).toBeInTheDocument();
+    expect(screen.queryByText(/即將自動取消/)).toBeNull();
   });
 
   it("頁面開著時倒數會跟著走(每分鐘更新一次)", async () => {

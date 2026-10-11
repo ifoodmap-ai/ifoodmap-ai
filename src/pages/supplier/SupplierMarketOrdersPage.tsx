@@ -5,9 +5,9 @@
 // 只看得到自家的單:fetchSupplierOrders 依 supplier_id 查,資料庫的 RLS 另外把關。
 // 清單分兩次查(在伺服器依狀態篩):還沒結束的(待處理 + 已出貨)一張都不漏;已結束的只抓最新 ORDER_LIST_LIMIT 張 ——
 // 共用一個上限的話,已結束的單一多,舊的「已收款、還沒出貨」會從待處理消失。快取的 key 帶 supplierId(換供應商登入不看到上一家的單)。
-// 72 小時自動取消(資料庫排程,autoCancel.ts):待接單寫「N 小時內沒接單會自動取消」(不到 1 小時「即將自動取消」),
-// 待匯款寫消費者的匯款期限;頁面開著時每分鐘更新一次倒數。
-import { useEffect, useMemo, useState } from "react";
+// 72 小時自動取消(資料庫排程,autoCancel.ts):待接單寫「N 小時內沒接單會自動取消」(不到 1 小時、到期了都寫「即將自動取消」),
+// 待匯款寫消費者的匯款期限(過了期限、排程還沒跑到時改寫「已超過匯款期限,即將自動取消」);頁面開著時每分鐘更新一次(useNow)。
+import { useMemo, useState } from "react";
 import { Loader2 } from "lucide-react";
 import { useQuery, type UseQueryResult } from "@tanstack/react-query";
 import { Badge } from "@/components/ui/badge";
@@ -15,7 +15,8 @@ import { Button } from "@/components/ui/button";
 import OrderActionDialog, { type OrderActionTarget } from "@/components/market/OrderActionDialog";
 import OrderItems from "@/components/market/OrderItems";
 import { useCurrentSupplier } from "@/hooks/use-current-supplier";
-import { autoCancelDeadline, formatAutoCancelDeadline, hoursUntilAutoCancel, MARKET_AUTO_CANCEL_HOURS } from "@/lib/market/autoCancel";
+import { useNow } from "@/lib/market/useNow";
+import { autoCancelDeadline, formatAutoCancelDeadline, hoursUntilAutoCancel, isAutoCancelDue, MARKET_AUTO_CANCEL_HOURS } from "@/lib/market/autoCancel";
 import { PAYMENT_METHODS } from "@/lib/market/constants";
 import { friendlyDbError } from "@/lib/market/db";
 import { formatTaipei } from "@/lib/market/format";
@@ -47,21 +48,16 @@ const LOAD_FALLBACK = "請稍後再試一次";
 /** 跟供應商後台其他頁一樣自己留邊(SupplierLayout 的主內容區沒有 padding) */
 const PAGE = "mx-auto max-w-4xl p-4 md:p-6";
 
-/** 每分鐘更新一次「現在」:頁面一直開著時,自動取消的倒數也跟著走 */
-const useNow = (intervalMs = 60_000): number => {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), intervalMs);
-    return () => clearInterval(id);
-  }, [intervalMs]);
-  return now;
-};
-
-/** 卡片上的自動取消提示:待接單 → 剩幾個小時(不到 1 小時「即將自動取消」);待匯款 → 消費者的匯款期限;其他 → null */
+/**
+ * 卡片上的自動取消提示:待接單 → 剩幾個小時(不到 1 小時、到期了都寫「即將自動取消」);
+ * 待匯款 → 消費者的匯款期限,到期了(排程還沒跑到)改寫「已超過匯款期限,即將自動取消」;其他 → null
+ */
 const autoCancelNote = (o: MarketOrderRow, now: number): string | null => {
   const deadline = autoCancelDeadline(o, o.market_order_events ?? []);
   if (!deadline) return null;
-  if (o.status === "awaiting_payment") return `消費者需在 ${formatAutoCancelDeadline(deadline)} 前匯款,逾期自動取消`;
+  if (o.status === "awaiting_payment") {
+    return isAutoCancelDue(deadline, now) ? "已超過匯款期限,即將自動取消" : `消費者需在 ${formatAutoCancelDeadline(deadline)} 前匯款,逾期自動取消`;
+  }
   const hours = hoursUntilAutoCancel(deadline, now);
   return hours >= 1 ? `${hours} 小時內沒接單會自動取消` : "即將自動取消";
 };
