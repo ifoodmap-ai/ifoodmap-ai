@@ -184,6 +184,7 @@ AS $$
     ('supplier', 'awaiting_payment', 'paid', 'transfer'),
     ('supplier', 'awaiting_payment', 'cancelled', 'transfer'),
     ('supplier', 'paid', 'shipped', 'transfer'),
+    ('supplier', 'paid', 'cancelled', 'transfer'),
     ('supplier', 'shipped', 'completed', 'any'),
     -- 平台管理員(處理客訴):同供應商
     ('admin', 'pending', 'confirmed', 'any'),
@@ -195,6 +196,7 @@ AS $$
     ('admin', 'awaiting_payment', 'paid', 'transfer'),
     ('admin', 'awaiting_payment', 'cancelled', 'transfer'),
     ('admin', 'paid', 'shipped', 'transfer'),
+    ('admin', 'paid', 'cancelled', 'transfer'),
     ('admin', 'shipped', 'completed', 'any'),
     -- 系統(service_role、資料庫直連;緊急處理用):同供應商
     ('system', 'pending', 'confirmed', 'any'),
@@ -206,6 +208,7 @@ AS $$
     ('system', 'awaiting_payment', 'paid', 'transfer'),
     ('system', 'awaiting_payment', 'cancelled', 'transfer'),
     ('system', 'paid', 'shipped', 'transfer'),
+    ('system', 'paid', 'cancelled', 'transfer'),
     ('system', 'shipped', 'completed', 'any')
     -- @market-transitions-end
   ) AS t(actor, from_status, to_status, payment)

@@ -45,6 +45,7 @@ export const MARKET_TRANSITIONS: ReadonlyArray<{ from: OrderStatus; to: OrderSta
   { from: "awaiting_payment", to: "paid", payment: "transfer" },
   { from: "awaiting_payment", to: "cancelled", payment: "transfer" },
   { from: "paid", to: "shipped", payment: "transfer" },
+  { from: "paid", to: "cancelled", payment: "transfer" },
   { from: "shipped", to: "completed", payment: "any" },
 ];
 

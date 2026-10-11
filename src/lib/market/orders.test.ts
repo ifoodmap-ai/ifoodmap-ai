@@ -91,15 +91,16 @@ describe("按鈕", () => {
     expect(supplierActions({ status: "completed", payment_method: "cod" })).toEqual([]);
   });
 
-  it("供應商:轉帳 待匯款 → 確認已收款 / 取消;已收款 → 出貨;沒有「改成待匯款」的按鈕", () => {
+  it("供應商:轉帳 待匯款 → 確認已收款 / 取消;已收款 → 出貨 / 取消;沒有「改成待匯款」的按鈕", () => {
     expect(supplierActions({ status: "confirmed", payment_method: "transfer" })).toEqual(["cancelled"]);
     expect(supplierActions({ status: "awaiting_payment", payment_method: "transfer" })).toEqual(["paid", "cancelled"]);
-    expect(supplierActions({ status: "paid", payment_method: "transfer" })).toEqual(["shipped"]);
+    expect(supplierActions({ status: "paid", payment_method: "transfer" })).toEqual(["shipped", "cancelled"]);
   });
 
   it("管理員只能平台取消(出貨後不能取消)", () => {
     expect(adminActions({ status: "pending", payment_method: "cod" })).toEqual(["cancelled"]);
     expect(adminActions({ status: "awaiting_payment", payment_method: "transfer" })).toEqual(["cancelled"]);
+    expect(adminActions({ status: "paid", payment_method: "transfer" })).toEqual(["cancelled"]);
     expect(adminActions({ status: "shipped", payment_method: "cod" })).toEqual([]);
   });
 });

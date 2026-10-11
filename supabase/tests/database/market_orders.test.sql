@@ -72,8 +72,8 @@ SELECT pg_temp.expect('登入者:訂單、明細只能讀;紀錄只能讀和新�
   has_table_privilege('authenticated', 'public.market_order_events', 'INSERT')::text || '|' ||
   has_table_privilege('authenticated', 'public.market_orders', 'SELECT')::text,
   'false|false|false|true|true');
-SELECT pg_temp.expect('轉移表 30 條(供應商、管理員、系統各 10 條)',
-  (SELECT count(*)::text FROM public.market_transition_rules()), '30');
+SELECT pg_temp.expect('轉移表 33 條(供應商、管理員、系統各 11 條;含已收款 → 取消)',
+  (SELECT count(*)::text FROM public.market_transition_rules()), '33');
 SELECT pg_temp.expect('電話:09 開頭 10 碼或市話 9 碼,只收數字',
   (public.market_phone_ok('0912345678') AND public.market_phone_ok('023456789')
    AND NOT public.market_phone_ok('12345') AND NOT public.market_phone_ok('0912-345-678'))::text, 'true');
@@ -345,3 +345,28 @@ SELECT pg_temp.expect('資料庫擁有者直接寫(沒有 JWT)也是 system:待�
                VALUES ('a9600000-0000-4000-8000-000000000009', 'awaiting_payment', 'paid') RETURNING actor_role)
     SELECT actor_role FROM e$q$),
   'system');
+-- 4-5 已收款的轉帳單也能取消(店家收了錢卻出不了貨,不然這張單會卡死);原因必填、庫存照補,跟其他取消一樣
+SELECT pg_temp.mk_order('a9600000-0000-4000-8000-000000000010', 'a9200000-0000-4000-8000-00000000000a', 'transfer');
+INSERT INTO public.market_order_items (order_id, product_id, product_name, spec, temperature, unit_price, qty, line_total) VALUES
+  ('a9600000-0000-4000-8000-000000000010', 'a9300000-0000-4000-8000-0000000000a1', '有機高麗菜', '1 顆', 'ambient', 100, 2, 200);
+SELECT pg_temp.as_exec('authenticated', pg_temp.ua(), $q$
+  INSERT INTO public.market_order_events (order_id, from_status, to_status)
+  VALUES ('a9600000-0000-4000-8000-000000000010', 'pending', 'confirmed')$q$);
+SELECT pg_temp.as_exec('authenticated', pg_temp.ua(), $q$
+  INSERT INTO public.market_order_events (order_id, from_status, to_status)
+  VALUES ('a9600000-0000-4000-8000-000000000010', 'awaiting_payment', 'paid')$q$);
+SELECT pg_temp.expect('已收款的轉帳單取消:沒填原因被擋',
+  pg_temp.as_exec('authenticated', pg_temp.ua(), $q$
+    INSERT INTO public.market_order_events (order_id, from_status, to_status)
+    VALUES ('a9600000-0000-4000-8000-000000000010', 'paid', 'cancelled')$q$),
+  'ERR 22023:reason_required');
+SELECT pg_temp.expect('已收款的轉帳單可以取消(填原因)',
+  pg_temp.as_exec('authenticated', pg_temp.ua(), $q$
+    INSERT INTO public.market_order_events (order_id, from_status, to_status, note)
+    VALUES ('a9600000-0000-4000-8000-000000000010', 'paid', 'cancelled', '缺貨,已全額退款')$q$),
+  'OK');
+SELECT pg_temp.expect('……庫存加回去(13 + 2 = 15)、原因與結束時間寫進訂單',
+  (SELECT o.status || '|' || p.stock::text || '|' || o.status_note || '|' || (o.closed_at IS NOT NULL)::text
+     FROM public.market_orders o, public.market_products p
+    WHERE o.id = 'a9600000-0000-4000-8000-000000000010' AND p.id = 'a9300000-0000-4000-8000-0000000000a1'),
+  'cancelled|15|缺貨,已全額退款|true');
