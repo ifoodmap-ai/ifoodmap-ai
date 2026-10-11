@@ -83,8 +83,11 @@ SELECT pg_temp.expect('bucket 只存加鹽雜湊',
   (public.market_rate_key('email', 'a@b.c', 'salt') ~ '^email:[0-9a-f]{16}$')::text, 'true');
 SELECT pg_temp.expect('清理排程每天 19:50 UTC',
   (SELECT schedule FROM cron.job WHERE jobname = 'ifoodmap-market-rate-cleanup'), '50 19 * * *');
-SELECT pg_temp.expect('下單開關與限流的鹽都在 app_config(值不印出來)',
-  (SELECT count(*)::text FROM public.app_config WHERE key IN ('market_checkout_open', 'market_rate_salt')), '2');
+-- 開關預設關閉(migration 新增的是 'false';第 2 節之後測試才在交易裡切換)。業主核准對外開放之後再跑這支,這一項會是 2|true,屬預期
+SELECT pg_temp.expect('下單開關與限流的鹽都在 app_config(鹽的值不印出來);開關預設關閉',
+  (SELECT count(*)::text FROM public.app_config WHERE key IN ('market_checkout_open', 'market_rate_salt')) || '|' ||
+  (SELECT value FROM public.app_config WHERE key = 'market_checkout_open'),
+  '2|false');
 
 -- ---------------------------------------------------------------------
 -- 2. 下單 RPC
@@ -362,3 +365,51 @@ SELECT pg_temp.expect('待匯款時才看得到轉帳資訊',
 SELECT pg_temp.expect('亂填、格式不對、空的 token 都是 NOT_FOUND',
   concat_ws('|', pg_temp.lookup(repeat('A', 43)) ->> 'code', pg_temp.lookup('short') ->> 'code', pg_temp.lookup('') ->> 'code'),
   'NOT_FOUND|NOT_FOUND|NOT_FOUND');
+
+-- ---------------------------------------------------------------------
+-- 4. 下單 RPC 的安全要求(2026-10-11 自查)
+--   收件資料擋看不見的字元(跟第 1 階段商品欄位同一套:market_trim 去頭尾、market_visible 判斷看不看得到字);
+--   釘住長度上限、只賣「已核准、上架中、店家啟用、供應商啟用」的商品
+--   chr(12288) = U+3000 全形空白、chr(8203) = U+200B 零寬空白(不寫跳脫序列,避免工具把它換成看不見的字元本身)
+-- ---------------------------------------------------------------------
+SELECT pg_temp.expect('姓名、地址、條款版本只有全形空白或零寬字元 → INVALID_INPUT',
+  concat_ws(',',
+    pg_temp.bad(21, jsonb_set(pg_temp.co('v1@market-test.invalid', jsonb_build_array(pg_temp.item('a2', 1)), '{}'),
+                              '{buyer,name}', to_jsonb(chr(12288) || chr(8203) || chr(12288)))),
+    pg_temp.bad(22, jsonb_set(pg_temp.co('v2@market-test.invalid', jsonb_build_array(pg_temp.item('a2', 1)), '{}'),
+                              '{buyer,address}', to_jsonb(repeat(chr(12288), 3) || repeat(chr(8203), 3)))),
+    pg_temp.bad(23, jsonb_set(pg_temp.co('v3@market-test.invalid', jsonb_build_array(pg_temp.item('a2', 1)), '{}'),
+                              '{terms_version}', to_jsonb(chr(8203))))),
+  'buyer.name,buyer.address,terms_version');
+INSERT INTO _ctx VALUES ('visible', pg_temp.place(pg_temp.anon(), '198.51.105.1',
+  jsonb_set(jsonb_set(pg_temp.co('visible@market-test.invalid', jsonb_build_array(pg_temp.item('a2', 1)),
+                                 '{"a9200000-0000-4000-8000-00000000000a":"cod"}'),
+                      '{buyer,note}', to_jsonb(chr(12288) || chr(8203))),
+            '{buyer,name}', to_jsonb(chr(12288) || '王小明' || chr(8203)))));
+SELECT pg_temp.expect('姓名頭尾的全形空白、零寬字元去掉;只有看不見字元的備註當成沒填',
+  (SELECT COALESCE(v ->> 'code', 'ok') FROM _ctx WHERE k = 'visible') || '|' ||
+  COALESCE((SELECT o.buyer_name || '|' || COALESCE(o.buyer_note, '∅')
+              FROM _ctx, public.market_orders o
+             WHERE k = 'visible' AND o.id = (v -> 'orders' -> 0 ->> 'id')::uuid), '(沒有建單)'),
+  'ok|王小明|∅');
+SELECT pg_temp.expect('長度上限:地址 201 字、條款版本 21 字、Email 超過 254 字都擋',
+  concat_ws(',',
+    pg_temp.bad(31, jsonb_set(pg_temp.co('c1@market-test.invalid', jsonb_build_array(pg_temp.item('a2', 1)), '{}'),
+                              '{buyer,address}', to_jsonb(repeat('路', 201)))),
+    pg_temp.bad(32, jsonb_set(pg_temp.co('c2@market-test.invalid', jsonb_build_array(pg_temp.item('a2', 1)), '{}'),
+                              '{terms_version}', to_jsonb(repeat('v', 21)))),
+    pg_temp.bad(33, pg_temp.co(repeat('a', 250) || '@market-test.invalid', jsonb_build_array(pg_temp.item('a2', 1)), '{}'))),
+  'buyer.address,terms_version,buyer.email');
+SELECT pg_temp.exec_with_claims(pg_temp.jwt('a9100000-0000-4000-8000-000000000003', true), $q$
+  UPDATE public.market_stores SET is_enabled = false, disabled_reason = '測試:管理員停用'
+   WHERE supplier_id = 'a9200000-0000-4000-8000-00000000000b'$q$);
+UPDATE public.suppliers SET is_active = false WHERE id = 'a9200000-0000-4000-8000-00000000000a';
+SELECT pg_temp.expect('店家被管理員停用、供應商帳號停用:商品都 PRODUCT_UNAVAILABLE',
+  (pg_temp.place(pg_temp.anon(), '198.51.106.1', pg_temp.co('d1@market-test.invalid', jsonb_build_array(pg_temp.item('b1', 1)),
+     '{"a9200000-0000-4000-8000-00000000000b":"cod"}')) ->> 'code') || '|' ||
+  (pg_temp.place(pg_temp.anon(), '198.51.106.2', pg_temp.co('d2@market-test.invalid', jsonb_build_array(pg_temp.item('a2', 1)),
+     '{"a9200000-0000-4000-8000-00000000000a":"cod"}')) ->> 'code'),
+  'PRODUCT_UNAVAILABLE|PRODUCT_UNAVAILABLE');
+UPDATE public.suppliers SET is_active = true WHERE id = 'a9200000-0000-4000-8000-00000000000a';
+SELECT pg_temp.exec_with_claims(pg_temp.jwt('a9100000-0000-4000-8000-000000000003', true), $q$
+  UPDATE public.market_stores SET is_enabled = true WHERE supplier_id = 'a9200000-0000-4000-8000-00000000000b'$q$);

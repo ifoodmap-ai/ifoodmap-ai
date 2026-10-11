@@ -266,13 +266,18 @@ BEGIN
   END IF;
 
   -- 2. 收件資料(長度與格式跟 src/lib/market/checkout.ts 一樣)
-  v_name    := btrim(COALESCE(v_buyer->>'name', ''));
+  --    姓名、地址、備註、條款版本跟第 1 階段商品欄位同一套:去頭尾空白連全形空白、零寬字元一起去(market_trim),
+  --    去完看不到任何字(market_visible)就當成空的 —— 姓名、地址、條款版本被下面的長度檢查擋下,備註當成沒填。
+  --    電話、Email、縣市另有格式 / 清單檢查(只收數字、ASCII、22 縣市),看不見的字元本來就過不了。
+  --    (兩支都是線性時間:100 萬字的刻意輸入實測幾十毫秒,跟 btrim 同一個量級)
+  v_name    := CASE WHEN public.market_visible(v_buyer->>'name') THEN public.market_trim(v_buyer->>'name') ELSE '' END;
   v_phone   := regexp_replace(COALESCE(v_buyer->>'phone', ''), '[[:space:]()-]', '', 'g');
   v_email   := lower(btrim(COALESCE(v_buyer->>'email', '')));
   v_city    := btrim(COALESCE(v_buyer->>'city', ''));
-  v_address := btrim(COALESCE(v_buyer->>'address', ''));
-  v_note    := NULLIF(btrim(COALESCE(v_buyer->>'note', '')), '');
-  v_terms   := btrim(COALESCE(p_checkout->>'terms_version', ''));
+  v_address := CASE WHEN public.market_visible(v_buyer->>'address') THEN public.market_trim(v_buyer->>'address') ELSE '' END;
+  v_note    := CASE WHEN public.market_visible(v_buyer->>'note') THEN public.market_trim(v_buyer->>'note') END;
+  v_terms   := CASE WHEN public.market_visible(p_checkout->>'terms_version')
+                    THEN public.market_trim(p_checkout->>'terms_version') ELSE '' END;
   IF char_length(v_name) NOT BETWEEN 1 AND 50 THEN
     RETURN jsonb_build_object('ok', false, 'code', 'INVALID_INPUT', 'field', 'buyer.name');
   END IF;
