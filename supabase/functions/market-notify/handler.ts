@@ -163,6 +163,40 @@ const recordNotification = async (deps: MarketNotifyDeps, audience: MarketAudien
   if (error) deps.log("error", { fn: "market-notify", step: "notifications", audience, error: error.message });
 };
 
+/** log / 紀錄裡的 Email 遮罩:帳號只留第一個字,網域照留(看得出是不是打錯網域);空的回 null */
+const maskEmail = (email: string): string | null => {
+  if (!email) return null;
+  const first = Array.from(email)[0];
+  const at = email.lastIndexOf("@");
+  return at > 0 ? `${first}***${email.slice(at, at + 100)}` : `${first}***`;
+};
+
+/**
+ * 收件 Email 不能寄:跳過,記 log(Email 遮罩)與一筆「沒寄」的 notifications。
+ * notifications.status 只收 sent / failed / pending(migration 20260704140000)→ 記成 failed,原因寫在 message。
+ */
+const recordSkipped = async (
+  deps: MarketNotifyDeps,
+  audience: MarketAudience,
+  email: string,
+  subject: string,
+  logMessage: string,
+  where: Row,
+): Promise<void> => {
+  const recipient = maskEmail(email);
+  const reason =
+    audience === "supplier" ? (email ? "店家聯絡信箱格式不對" : "店家沒有填聯絡信箱") : email ? "買家 Email 格式不對" : "沒有買家 Email";
+  deps.log("error", { fn: "market-notify", ...where, audience, recipient, error: "no deliverable email" });
+  await recordNotification(deps, audience, {
+    recipient,
+    channel: "email",
+    title: subject,
+    message: `${logMessage}(沒寄:${reason})`,
+    status: "failed",
+    sent_at: null,
+  });
+};
+
 /** 經過閘門寄出,每封都記一筆 notifications */
 const deliver = async (
   deps: MarketNotifyDeps,
@@ -219,7 +253,6 @@ const handlePlaced = async (deps: MarketNotifyDeps, live: boolean, body: Row): P
 
   const first = orders[0];
   const email = str(first.buyer_email);
-  if (!isDeliverableEmail(email)) return json({ data: { skipped: true, reason: "buyer email not deliverable" } });
 
   const loaded = await Promise.all(orders.map((o) => loadMailOrder(deps.db, o)));
   const mailOrders = loaded.map((l) => l.mail).sort((a, b) => a.storeName.localeCompare(b.storeName, "zh-Hant"));
@@ -228,14 +261,12 @@ const handlePlaced = async (deps: MarketNotifyDeps, live: boolean, body: Row): P
     orders: mailOrders,
     lookupUrl: `${deps.config.siteUrl}/market/orders/${token}`,
   });
-  const results = await deliver(
-    deps,
-    live,
-    { email, audience: "consumer" },
-    mail,
-    `零售下單確認:${mailOrders.map((o) => orderLabel(o.id)).join("、")}`,
-    `market-notify:placed:${checkoutId}`,
-  );
+  const logMessage = `零售下單確認:${mailOrders.map((o) => orderLabel(o.id)).join("、")}`;
+  if (!isDeliverableEmail(email)) {
+    await recordSkipped(deps, "consumer", email, mail.subject, logMessage, { step: "placed", checkout_id: checkoutId });
+    return json({ data: { live, skipped: true, reason: "buyer email not deliverable" } });
+  }
+  const results = await deliver(deps, live, { email, audience: "consumer" }, mail, logMessage, `market-notify:placed:${checkoutId}`);
   return summary(live, results, { orders: mailOrders.length });
 };
 
@@ -282,19 +313,14 @@ const handleEvent = async (deps: MarketNotifyDeps, live: boolean, body: Row): Pr
   for (const kind of kinds) {
     const audience: MarketAudience = kind.startsWith("supplier_") ? "supplier" : "consumer";
     const email = audience === "supplier" ? supplierEmail : str(order.buyer_email);
+    const mail = renderEventMail(kind, ctx);
+    const logMessage = `${orderLabel(mailOrder.id)} → ${toStatus}`;
     if (!isDeliverableEmail(email)) {
-      deps.log("error", { fn: "market-notify", step: "event", event_id: eventId, kind, error: "no deliverable email" });
+      await recordSkipped(deps, audience, email, mail.subject, logMessage, { step: "event", event_id: eventId, kind });
       skipped.push(kind);
       continue;
     }
-    const sent = await deliver(
-      deps,
-      live,
-      { email, audience },
-      renderEventMail(kind, ctx),
-      `${orderLabel(mailOrder.id)} → ${toStatus}`,
-      `market-notify:${eventId}:${audience}`,
-    );
+    const sent = await deliver(deps, live, { email, audience }, mail, logMessage, `market-notify:${eventId}:${audience}`);
     results.push(...sent.map((r) => ({ ...r, kind })));
   }
   return summary(live, results, { kinds, skipped });
