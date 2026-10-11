@@ -14,10 +14,11 @@
 --     API 角色對這兩張表沒有任何寫入權限,也沒有寫入 policy
 --   - 狀態只能經由 INSERT market_order_events 改變:
 --       trg_market_guard_event(BEFORE):鎖訂單列;身分由伺服器決定(這家店的啟用中帳號 = supplier、is_admin() = admin、
---         沒有登入者且是 service_role / 資料庫直連 = system);from_status 必須等於目前狀態(畫面過期 → P0001 stale_order_status);
+--         沒有登入者且是 service_role / 資料庫直連 = system;轉帳訂單接單後自動補的待匯款也是 system);
+--         from_status 必須等於目前狀態(畫面過期 → P0001 stale_order_status);
 --         (身分, 目前狀態, 目標狀態, 付款方式) 必須在 market_transition_rules() 裡;拒單 / 取消要原因;出貨要物流。
 --         第一筆紀錄(pending)只會出現在建單的交易裡
---       trg_market_apply_event(AFTER):套用狀態與時間;拒單 / 取消把庫存加回去;轉帳訂單接單後自動再寫一筆 confirmed → awaiting_payment
+--       trg_market_apply_event(AFTER):套用狀態與時間;拒單 / 取消把庫存加回去;轉帳訂單接單後自動再寫一筆 confirmed → awaiting_payment(身分 system)
 --   - 紀錄只能新增:UPDATE / DELETE 一律擋(所以訂單也刪不掉 —— 那是交易紀錄);同一個 INSERT 同一張單只能一筆
 --
 -- 讀取:供應商讀自家的訂單、明細、紀錄;管理員全部;anon 什麼都讀不到(消費者只能經 market_get_orders(token))
@@ -309,6 +310,13 @@ BEGIN
   ELSE
     RAISE EXCEPTION '這張零售訂單不是你家的,不能操作' USING ERRCODE = '42501', HINT = 'not_order_party';
   END IF;
+  -- 轉帳訂單接單後,market_apply_event 在同一個交易自動補的「待匯款」一律記成 system、不記 actor_id(不是接單的人)。
+  -- 只認 trigger 裡送出的 INSERT(pg_trigger_depth() > 1):API 角色只能直接 INSERT(深度 1),也沒有在這幾張表建
+  -- trigger 的權限(REVOKE ALL),冒充不了;上面的當事人檢查照樣要先過(送出這筆的是接單那一筆的 apply trigger)。
+  IF pg_trigger_depth() > 1 AND NEW.to_status = 'awaiting_payment' AND v_order.status = 'confirmed' THEN
+    v_actor := 'system';
+    NEW.actor_id := NULL;
+  END IF;
   NEW.actor_role := v_actor;
   IF v_actor <> 'system' THEN
     NEW.created_at := now();
@@ -430,7 +438,7 @@ BEGIN
      WHERE i.order_id = NEW.order_id AND i.product_id = p.id AND p.stock IS NOT NULL;
   END IF;
 
-  -- 轉帳訂單:接單後同一個交易、同一個身分自動進入「待匯款」(供應商畫面上只有一顆「接單」)
+  -- 轉帳訂單:接單後同一個交易自動進入「待匯款」(供應商畫面上只有一顆「接單」);這筆的身分由 guard 記成 system
   IF NEW.to_status = 'confirmed' AND v_payment = 'transfer' THEN
     INSERT INTO public.market_order_events (order_id, from_status, to_status)
     VALUES (NEW.order_id, 'confirmed', 'awaiting_payment');

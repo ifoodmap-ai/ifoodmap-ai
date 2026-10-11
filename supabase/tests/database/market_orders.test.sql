@@ -272,3 +272,24 @@ SELECT pg_temp.expect('前端送的 actor_role 不算(A 冒充管理員 → 記�
                VALUES ('a9600000-0000-4000-8000-000000000005', 'pending', 'confirmed', 'admin') RETURNING actor_role)
     SELECT actor_role FROM e$q$),
   'supplier');
+
+-- ---------------------------------------------------------------------
+-- 4. 自查修正(2026-10-11)
+-- ---------------------------------------------------------------------
+-- 4-1 轉帳訂單接單後自動補的「待匯款」一律記成 system、沒有 actor_id(不是接單的人;跟 Task 42 notify 測試的 fixture 一致)
+SELECT pg_temp.expect('A 接轉帳單:接單那筆是 A(supplier),自動補的待匯款記成 system、沒有 actor_id',
+  (SELECT string_agg(e.to_status || '=' || e.actor_role || '/' || COALESCE(e.actor_id::text, '-'), ',' ORDER BY e.to_status)
+     FROM public.market_order_events e
+    WHERE e.order_id = 'a9600000-0000-4000-8000-000000000002' AND e.to_status IN ('confirmed', 'awaiting_payment')),
+  'awaiting_payment=system/-,confirmed=supplier/a9100000-0000-4000-8000-000000000001');
+SELECT pg_temp.mk_order('a9600000-0000-4000-8000-000000000006', 'a9200000-0000-4000-8000-00000000000a', 'transfer');
+SELECT pg_temp.as_exec('authenticated', pg_temp.uadmin(), $q$
+  INSERT INTO public.market_order_events (order_id, from_status, to_status)
+  VALUES ('a9600000-0000-4000-8000-000000000006', 'pending', 'confirmed')$q$);
+SELECT pg_temp.expect('管理員接轉帳單:接單那筆是管理員,自動補的待匯款一樣記成 system',
+  (SELECT o.status || '|' || string_agg(e.to_status || '=' || e.actor_role || '/' || COALESCE(e.actor_id::text, '-'), ',' ORDER BY e.to_status)
+     FROM public.market_orders o
+     JOIN public.market_order_events e ON e.order_id = o.id AND e.from_status IS NOT NULL
+    WHERE o.id = 'a9600000-0000-4000-8000-000000000006'
+    GROUP BY o.status),
+  'awaiting_payment|awaiting_payment=system/-,confirmed=admin/a9100000-0000-4000-8000-000000000003');
