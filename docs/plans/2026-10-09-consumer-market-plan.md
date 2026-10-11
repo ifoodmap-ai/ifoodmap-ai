@@ -18083,3 +18083,23 @@ gate / render / handler / index 與 `config.toml` 先照計畫的程式碼區塊
 3. 還原檔不用改:它換回的是 130200 的 `market_client_ip`(還原測試的 md5 照樣跟線上相同)。標記 `@market-auto-cancel-hours` 沒動,行號從 290 移到 310(常數在 311),全檔仍只有一處。
 
 **數字**(`e9121e3`;乾跑只帶 20261012100000,每支之後殘留五個 0):`market_hardening` **36**、`market_orders` 67、`market_notify` 9、`market_checkout` 93、`market_hardening_rollback` 4。vitest:`e9121e3` 的乾淨副本 116 檔 / 1843 項全過(這次只改 SQL)。🔴 DEPLOY.md 第 3 階段的乾跑項數(`207235a` 寫的 31)要改成 36,由寫文件的人改。
+
+### 2026-10-12:market-notify 寄信遇到限速、伺服器錯誤會重試(commit `7c21f0b`,分支 `market`)
+
+開放前必修:Resend 預設每秒只收 2 個請求,一次結帳 3 家店會同時觸發 1 封下單確認加 3 封新訂單信,其中幾封會被回 429;原本遇到 429 不重送、直接記 failed,閘門打開之後就是真實的消費者和店家收不到信。只動 `supabase/functions/market-notify/`。**以 repo 為準。**
+
+1. **send.ts 的寄信包裝加重試**(做在傳給 `_shared` 的 `createResendSender` 的 fetch 裡,所以信件內容、錯誤字串都照舊):
+   - 429、5xx、連線失敗(fetch 丟出例外)最多重試 3 次(共 4 次請求);其他 4xx(422、409…)不重試。
+   - 回應有 `retry-after`(秒數可以有小數,或 HTTP 日期)就照它等,最多 10 秒;沒有就依序等 1、2、4 秒,再加 0–249 毫秒的隨機抖動,讓同時被擋的幾封信錯開。
+   - 一封信全部等待加起來不超過 20 秒:額度用完就不再重試,最後一次只等剩下的額度。
+   - 每次重試都用同一個 `Idempotency-Key`,Resend 自己去重,不會寄出兩封。
+   - 每次重試前回報給 handler,handler 記一筆 `info` log:`{ fn, step: "send-retry", audience, status, attempt }`(只有狀態碼與第幾次;連線失敗的狀態碼是 null;下單確認走 redactLog)。最後還是失敗就照原本的方式:notifications 記 `failed`、log 記 `step: "send"` 與錯誤。
+   - 等待可以注入:`createMarketResendSender(apiKey, fetch, { sleep, random, now })`;`index.ts` 不用改(預設 setTimeout、Math.random、Date.now)。
+2. **測試**(假的 fetch,等待用注入的 sleep 或假的 timer,不真的等):429 兩次後成功(只寄一封、三次同一個 key、等 1 秒與 2 秒)、一直 429(4 次後失敗、總等待 ≤ 20 秒)、422 / 409 等 4xx 不重試、5xx 重試、連線失敗重試、retry-after 照秒數等且超過 10 秒只等 10 秒、額度用完不再重試、retry-after 的 HTTP 日期寫法、沒注入時用 setTimeout;handler 用真的寄信包裝走完整條(重試 log、最後記 failed)。突變:不重試、422 也重試、不重試 5xx、例外不重試、重試 5 次、retry-after 不設上限、沒有總等待上限、不看 retry-after、每次重試換新 key、沒有抖動、不回報重試,全部紅。
+3. **「風險與待業主決定」第 8 點**(第 17063 行)改成:**寄信遇到限速或伺服器錯誤會重試 3 次**:Resend 回 429 / 5xx 或連線失敗時,用同一個 Idempotency-Key 最多重試 3 次(retry-after 最多 10 秒,沒有就 1 / 2 / 4 秒加抖動,一封信總等待不超過 20 秒),其他 4xx 不重試;重試後還是失敗才在 `notifications` 記 `failed`,要看後台「通知紀錄」手動處理。資料庫到函式那一段(pg_net)失敗仍然不會重送。
+4. 🔴 **還沒驗證**:pg_net 呼叫 market-notify 的逾時是 8 秒(`20261009130100` 的 `timeout_milliseconds := 8000`),重試加起來可能超過 8 秒。這時 pg_net 那邊會記逾時(`net._http_response`),函式本身應該會繼續跑完重試、寫進 notifications(用戶端斷線不會中斷 Edge Function 正在跑的處理)—— 本機驗不了,部署後要實測一次(例如一次結帳 3 家店,看 notifications 有沒有 4 筆 sent)。實測若會被中斷,要另開 migration 把 pg_net 的逾時拉長(例如 30 秒),或把總等待上限壓在 8 秒內。
+
+**數字**
+
+- market-notify vitest:**4 檔 / 117 項**(gate 8、send 11、render 46、handler 52;上一節 107 項)→ Task 42 Step 4 的 Expected 改成 **`Tests  117 passed (117)`**;「F. 共用指令與基準數字」第 2、3 階段的總數比計畫多 **87 項、1 檔**。
+- 全套:`7c21f0b` 的乾淨副本(`git archive`)連跑兩次 **116 檔 / 1853 項**全過;tsc strict 兩份設定 0 error,eslint 沒有輸出。
