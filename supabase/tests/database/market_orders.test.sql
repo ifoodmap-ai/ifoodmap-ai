@@ -37,9 +37,10 @@ CREATE FUNCTION pg_temp.ushop() RETURNS text LANGUAGE sql AS $f$ SELECT pg_temp.
 -- 建一張訂單 + 第一筆紀錄(資料庫擁有者身分,= 下單 RPC 在做的事)
 CREATE FUNCTION pg_temp.mk_order(p_id uuid, p_supplier uuid, p_payment text) RETURNS void LANGUAGE sql AS $f$
   INSERT INTO public.market_orders (id, checkout_id, supplier_id, buyer_name, buyer_phone, buyer_email, ship_city, ship_address,
-                                    subtotal, shipping_fee, total, payment_method, lookup_token_hash, terms_version)
+                                    subtotal, shipping_fee, total, payment_method, lookup_token_hash, request_fingerprint, terms_version)
   VALUES (p_id, 'a9700000-0000-4000-8000-000000000001', p_supplier, '測試買家', '0912345678', 'shopper@market-test.invalid',
-          '臺北市', '測試路 1 號 2 樓', 200, 120, 320, p_payment, repeat('a', 64), '2026-10-draft');
+          '臺北市', '測試路 1 號 2 樓', 200, 120, 320, p_payment,
+          encode(sha256(convert_to(p_id::text, 'UTF8')), 'hex'), repeat('f', 64), '2026-10-draft');  -- 每張單各自的 token 雜湊
   INSERT INTO public.market_order_events (order_id, from_status, to_status) VALUES (p_id, NULL, 'pending');
 $f$;
 
@@ -84,16 +85,16 @@ SELECT pg_temp.expect('Email 格式',
 SELECT pg_temp.expect('總額一定要等於小計 + 運費',
   pg_temp.as_exec('postgres', '', $q$
     INSERT INTO public.market_orders (checkout_id, supplier_id, buyer_name, buyer_phone, buyer_email, ship_city, ship_address,
-                                      subtotal, shipping_fee, total, payment_method, lookup_token_hash, terms_version)
+                                      subtotal, shipping_fee, total, payment_method, lookup_token_hash, request_fingerprint, terms_version)
     VALUES (gen_random_uuid(), 'a9200000-0000-4000-8000-00000000000a', '買家', '0912345678', 'a@market-test.invalid', '臺北市',
-            '測試路 1 號', 100, 60, 999, 'cod', repeat('b', 64), 'v1')$q$),
+            '測試路 1 號', 100, 60, 999, 'cod', repeat('b', 64), repeat('f', 64), 'v1')$q$),
   'ERR 23514');
 SELECT pg_temp.expect('收件縣市要在 22 縣市內',
   pg_temp.as_exec('postgres', '', $q$
     INSERT INTO public.market_orders (checkout_id, supplier_id, buyer_name, buyer_phone, buyer_email, ship_city, ship_address,
-                                      subtotal, shipping_fee, total, payment_method, lookup_token_hash, terms_version)
+                                      subtotal, shipping_fee, total, payment_method, lookup_token_hash, request_fingerprint, terms_version)
     VALUES (gen_random_uuid(), 'a9200000-0000-4000-8000-00000000000a', '買家', '0912345678', 'a@market-test.invalid', '台北市',
-            '測試路 1 號', 100, 60, 160, 'cod', repeat('b', 64), 'v1')$q$),
+            '測試路 1 號', 100, 60, 160, 'cod', repeat('b', 64), repeat('f', 64), 'v1')$q$),
   'ERR 23514');
 SELECT pg_temp.expect('anon 讀不到訂單',
   pg_temp.as_val('anon', pg_temp.anon(), $q$SELECT count(*)::text FROM public.market_orders$q$), 'ERR 42501');
@@ -124,9 +125,9 @@ SELECT pg_temp.expect('A 不能直接改訂單狀態(沒有 UPDATE 權限)',
 SELECT pg_temp.expect('A 不能自己建訂單',
   pg_temp.as_exec('authenticated', pg_temp.ua(), $q$
     INSERT INTO public.market_orders (checkout_id, supplier_id, buyer_name, buyer_phone, buyer_email, ship_city, ship_address,
-                                      subtotal, shipping_fee, total, payment_method, lookup_token_hash, terms_version)
+                                      subtotal, shipping_fee, total, payment_method, lookup_token_hash, request_fingerprint, terms_version)
     VALUES (gen_random_uuid(), 'a9200000-0000-4000-8000-00000000000a', '假單', '0912345678', 'a@market-test.invalid', '臺北市',
-            '測試路 1 號', 100, 0, 100, 'cod', repeat('c', 64), 'v1')$q$),
+            '測試路 1 號', 100, 0, 100, 'cod', repeat('c', 64), repeat('f', 64), 'v1')$q$),
   'ERR 42501');
 
 -- ---------------------------------------------------------------------
@@ -445,17 +446,39 @@ SELECT pg_temp.expect('金額 CHECK:小計 1,000,001 存不進去;小計 1,000,0
   concat_ws('|',
     pg_temp.as_exec('postgres', '', $q$
       INSERT INTO public.market_orders (checkout_id, supplier_id, buyer_name, buyer_phone, buyer_email, ship_city, ship_address,
-                                        subtotal, shipping_fee, total, payment_method, lookup_token_hash, terms_version)
+                                        subtotal, shipping_fee, total, payment_method, lookup_token_hash, request_fingerprint, terms_version)
       VALUES (gen_random_uuid(), 'a9200000-0000-4000-8000-00000000000a', '買家', '0912345678', 'a@market-test.invalid', '臺北市',
-              '測試路 1 號', 1000001, 0, 1000001, 'cod', repeat('d', 64), 'v1')$q$),
+              '測試路 1 號', 1000001, 0, 1000001, 'cod', repeat('d', 64), repeat('f', 64), 'v1')$q$),
     pg_temp.as_exec('postgres', '', $q$
       INSERT INTO public.market_orders (checkout_id, supplier_id, buyer_name, buyer_phone, buyer_email, ship_city, ship_address,
-                                        subtotal, shipping_fee, total, payment_method, lookup_token_hash, terms_version)
+                                        subtotal, shipping_fee, total, payment_method, lookup_token_hash, request_fingerprint, terms_version)
       VALUES (gen_random_uuid(), 'a9200000-0000-4000-8000-00000000000a', '買家', '0912345678', 'a@market-test.invalid', '臺北市',
-              '測試路 1 號', 1000000, 120, 1000120, 'cod', repeat('e', 64), 'v1')$q$),
+              '測試路 1 號', 1000000, 120, 1000120, 'cod', repeat('e', 64), repeat('f', 64), 'v1')$q$),
     pg_temp.as_exec('postgres', '', $q$
       INSERT INTO public.market_orders (checkout_id, supplier_id, buyer_name, buyer_phone, buyer_email, ship_city, ship_address,
-                                        subtotal, shipping_fee, total, payment_method, lookup_token_hash, terms_version)
+                                        subtotal, shipping_fee, total, payment_method, lookup_token_hash, request_fingerprint, terms_version)
       VALUES (gen_random_uuid(), 'a9200000-0000-4000-8000-00000000000a', '買家', '0912345678', 'a@market-test.invalid', '臺北市',
-              '測試路 1 號', 100, 10001, 10101, 'cod', repeat('f', 64), 'v1')$q$)),
+              '測試路 1 號', 100, 10001, 10101, 'cod', repeat('f', 64), repeat('f', 64), 'v1')$q$)),
   'ERR 23514|OK|ERR 23514');
+-- 5-7 下單冪等的儲存層:請求指紋必須是 64 位 hex;同一個查詢 token(= 同一次結帳)每家店最多一張單
+--     (下單 RPC 用 advisory lock 讓同一個 token 排隊、先查再建;UNIQUE 是第二道)
+SELECT pg_temp.expect('請求指紋不是 64 位 hex 存不進去',
+  pg_temp.as_exec('postgres', '', $q$
+    INSERT INTO public.market_orders (checkout_id, supplier_id, buyer_name, buyer_phone, buyer_email, ship_city, ship_address,
+                                      subtotal, shipping_fee, total, payment_method, lookup_token_hash, request_fingerprint, terms_version)
+    VALUES (gen_random_uuid(), 'a9200000-0000-4000-8000-00000000000a', '買家', '0912345678', 'a@market-test.invalid', '臺北市',
+            '測試路 1 號', 100, 0, 100, 'cod', repeat('7', 64), 'not-a-sha256', 'v1')$q$),
+  'ERR 23514');
+SELECT pg_temp.expect('同一個查詢 token 同一家店的第二張單存不進去(UNIQUE)',
+  concat_ws('|',
+    pg_temp.as_exec('postgres', '', $q$
+      INSERT INTO public.market_orders (checkout_id, supplier_id, buyer_name, buyer_phone, buyer_email, ship_city, ship_address,
+                                        subtotal, shipping_fee, total, payment_method, lookup_token_hash, request_fingerprint, terms_version)
+      VALUES (gen_random_uuid(), 'a9200000-0000-4000-8000-00000000000a', '買家', '0912345678', 'a@market-test.invalid', '臺北市',
+              '測試路 1 號', 100, 0, 100, 'cod', repeat('8', 64), repeat('f', 64), 'v1')$q$),
+    pg_temp.as_exec('postgres', '', $q$
+      INSERT INTO public.market_orders (checkout_id, supplier_id, buyer_name, buyer_phone, buyer_email, ship_city, ship_address,
+                                        subtotal, shipping_fee, total, payment_method, lookup_token_hash, request_fingerprint, terms_version)
+      VALUES (gen_random_uuid(), 'a9200000-0000-4000-8000-00000000000a', '買家', '0912345678', 'a@market-test.invalid', '臺北市',
+              '測試路 1 號', 100, 0, 100, 'cod', repeat('8', 64), repeat('f', 64), 'v1')$q$)),
+  'OK|ERR 23505');

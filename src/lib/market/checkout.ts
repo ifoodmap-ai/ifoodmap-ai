@@ -152,6 +152,9 @@ export const checkoutErrorMessage = (
       return `${stores} 不接受你選的付款方式,請重新選擇。`;
     case "PRICE_CHANGED":
       return "價格或運費剛剛有變動,畫面已更新成最新金額,請確認後再送出一次。";
+    case "TOKEN_REUSED":
+      // 資料庫:同一個查詢 token 已經用在內容不同的結帳(同一份內容重送會回 ok + duplicate:true,不會走到這裡)
+      return "這筆結帳剛才已經送出過了,請查看訂單。";
     default:
       return "下單失敗,請稍後再試。";
   }

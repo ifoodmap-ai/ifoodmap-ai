@@ -4,13 +4,17 @@
 -- market_place_order(p_checkout jsonb)(SECURITY DEFINER,anon / 登入者都能叫):
 --   伺服器重新查一切,不相信瀏覽器送來的任何金額 —— 商品是否已核准上架、店家零售是否啟用、價格、庫存、
 --   配送範圍、最低訂購金額、付款方式(轉帳要店家已填轉帳資訊);算運費(固定運費,小計 ≥ 免運門檻就 0)、扣庫存、
---   每家店建一張單 + 明細快照 + 第一筆紀錄(pending),同一次結帳共用一組查詢 token(DB 只存 sha256 hex)。
+--   每家店建一張單 + 明細快照 + 第一筆紀錄(pending),同一次結帳共用一組查詢 token —— token 由瀏覽器產生並送來
+--   (32 bytes 隨機值的 base64url,43 字),DB 只存 sha256 hex。同一個 token 重送(網路斷線後重按)回第一次的結果,
+--   不重複建單(冪等,見 market_place_order 第 3 步)。
 --   可選的 expected_totals:跟伺服器算的不一樣就回 PRICE_CHANGED(價格在你看購物車之後變了),不建單。
 --   商業上的錯誤一律回 200 + {ok:false, code},不 raise —— 這樣「被擋的嘗試」也會留下 A 段的限流計數。
 -- market_get_orders(p_token text):用 token 換這次結帳的訂單(電話、Email 遮罩);待匯款時附上轉帳資訊。
 --
--- market_place_order 的順序:欄位檢查 → 開關 → 限流 A 段 → 購物車、商品、店家檢查與算錢 → 限流 B 段 → 建單。
---   鎖的順序因此固定:A 段的計數列 → 依 id 鎖商品(FOR UPDATE)→ B 段的計數列;A、B 的 bucket 不重疊,所有結帳同一個順序。
+-- market_place_order 的順序:欄位檢查(含 token、購物車格式與合併)→ 冪等(token 的 advisory lock → 查既有訂單)
+--   → 開關 → 限流 A 段 → 購物車、商品、店家檢查與算錢 → 限流 B 段 → 建單。
+--   鎖的順序因此固定:token 的 advisory lock → A 段的計數列 → 依 id 鎖商品(FOR UPDATE)→ B 段的計數列;
+--   A、B 的 bucket 不重疊,不同 token 的 advisory lock 互不相干,所有結帳同一個順序。
 --
 -- 下單開關 app_config.market_checkout_open(預設 'false'):對外開放前只有平台管理員能下單,其他人拿到 MARKET_CLOSED;
 --   開關擋下的嘗試不寫任何計數。🔴 改成 'true' = 對外開放,待業主核准。
@@ -218,6 +222,7 @@ SELECT cron.schedule(
 -- ---------------------------------------------------------------------
 -- 2. 下單
 --   p_checkout = {
+--     token: 瀏覽器產生的查詢 token(32 bytes 隨機值的 base64url,^[A-Za-z0-9_-]{43}$;一次結帳一個,重送時沿用),
 --     buyer: {name, phone, email, city, address, note?},
 --     items: [{product_id, qty}](1–50 行,qty 1–99;同一商品合併,上限 99),
 --     payments: {<supplier_id>: 'cod' | 'transfer'},
@@ -225,7 +230,9 @@ SELECT cron.schedule(
 --     terms_version: 同意的服務條款版本
 --   }
 --   成功 → {ok:true, token, checkout_id, orders:[{id, supplier_id, total}]}
---   失敗 → {ok:false, code, …}:MARKET_CLOSED / INVALID_INPUT(field)/ RATE_LIMITED、DAILY_CAP(retry_after)/
+--   同一個 token、同一份內容重送 → 同樣形狀再加 duplicate:true(第一次的 checkout_id、orders;不扣額度、不動庫存、不再排通知)
+--   失敗 → {ok:false, code, …}:INVALID_INPUT(field,含 token)/ TOKEN_REUSED(同一個 token、內容不同)/
+--          MARKET_CLOSED / RATE_LIMITED、DAILY_CAP(retry_after)/
 --          EMPTY_CART / TOO_MANY_ITEMS / PRODUCT_UNAVAILABLE(products)/ OUT_OF_STOCK(products)/ TOO_MANY_STORES /
 --          ORDER_TOO_LARGE(stores:任一家店的商品小計(不含運費)超過 1,000,000)/
 --          NOT_DELIVERABLE(stores)/ BELOW_MINIMUM(stores)/ PAYMENT_NOT_ACCEPTED(stores)/ PRICE_CHANGED(stores)
@@ -264,6 +271,8 @@ DECLARE
   v_checkout  uuid := gen_random_uuid();
   v_token     text;
   v_hash      text;
+  v_fingerprint text;
+  v_dup       jsonb;
 BEGIN
   -- 1. 形狀
   IF p_checkout IS NULL OR jsonb_typeof(p_checkout) <> 'object' THEN
@@ -321,13 +330,72 @@ BEGIN
     RETURN jsonb_build_object('ok', false, 'code', 'INVALID_INPUT', 'field', 'terms_version');
   END IF;
 
-  -- 3. 開關:對外開放前只有平台管理員能下單(app_config.market_checkout_open,待業主核准才改成 'true')。
+  -- 查詢 token:由瀏覽器產生(32 bytes 隨機值的 base64url,43 字),一次結帳一個;伺服器只存 sha256 hex
+  IF jsonb_typeof(p_checkout->'token') IS DISTINCT FROM 'string' OR (p_checkout->>'token') !~ '^[A-Za-z0-9_-]{43}$' THEN
+    RETURN jsonb_build_object('ok', false, 'code', 'INVALID_INPUT', 'field', 'token');
+  END IF;
+  v_token := p_checkout->>'token';
+  v_hash  := encode(sha256(convert_to(v_token, 'UTF8')), 'hex');
+
+  -- 購物車的格式(最多 50 行、product_id 是 uuid、qty 是 1–99 的整數)與同一商品合併:請求指紋要用合併後的內容,
+  -- 所以在冪等之前做;先擋行數,超大陣列不用逐行檢查。空購物車照樣留到第 6 步(空購物車的嘗試也算進 A 段)
+  IF jsonb_array_length(v_items) > 50 THEN
+    RETURN jsonb_build_object('ok', false, 'code', 'TOO_MANY_ITEMS');
+  END IF;
+  IF EXISTS (
+    SELECT 1 FROM jsonb_array_elements(v_items) AS e(value)
+     WHERE jsonb_typeof(e.value) <> 'object'
+        OR COALESCE(e.value->>'product_id', '') !~ '^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$'
+        OR CASE WHEN jsonb_typeof(e.value->'qty') = 'number' AND (e.value->>'qty') ~ '^[0-9]{1,2}$'
+                THEN (e.value->>'qty')::integer NOT BETWEEN 1 AND 99
+                ELSE true END
+  ) THEN
+    RETURN jsonb_build_object('ok', false, 'code', 'INVALID_INPUT', 'field', 'items');
+  END IF;
+
+  SELECT jsonb_agg(jsonb_build_object('product_id', r.product_id, 'qty', r.qty) ORDER BY r.product_id)
+    INTO v_req
+    FROM (SELECT (e.value->>'product_id')::uuid AS product_id, LEAST(sum((e.value->>'qty')::integer), 99)::integer AS qty
+            FROM jsonb_array_elements(v_items) AS e(value)
+           GROUP BY 1) r;
+
+  -- 請求指紋:正規化後的內容 —— 合併後的商品(依 product_id 排序)、每家店的付款方式、正規化後的收件資料 —— 的 sha256 hex。
+  -- 不含 expected_totals 與 terms_version(重送時畫面上的金額、條款版本可能不同,仍是同一次結帳)
+  v_fingerprint := encode(sha256(convert_to(jsonb_build_object(
+      'items', COALESCE(v_req, '[]'::jsonb),
+      'payments', v_payments,
+      'buyer', jsonb_build_object('name', v_name, 'phone', v_phone, 'email', v_email,
+                                  'city', v_city, 'address', v_address, 'note', v_note))::text, 'UTF8')), 'hex');
+
+  -- 3. 冪等:這個 token 已經建過單(網路斷線、回應沒收到,買家又按了一次)就回第一次的結果,不重複建單。
+  --    同一個 token 的並發請求靠這個 advisory lock 排隊(交易結束才放):後到的等前一個交易 commit 或 rollback,
+  --    之後的查詢才看得到它建的單 → 回 duplicate;前一個失敗了,後到的照常往下做。不同 token 不會互相等。
+  --    放在開關與限流之前:重送不扣任何額度、不動庫存、不再排通知,開關後來關了也照樣回既有結果。
+  --    (乾跑只有一條連線,並發測不到;market_orders 另有 UNIQUE (lookup_token_hash, supplier_id) 當第二道)
+  PERFORM pg_advisory_xact_lock(hashtextextended('ifoodmap:market_place_order:' || v_hash, 0));
+  SELECT jsonb_build_object(
+           'fingerprints', jsonb_agg(DISTINCT o.request_fingerprint),
+           'checkout_id', min(o.checkout_id::text),
+           'orders', jsonb_agg(jsonb_build_object('id', o.id, 'supplier_id', o.supplier_id, 'total', o.total) ORDER BY o.supplier_id))
+    INTO v_dup
+    FROM public.market_orders o
+   WHERE o.lookup_token_hash = v_hash
+  HAVING count(*) > 0;
+  IF v_dup IS NOT NULL THEN
+    IF v_dup->'fingerprints' IS DISTINCT FROM jsonb_build_array(v_fingerprint) THEN
+      RETURN jsonb_build_object('ok', false, 'code', 'TOKEN_REUSED');  -- 同一個 token、內容不同:什麼都不寫
+    END IF;
+    RETURN jsonb_build_object('ok', true, 'duplicate', true, 'token', v_token,
+                              'checkout_id', v_dup->'checkout_id', 'orders', v_dup->'orders');
+  END IF;
+
+  -- 4. 開關:對外開放前只有平台管理員能下單(app_config.market_checkout_open,待業主核准才改成 'true')。
   --    放在限流之前:開關關著時被擋的嘗試不寫任何計數
   IF NOT v_admin AND COALESCE((SELECT c.value FROM public.app_config c WHERE c.key = 'market_checkout_open'), '') <> 'true' THEN
     RETURN jsonb_build_object('ok', false, 'code', 'MARKET_CLOSED');
   END IF;
 
-  -- 4. 限流 A 段:同一個網路的嘗試次數(失敗的嘗試也算);拿不到 IP 就算進全站共用的 noip。平台管理員(業主實測)不限流
+  -- 5. 限流 A 段:同一個網路的嘗試次數(失敗的嘗試也算);拿不到 IP 就算進全站共用的 noip。平台管理員(業主實測)不限流
   IF NOT v_admin THEN
     v_salt := COALESCE((SELECT c.value FROM public.app_config c WHERE c.key = 'market_rate_salt'), 'ifoodmap-market-rate-fallback');
     v_ip := public.market_client_ip();
@@ -337,7 +405,7 @@ BEGIN
         jsonb_build_object('bucket', public.market_rate_key('ip', v_ip, v_salt), 'window', '1h', 'limit', 30)
       );
       -- IPv6 另外彙總到 /48(market_client_ip 已經把 IPv6 正規化成 /64 的網段位址):每小時 200 次,只防灌爆。
-      -- /48 是很多用戶共用的位址池,嚴格的額度只算成單(第 7 步 B 段的 ip48o,每天 20 單)
+      -- /48 是很多用戶共用的位址池,嚴格的額度只算成單(第 8 步 B 段的 ip48o,每天 20 單)
       IF position(':' IN v_ip) > 0 THEN
         v_ip48 := host(network(set_masklen(v_ip::inet, 48)));
         v_rules := v_rules || jsonb_build_array(
@@ -358,29 +426,10 @@ BEGIN
     END IF;
   END IF;
 
-  -- 5. 購物車
+  -- 6. 購物車(格式與合併已經在第 2 步做完,v_req = 合併後的商品)
   IF jsonb_array_length(v_items) = 0 THEN
     RETURN jsonb_build_object('ok', false, 'code', 'EMPTY_CART');
   END IF;
-  IF jsonb_array_length(v_items) > 50 THEN
-    RETURN jsonb_build_object('ok', false, 'code', 'TOO_MANY_ITEMS');
-  END IF;
-  IF EXISTS (
-    SELECT 1 FROM jsonb_array_elements(v_items) AS e(value)
-     WHERE jsonb_typeof(e.value) <> 'object'
-        OR COALESCE(e.value->>'product_id', '') !~ '^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$'
-        OR CASE WHEN jsonb_typeof(e.value->'qty') = 'number' AND (e.value->>'qty') ~ '^[0-9]{1,2}$'
-                THEN (e.value->>'qty')::integer NOT BETWEEN 1 AND 99
-                ELSE true END
-  ) THEN
-    RETURN jsonb_build_object('ok', false, 'code', 'INVALID_INPUT', 'field', 'items');
-  END IF;
-
-  SELECT jsonb_agg(jsonb_build_object('product_id', r.product_id, 'qty', r.qty) ORDER BY r.product_id)
-    INTO v_req
-    FROM (SELECT (e.value->>'product_id')::uuid AS product_id, LEAST(sum((e.value->>'qty')::integer), 99)::integer AS qty
-            FROM jsonb_array_elements(v_items) AS e(value)
-           GROUP BY 1) r;
 
   -- 鎖住這些商品(固定照 id 排序,兩張單同時搶同一批商品不會互等),之後讀到的庫存不會被同時扣走
   PERFORM 1 FROM public.market_products p
@@ -404,7 +453,7 @@ BEGIN
     RETURN jsonb_build_object('ok', false, 'code', 'OUT_OF_STOCK', 'products', v_bad);
   END IF;
 
-  -- 6. 每家店:小計、運費(固定運費;小計 ≥ 免運門檻就 0)、配送範圍、最低金額、付款方式 —— 一律伺服器算
+  -- 7. 每家店:小計、運費(固定運費;小計 ≥ 免運門檻就 0)、配送範圍、最低金額、付款方式 —— 一律伺服器算
   SELECT jsonb_agg(jsonb_build_object(
            'supplier_id', s.supplier_id,
            'subtotal', g.subtotal,
@@ -473,8 +522,8 @@ BEGIN
     END IF;
   END IF;
 
-  -- 7. 限流 B 段:所有檢查都通過、準備建單時才扣(上面的缺貨、價格變了、超過金額上限、配送不到、未達最低金額都不吃),
-  --    一次結帳不論幾家店都算 1。商品已經在第 5 步依 id 鎖住,這裡才鎖計數列(所有結帳同一個順序)。
+  -- 8. 限流 B 段:所有檢查都通過、準備建單時才扣(上面的缺貨、價格變了、超過金額上限、配送不到、未達最低金額都不吃),
+  --    一次結帳不論幾家店都算 1。商品已經在第 6 步依 id 鎖住,這裡才鎖計數列(所有結帳同一個順序)。
   --    被擋時直接回傳:不建單、不動庫存;A 段已經扣的照算(兩段各自一次 market_rate_take,只退回被擋的那一段)
   IF NOT v_admin THEN
     v_email_key := public.supplier_mail_email_key(v_email);
@@ -501,19 +550,17 @@ BEGIN
     END IF;
   END IF;
 
-  -- 8. 建單:同一次結帳的訂單共用一組查詢 token(32 bytes 隨機值的 base64url,43 字;DB 只存 sha256 hex)
-  v_token := rtrim(translate(encode(extensions.gen_random_bytes(32), 'base64'), '+/', '-_'), '=');
-  v_hash  := encode(sha256(convert_to(v_token, 'UTF8')), 'hex');
+  -- 9. 建單:同一次結帳的訂單共用瀏覽器送來的查詢 token(DB 只存 sha256 hex)與同一組請求指紋
 
   FOR v_store IN SELECT x.value FROM jsonb_array_elements(v_stores) AS x(value) LOOP
     INSERT INTO public.market_orders
       (checkout_id, supplier_id, buyer_name, buyer_phone, buyer_email, ship_city, ship_address, buyer_note,
-       subtotal, shipping_fee, total, payment_method, lookup_token_hash, terms_version)
+       subtotal, shipping_fee, total, payment_method, lookup_token_hash, request_fingerprint, terms_version)
     VALUES
       (v_checkout, (v_store->>'supplier_id')::uuid, v_name, v_phone, v_email, v_city, v_address, v_note,
        (v_store->>'subtotal')::integer, (v_store->>'shipping_fee')::integer,
        (v_store->>'subtotal')::integer + (v_store->>'shipping_fee')::integer,
-       v_store->>'payment', v_hash, v_terms)
+       v_store->>'payment', v_hash, v_fingerprint, v_terms)
     RETURNING id INTO v_order;
 
     -- stock_deducted:有設庫存的商品等一下會扣 qty(下面的 UPDATE),不限量的記 0 —— 拒單 / 取消只補這個數
@@ -552,7 +599,7 @@ COMMENT ON FUNCTION public.market_place_order(jsonb) IS
 REVOKE ALL ON FUNCTION public.market_place_order(jsonb) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.market_place_order(jsonb) TO anon, authenticated, service_role;
 
--- 下單開關的狀態,給前端決定要不要讓人進結帳(真正的關卡仍是 market_place_order 第 3 步)。
+-- 下單開關的狀態,給前端決定要不要讓人進結帳(真正的關卡仍是 market_place_order 第 4 步)。
 -- {open:對外開放了沒, can_order:這位呼叫者現在能不能下單(開放了,或是平台管理員)};不洩漏 app_config 其他內容。
 CREATE OR REPLACE FUNCTION public.market_checkout_status()
 RETURNS jsonb

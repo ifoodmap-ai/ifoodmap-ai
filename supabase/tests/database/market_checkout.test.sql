@@ -119,7 +119,9 @@ END
 $f$;
 
 -- 結帳內容。電話預設由 Email 算出一支不重複的(同一支電話每天只能下 10 單,測試會超過);
--- 要測正規化時自己帶(例如 '0912-345-678')。Email 可以帶大寫:伺服器會轉小寫
+-- 要測正規化時自己帶(例如 '0912-345-678')。Email 可以帶大寫:伺服器會轉小寫。
+-- token 跟前端一樣由這邊產生(32 bytes 隨機值的 base64url,43 字),每次呼叫都是新的 = 每次都是新的一次結帳;
+-- 要測冪等(同一個 token 重送)時用 pg_temp.with_token 換成固定的
 CREATE FUNCTION pg_temp.co(p_email text, p_items jsonb, p_payments jsonb, p_city text DEFAULT '臺北市',
                            p_expected jsonb DEFAULT NULL, p_phone text DEFAULT NULL)
 RETURNS jsonb LANGUAGE sql AS $f$
@@ -127,7 +129,8 @@ RETURNS jsonb LANGUAGE sql AS $f$
     'buyer', jsonb_build_object('name', '測試買家',
                                 'phone', COALESCE(p_phone, '09' || lpad((abs(hashtext(p_email)) % 100000000)::text, 8, '0')),
                                 'email', p_email, 'city', p_city, 'address', '測試路 1 號 2 樓', 'note', '請放管理室'),
-    'items', p_items, 'payments', p_payments, 'expected_totals', p_expected, 'terms_version', '2026-10-draft'))
+    'items', p_items, 'payments', p_payments, 'expected_totals', p_expected, 'terms_version', '2026-10-draft',
+    'token', rtrim(translate(encode(extensions.gen_random_bytes(32), 'base64'), '+/', '-_'), '=')))
 $f$;
 
 CREATE FUNCTION pg_temp.item(p_product text, p_qty integer) RETURNS jsonb LANGUAGE sql AS $f$
@@ -628,3 +631,77 @@ SELECT pg_temp.expect('同一個 IPv4 當天第 21 單:RATE_LIMITED、不建單�
                WHERE bucket = public.market_rate_key('ipo', '198.51.131.1',
                                                      (SELECT value FROM public.app_config WHERE key = 'market_rate_salt')) || '|day'), '0')),
   'RATE_LIMITED|20|true|20');
+-- 5-8 下單冪等:token 由瀏覽器產生(43 字的 base64url),伺服器只存 sha256;同一個 token 的重送不會重複建單。
+--     同一個 token 的並發請求靠 market_place_order 裡的 pg_advisory_xact_lock 排隊(後到的等前一個結束、再查到既有訂單);
+--     乾跑只有一條連線測不了並發,這裡測依序重送。
+CREATE FUNCTION pg_temp.tk() RETURNS text LANGUAGE sql AS $f$ SELECT rpad('idem-test-', 43, 'Z') $f$;
+CREATE FUNCTION pg_temp.with_token(p_checkout jsonb, p_token text) RETURNS jsonb LANGUAGE sql AS $f$
+  SELECT jsonb_set(p_checkout, '{token}', to_jsonb(p_token))
+$f$;
+-- 快照:這個 token 的訂單數、高麗菜與鮭魚的庫存、限流計數總和、通知佇列筆數
+CREATE FUNCTION pg_temp.idem_snapshot() RETURNS text LANGUAGE sql AS $f$
+  SELECT concat_ws('|',
+    (SELECT count(*) FROM public.market_orders WHERE lookup_token_hash = encode(sha256(convert_to(pg_temp.tk(), 'UTF8')), 'hex')),
+    (SELECT stock FROM public.market_products WHERE id = 'a9300000-0000-4000-8000-0000000000a1'),
+    (SELECT stock FROM public.market_products WHERE id = 'a9300000-0000-4000-8000-0000000000b1'),
+    (SELECT COALESCE(sum(hits), 0) FROM public.market_rate_counters),
+    (SELECT count(*) FROM net.http_request_queue WHERE url = 'http://127.0.0.1:9/market-test'))
+$f$;
+-- 第一次:高麗菜 ×3(A 店)+ 鮭魚 ×1(B 店),電話自己帶
+INSERT INTO _ctx VALUES ('idem1', pg_temp.place(pg_temp.anon(), '198.51.140.1', pg_temp.with_token(pg_temp.co('idem@market-test.invalid',
+  jsonb_build_array(pg_temp.item('a1', 3), pg_temp.item('b1', 1)),
+  '{"a9200000-0000-4000-8000-00000000000a":"cod","a9200000-0000-4000-8000-00000000000b":"cod"}', '臺北市', NULL, '0912000111'), pg_temp.tk())));
+SELECT pg_temp.expect('第一次下單成功:回傳的 token 就是瀏覽器送的;兩張單共用同一組請求指紋(64 位 hex)',
+  (SELECT COALESCE(v ->> 'code', 'ok') || '|' || ((v ->> 'token') = pg_temp.tk())::text || '|' || jsonb_array_length(v -> 'orders')::text
+     FROM _ctx WHERE k = 'idem1') || '|' ||
+  COALESCE((SELECT count(DISTINCT request_fingerprint)::text || ':' || bool_and(request_fingerprint ~ '^[0-9a-f]{64}$')::text
+              FROM public.market_orders WHERE lookup_token_hash = encode(sha256(convert_to(pg_temp.tk(), 'UTF8')), 'hex')), '(沒有單)'),
+  'ok|true|2|1:true');
+INSERT INTO _ctx VALUES ('idem_snap', to_jsonb(pg_temp.idem_snapshot()));
+-- 重送:內容一樣但寫法不同(Email 大小寫、電話有 -、同一個商品拆兩行、順序不同)、換 IP、
+--       expected_totals 與條款版本不同(這兩個不算進指紋)
+INSERT INTO _ctx VALUES ('idem2', pg_temp.place(pg_temp.anon(), '198.51.140.2', jsonb_set(pg_temp.with_token(pg_temp.co('IDEM@Market-Test.invalid',
+  jsonb_build_array(pg_temp.item('b1', 1), pg_temp.item('a1', 1), pg_temp.item('a1', 2)),
+  '{"a9200000-0000-4000-8000-00000000000b":"cod","a9200000-0000-4000-8000-00000000000a":"cod"}', '臺北市',
+  '{"a9200000-0000-4000-8000-00000000000a": 1, "a9200000-0000-4000-8000-00000000000b": 1}', '0912-000-111'), pg_temp.tk()),
+  '{terms_version}', '"2026-10-v2"')));
+SELECT pg_temp.expect('同一個 token、同樣內容重送:duplicate:true,回第一次的 token、checkout_id、orders',
+  (SELECT (r2.v ->> 'ok') || '|' || COALESCE(r2.v ->> 'duplicate', '∅') || '|' || ((r2.v ->> 'token') = pg_temp.tk())::text || '|' ||
+          ((r2.v ->> 'checkout_id') = (r1.v ->> 'checkout_id'))::text || '|' || ((r2.v -> 'orders') = (r1.v -> 'orders'))::text
+     FROM _ctx r1, _ctx r2 WHERE r1.k = 'idem1' AND r2.k = 'idem2'),
+  'true|true|true|true|true');
+SELECT pg_temp.expect('……重送之後訂單數、庫存、限流計數、通知佇列都沒變',
+  pg_temp.idem_snapshot(), (SELECT v #>> '{}' FROM _ctx WHERE k = 'idem_snap'));
+-- 同一個 token、內容不同(地址改了)
+INSERT INTO _ctx VALUES ('idem3', pg_temp.place(pg_temp.anon(), '198.51.140.3', jsonb_set(pg_temp.with_token(pg_temp.co('idem@market-test.invalid',
+  jsonb_build_array(pg_temp.item('a1', 3), pg_temp.item('b1', 1)),
+  '{"a9200000-0000-4000-8000-00000000000a":"cod","a9200000-0000-4000-8000-00000000000b":"cod"}', '臺北市', NULL, '0912000111'), pg_temp.tk()),
+  '{buyer,address}', '"另一個地址 99 號"')));
+SELECT pg_temp.expect('同一個 token、內容不同(地址改了)→ TOKEN_REUSED',
+  (SELECT v::text FROM _ctx WHERE k = 'idem3'), '{"ok": false, "code": "TOKEN_REUSED"}');
+SELECT pg_temp.expect('……什麼都沒寫(訂單數、庫存、限流計數、通知佇列都沒變)',
+  pg_temp.idem_snapshot(), (SELECT v #>> '{}' FROM _ctx WHERE k = 'idem_snap'));
+SELECT pg_temp.expect('token 缺少、42 字、有 base64url 以外的字元、不是字串 → INVALID_INPUT(field token)',
+  (SELECT string_agg((r ->> 'code') || ':' || COALESCE(r ->> 'field', '∅'), ',' ORDER BY n)
+     FROM (SELECT n, pg_temp.place(pg_temp.anon(), '198.51.140.4', c) AS r
+             FROM (VALUES
+               (1, pg_temp.co('tok1@market-test.invalid', jsonb_build_array(pg_temp.item('a2', 1)), '{"a9200000-0000-4000-8000-00000000000a":"cod"}') - 'token'),
+               (2, pg_temp.with_token(pg_temp.co('tok2@market-test.invalid', jsonb_build_array(pg_temp.item('a2', 1)), '{"a9200000-0000-4000-8000-00000000000a":"cod"}'),
+                                      repeat('A', 42))),
+               (3, pg_temp.with_token(pg_temp.co('tok3@market-test.invalid', jsonb_build_array(pg_temp.item('a2', 1)), '{"a9200000-0000-4000-8000-00000000000a":"cod"}'),
+                                      repeat('A', 42) || '=')),
+               (4, jsonb_set(pg_temp.co('tok4@market-test.invalid', jsonb_build_array(pg_temp.item('a2', 1)), '{"a9200000-0000-4000-8000-00000000000a":"cod"}'),
+                             '{token}', '1234567890123456789012345678901234567890123'::jsonb))
+             ) AS t(n, c)) x),
+  'INVALID_INPUT:token,INVALID_INPUT:token,INVALID_INPUT:token,INVALID_INPUT:token');
+-- 開關後來關了:同一個 token 重送照樣回既有結果(在限流與開關之前就認出來)
+UPDATE public.app_config SET value = 'false' WHERE key = 'market_checkout_open';
+INSERT INTO _ctx VALUES ('idem4', pg_temp.place(pg_temp.anon(), '198.51.140.5', pg_temp.with_token(pg_temp.co('idem@market-test.invalid',
+  jsonb_build_array(pg_temp.item('a1', 3), pg_temp.item('b1', 1)),
+  '{"a9200000-0000-4000-8000-00000000000a":"cod","a9200000-0000-4000-8000-00000000000b":"cod"}', '臺北市', NULL, '0912000111'), pg_temp.tk())));
+UPDATE public.app_config SET value = 'true' WHERE key = 'market_checkout_open';
+SELECT pg_temp.expect('開關關掉之後,同一個 token 重送仍拿到既有結果(duplicate),不是 MARKET_CLOSED',
+  (SELECT COALESCE(v ->> 'code', 'ok') || '|' || COALESCE(v ->> 'duplicate', '∅') || '|' ||
+          ((v ->> 'checkout_id') = (SELECT x.v ->> 'checkout_id' FROM _ctx x WHERE x.k = 'idem1'))::text
+     FROM _ctx WHERE k = 'idem4'),
+  'ok|true|true');

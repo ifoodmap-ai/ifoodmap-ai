@@ -73,6 +73,7 @@ CREATE TABLE IF NOT EXISTS public.market_orders (
   payment_status      text NOT NULL DEFAULT 'unpaid',
   payment_ref         text,
   lookup_token_hash   text NOT NULL,
+  request_fingerprint text NOT NULL,
   terms_version       text NOT NULL,
   status_note         text,
   shipped_carrier     text,
@@ -109,6 +110,10 @@ CREATE TABLE IF NOT EXISTS public.market_orders (
     AND (payment_ref IS NULL OR char_length(payment_ref) <= 100)
   ),
   CONSTRAINT market_orders_token CHECK (lookup_token_hash ~ '^[0-9a-f]{64}$'),
+  CONSTRAINT market_orders_fingerprint CHECK (request_fingerprint ~ '^[0-9a-f]{64}$'),
+  -- 同一個查詢 token(= 同一次結帳)每家店最多一張單。下單 RPC 用 advisory lock 讓同一個 token 排隊、先查再建;
+  -- 這條是儲存層的第二道:將來萬一有別的路徑寫訂單,重送也不會重複建單。它的索引也拿來用 token 查單
+  CONSTRAINT market_orders_token_store UNIQUE (lookup_token_hash, supplier_id),
   CONSTRAINT market_orders_misc_lengths CHECK (
     char_length(terms_version) BETWEEN 1 AND 20
     AND (status_note IS NULL OR char_length(status_note) <= 300)
@@ -118,13 +123,14 @@ CREATE TABLE IF NOT EXISTS public.market_orders (
 );
 
 CREATE INDEX IF NOT EXISTS market_orders_supplier_idx ON public.market_orders (supplier_id, created_at DESC);
-CREATE INDEX IF NOT EXISTS market_orders_token_idx ON public.market_orders (lookup_token_hash);
 CREATE INDEX IF NOT EXISTS market_orders_checkout_idx ON public.market_orders (checkout_id);
 CREATE INDEX IF NOT EXISTS market_orders_status_idx ON public.market_orders (status, created_at DESC);
 
 COMMENT ON TABLE public.market_orders IS
   '零售訂單(一次結帳按店家拆成多張,checkout_id 相同、共用一組查詢 token)。只由 market_place_order 建立;狀態只經 market_order_events 改變。';
-COMMENT ON COLUMN public.market_orders.lookup_token_hash IS '查詢 token 的 sha256 hex(token 本身只在下單回傳與確認信裡出現)';
+COMMENT ON COLUMN public.market_orders.lookup_token_hash IS '查詢 token 的 sha256 hex(token 由瀏覽器產生;本身只在下單請求、回傳與確認信裡出現)';
+COMMENT ON COLUMN public.market_orders.request_fingerprint IS
+  '下單請求的指紋(正規化後的商品、付款方式、收件資料的 sha256 hex;不含 expected_totals、terms_version)。同一次結帳的每張單都一樣;同一個 token 重送時拿來判斷是不是同一份內容';
 
 CREATE TABLE IF NOT EXISTS public.market_order_items (
   id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),

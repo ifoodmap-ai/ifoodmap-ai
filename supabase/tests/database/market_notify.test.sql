@@ -14,9 +14,9 @@ INSERT INTO public.supplier_accounts (user_id, supplier_id) VALUES
   ('a9100000-0000-4000-8000-000000000001', 'a9200000-0000-4000-8000-00000000000a');
 INSERT INTO public.market_stores (supplier_id, delivery_cities) VALUES ('a9200000-0000-4000-8000-00000000000a', ARRAY['臺北市']);
 INSERT INTO public.market_orders (id, checkout_id, supplier_id, buyer_name, buyer_phone, buyer_email, ship_city, ship_address,
-                                  subtotal, shipping_fee, total, payment_method, lookup_token_hash, terms_version)
+                                  subtotal, shipping_fee, total, payment_method, lookup_token_hash, request_fingerprint, terms_version)
 VALUES ('a9600000-0000-4000-8000-000000000001', 'a9700000-0000-4000-8000-000000000001', 'a9200000-0000-4000-8000-00000000000a',
-        '測試買家', '0912345678', 'shopper@market-test.invalid', '臺北市', '測試路 1 號', 200, 0, 200, 'cod', repeat('a', 64), 'v1');
+        '測試買家', '0912345678', 'shopper@market-test.invalid', '臺北市', '測試路 1 號', 200, 0, 200, 'cod', repeat('a', 64), repeat('f', 64), 'v1');
 
 CREATE FUNCTION pg_temp.queued() RETURNS bigint LANGUAGE sql AS $f$
   SELECT count(*) FROM net.http_request_queue WHERE url = 'http://127.0.0.1:9/market-test'

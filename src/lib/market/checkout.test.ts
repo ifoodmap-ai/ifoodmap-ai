@@ -166,6 +166,7 @@ describe("checkoutErrorMessage", () => {
     );
     expect(msg({ ok: false, code: "PAYMENT_NOT_ACCEPTED", stores: [SUPPLIER_A, SUPPLIER_B] })).toBe("A 店、B 店 不接受你選的付款方式,請重新選擇。");
     expect(msg({ ok: false, code: "INVALID_INPUT", field: "terms_version" })).toBe("有欄位格式不對,請檢查後再送出。");
+    expect(msg({ ok: false, code: "TOKEN_REUSED" })).toBe("這筆結帳剛才已經送出過了,請查看訂單。");
   });
 
   it("下單 RPC 回的每一種代碼都有自己的一句話,不會掉到「下單失敗,請稍後再試。」", () => {
