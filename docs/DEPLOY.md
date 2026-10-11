@@ -752,3 +752,325 @@ where jobid = (select jobid from cron.job where jobname = 'ifoodmap-ai-guard-cle
    -- alter table public.landing_leads drop column if exists contact_email;
    ```
    還原資料庫之後,repo 裡的三支 migration 也要一起 revert,否則 `check-migrations` 會一直紅。
+
+## 消費者食材市集 B2C(2026-10,migration 20261009120000 / 120100)
+
+設計:`docs/plans/2026-10-09-consumer-market-design.md`;實作計畫:`docs/plans/2026-10-09-consumer-market-plan.md`(計畫原文跟檔尾「勘誤」不一樣時,以勘誤與 repo 為準)。
+一般消費者在產品站 `https://app.ifoodmap.ai/market` 免登入逛供應商的零售商品;供應商在後台開放零售、管理員審核後才上架。第 1 階段還不能下單(購物車、結帳、訂單在第 2 階段)。
+跟餐廳的詢價訂單(`supplier_orders` / `order_events`)完全分開,資料表、函式、bucket 一律 `market` 開頭。
+
+| 誰 | 在哪裡 |
+|---|---|
+| 消費者(免登入) | 產品站 `/market`、`/market/p/<商品 id>`、`/market/s/<供應商 id>` |
+| 供應商 | 產品站「零售市集 › 店家設定」`/supplier/market/store`;「商品與價格 › 商品目錄」`/supplier/catalog` 的「零售商品(給消費者)」分頁,與批發商品那一列的「開放零售」 |
+| 管理員 | 管理員站「零售市集 › 商品審核」`/admin/market/products`、「零售店家」`/admin/market/stores`(只在管理員站的 build 裡) |
+
+- **120000 market_catalog**
+  - `market_stores`(PK = supplier_id):零售啟用(`is_enabled`,只有管理員能改、停用要填原因)、logo / 封面 / 介紹 / 退換貨說明、
+    配送縣市(22 縣市,一律用「臺」,清單在 `market_tw_cities()`)、固定運費、免運門檻、最低訂購金額、出貨天數、付款方式(`cod` / `transfer`)。
+  - `market_store_transfer`:轉帳資訊,獨立一張表 —— anon 讀不到(第 2 階段只在「待匯款」時經查單 RPC 給那位消費者)。
+  - `market_products`:零售商品。`review_status` = draft / pending / approved / rejected;已核准的商品改了品名、分類、規格、溫層、產地、
+    保存方式、保存期限、說明、照片 → guard 自動改回 pending;改價格、庫存、上架開關不用重審。退回 / 下架要填原因(`reject_reason`)。
+  - 權限:anon 只讀「已核准 + 上架中 + 店家零售啟用 + 供應商啟用中」(`market_store_is_open()`);管理員(`is_admin()`)全部。
+    供應商用 `current_supplier_ids()` 管自家:店家只能讀 / 建 / 改、**不能刪**(刪掉再重建就能洗掉管理員的停用),轉帳資訊與商品可以刪。
+    資料表權限先 `REVOKE ALL`(含 PG17 的 `MAINTAIN`)再給需要的:anon 只有店家、商品的 `SELECT`;authenticated 三張表 `SELECT / INSERT / UPDATE / DELETE`(細分靠 RLS)。
+  - guard trigger 在伺服器端決定,前端只是顯示:
+    - 供應商只能設 draft / pending(設 approved / rejected → 42501 `review_status_forbidden`);`reviewed_by` / `reviewed_at` / `submitted_at` / `created_at`
+      由伺服器填,自己帶的值會被蓋掉;非管理員改 `is_enabled` / `disabled_reason` 會被還原成原值。
+    - 替別家新增店家或商品 → 42501(guard 比 RLS 先跑,先擋才不會洩漏別家有沒有轉帳資訊);亂塞的超長輸入(任一文字欄位超過 10000 字、照片超過 50 張)→ 23514。
+    - 品名、規格去掉頭尾空白(連全形空白、零寬字元一起去,`market_trim`)之後看不到任何字(`market_visible`)→ 23514。
+    - 🔴 **商品照片只收小寫 `.jpg`**:`photos` 每一張都要是 `<supplier_id>/<商品 id>/<uuid>.jpg`,`.png` / `.webp` / `.jpeg` / `.JPG` 一律 22023 `invalid_photo_path`
+      (前端本來就全部壓成 JPEG;限定之後,資料庫推出的縮圖 `<uuid>_t.jpg` 才會跟前端顯示的是同一張)。
+      店家 logo / 封面(`<supplier_id>/store/`)不在 `photos` 裡,仍收 jpg / jpeg / png / webp。
+    - 🔴 **核准前照片必須都上傳**:管理員核准(含直接建成已核准)、或已核准的商品改了照片時,每張照片的主圖 `<uuid>.jpg` **和**縮圖 `<uuid>_t.jpg`
+      都要已經在 `market-images`,缺一張就 22023 `photos_not_uploaded`(訊息帶第一個缺的檔名)。只在這兩種情況檢查 —— 改價格、庫存不檢查,
+      所以管理員事後從 Storage 刪掉違規圖,不會讓這些操作失敗。用 Dashboard 手動放照片測試時,主圖和縮圖兩張都要放。
+    - **管理員停用店家不受轉帳檢查影響**:「接受轉帳要先有轉帳資訊」(22023 `transfer_info_required`)只在供應商建店、或供應商的更新改了付款方式
+      (去重排序後有變)而且含轉帳時才檢查;管理員的更新(停用、啟用、改停用原因)一律不檢查。供應商可以自己刪掉轉帳資訊,每次都檢查的話,管理員就停用不了那家店;
+      付款方式含轉帳、轉帳資訊卻沒了的店,第 2 階段結帳本來就不能選轉帳。
+- **120100 market_images_storage**:bucket `market-images`(公開讀取、單檔 ≤ 2 MB、只收 jpeg / png / webp、版本功能 `versioning_status` = `DISABLED`)。
+  路徑 `<supplier_id>/<商品 id 或 store>/<uuid>.<副檔名>`(縮圖 `<uuid>_t.<副檔名>`);`storage.objects` 只有 2 條 policy
+  (`market images supplier select / insert`,authenticated):只准該供應商的成員(第一層資料夾 ∈ `current_supplier_ids()`)上傳到自己資料夾、列自己的檔。
+  🔴 **物件只能寫一次**:沒有 UPDATE / DELETE policy —— 不能覆寫(x-upsert 被拒)、不能刪,管理員也一樣(管理員沒有任何 storage policy)。
+  不這樣的話,已核准的照片可以換掉內容,商品卻不會回到待審。「只能寫一次」的前提是 bucket 不開版本,所以 migration 明寫 `DISABLED`,之後也不要替這個 bucket 打開。
+  前端(`src/lib/market/images.ts`)上傳前在瀏覽器壓成長邊 1600px 的 JPEG(縮圖 480px),一律 `upsert: false`、`cacheControl` 一年;
+  換照片不刪舊檔,舊檔留在 bucket 成為孤兒檔(量大了再用 Storage API 清,本次不做)。
+  🔴 storage 的檔案**不能用 SQL 刪**(`storage.protect_objects_delete`),要刪檔、刪 bucket 用 Storage API 或 Dashboard(見最後的「違規圖片怎麼刪」)。
+- **測試**:`supabase/tests/database/market_*.test.sql`,用 `scripts/supabase-sql.mjs dry` 在正式庫 BEGIN…ROLLBACK 乾跑
+  (用法見檔案開頭;共用工具 `_market_helpers.sql`;漏網的 COMMIT 另有伺服器端保險擋),**每次**乾跑之後都跑 `market_residue.sql`(唯讀)確認沒有殘留,五個數字都要是 0。
+  項數:`market_harness` 5、`market_catalog` 112、`market_catalog_rollback` 3、`market_images_storage` 19、`market_images_storage_rollback` 3。
+  2026-10-10 上線前實測(`market` 分支 `440ac4b`):五支乾跑全過、每次殘留都是 0;vitest 連跑 3 次都是 99 檔 / 1544 項全過;
+  tsc 錯誤 72、eslint 錯誤 10(跟開工前的基準一樣);兩種 build 都過;形象站 `npm test` 211 項全過(這個階段沒改 `landing/`)。
+
+### 部署(第 1 階段)
+
+🔴 會改正式庫、會部署兩個網站。照順序做,任何一步的 Expected 對不上就停下來回報(附上指令與完整輸出),不要自己想辦法繞過。
+**migration 先上線,前端才 push**:供應商後台的商品目錄頁會讀 `market_products`、上傳照片要 bucket 與 policy;舊前端完全不碰 `market_*`,先套 migration 不影響線上。
+下面每一段都在 repo 根目錄跑、各自 export token(`<token 檔>` 見實作計畫「執行前必讀」B 節)。🔴 token 不要印出來;`supabase-sql.mjs` 送出前會驗格式,錯誤訊息裡的 token 一律遮成 `***`。
+查詢用 `printf '%s\n' "…" > "$Q"` 寫進暫存檔再交給 `ro`(不用 heredoc:這裡的指令在清單裡有縮排,照原樣複製時 heredoc 的結尾那一行會對不上)。
+
+1. **確認本機乾淨、跟 origin 同步**:
+   ```bash
+   git -C /Users/aimand/.gemini/File/ifoodmap switch market
+   git -C /Users/aimand/.gemini/File/ifoodmap status --short
+   git -C /Users/aimand/.gemini/File/ifoodmap fetch origin
+   git -C /Users/aimand/.gemini/File/ifoodmap rev-list --count market..origin/main
+   git -C /Users/aimand/.gemini/File/ifoodmap rev-list --count origin/main..main
+   ```
+   Expected:`status` 沒有輸出;兩個 `rev-list` 都印 `0`。第一個不是 0 = origin/main 上有 `market` 沒有的新 commit(別人推的);
+   第二個不是 0 = 本機 main 有還沒推的 commit。**兩種都停下來回報,不要自己 rebase / merge。**
+2. **上線前最後一次乾跑**(第 1 階段全部;每支乾跑之後都跑一次殘留檢查):
+   ```bash
+   cd /Users/aimand/.gemini/File/ifoodmap && export SUPABASE_ACCESS_TOKEN="$(cat <token 檔>)"
+   C=supabase/migrations/20261009120000_market_catalog.sql
+   S=supabase/migrations/20261009120100_market_images_storage.sql
+   node scripts/supabase-sql.mjs dry supabase/tests/database/market_harness.test.sql
+   node scripts/supabase-sql.mjs ro supabase/tests/database/market_residue.sql
+   node scripts/supabase-sql.mjs dry supabase/tests/database/market_catalog.test.sql --with-migration $C
+   node scripts/supabase-sql.mjs ro supabase/tests/database/market_residue.sql
+   node scripts/supabase-sql.mjs dry supabase/tests/database/market_catalog_rollback.test.sql --with-migration $C --with-rollback supabase/rollbacks/20261009120000_market_catalog.down.sql
+   node scripts/supabase-sql.mjs ro supabase/tests/database/market_residue.sql
+   node scripts/supabase-sql.mjs dry supabase/tests/database/market_images_storage.test.sql --with-migration $C --with-migration $S
+   node scripts/supabase-sql.mjs ro supabase/tests/database/market_residue.sql
+   node scripts/supabase-sql.mjs dry supabase/tests/database/market_images_storage_rollback.test.sql --with-migration $C --with-migration $S --with-rollback supabase/rollbacks/20261009120100_market_images_storage.down.sql
+   node scripts/supabase-sql.mjs ro supabase/tests/database/market_residue.sql
+   ```
+   Expected:依序 `共 5 項` / `共 112 項` / `共 3 項` / `共 19 項` / `共 3 項`,全部 `失敗 0 項`;每次殘留的 `fixture_users`、`fixture_suppliers`、`fixture_objects`、
+   `test_queue_rows`、`test_config_rows` 都是 `0`。(`market_catalog` 有兩項是寬鬆的「1 秒內被擋」,正式庫很忙時萬一超過,先重跑一次再判斷。)
+3. **套 migration**(先 120000 再 120100;一行一支,前一支成功才跑下一支):
+   ```bash
+   cd /Users/aimand/.gemini/File/ifoodmap && export SUPABASE_ACCESS_TOKEN="$(cat <token 檔>)"
+   node scripts/supabase-sql.mjs apply supabase/migrations/20261009120000_market_catalog.sql
+   node scripts/supabase-sql.mjs apply supabase/migrations/20261009120100_market_images_storage.sql
+   ```
+   `apply` 依序做三件事:①用唯讀端點查 ledger(`supabase_migrations.schema_migrations`),版本已經在了就拒送(migration 一個字都不送);
+   ②`SET LOCAL lock_timeout` / `statement_timeout` + migration + ledger 的 `INSERT`(不帶 `ON CONFLICT`)放在同一個請求送出 ——
+   Management API 一個請求就是一個交易,任何一句失敗就整支回滾、ledger 也不會寫;③讀回 ledger 比對 version / name。**不用另外補 ledger。**
+   Expected(各一行):
+   ```
+   已套用 20261009120000_market_catalog.sql;ledger:[{"version":"20261009120000","name":"market_catalog"}]
+   已套用 20261009120100_market_images_storage.sql;ledger:[{"version":"20261009120100","name":"market_images_storage"}]
+   ```
+   出錯時看訊息:
+   - `Management API 4xx/5xx …`(exit 2,例如等鎖逾時 `55P03`):整支已回滾、ledger 沒寫。等幾秒重跑**同一行**
+     (工具會先查 ledger:萬一其實已經套上去,第二次會被拒送,所以重跑是安全的)。
+   - `拒送:ledger 已經有版本 …`(exit 2):這支已經套過(例如上一次的回應在網路上掉了)。不要想辦法硬套,直接做第 4 步確認。
+   - `套用後讀回的 ledger 不符`(exit 1):migration 已經套上去了,**停下來回報,不要重跑**。
+   - 120000 成功、120100 失敗:120000 不用還原(前端還沒推,沒人用得到新表),查明原因再套 120100;兩支都成功之前不要推前端。
+4. **確認線上 schema**:
+   ```bash
+   cd /Users/aimand/.gemini/File/ifoodmap && export SUPABASE_ACCESS_TOKEN="$(cat <token 檔>)" && Q=$(mktemp) && printf '%s\n' "
+   SELECT json_build_object(
+     'ledger', (SELECT json_agg(m.version ORDER BY m.version) FROM supabase_migrations.schema_migrations m
+                 WHERE m.version IN ('20261009120000', '20261009120100')),
+     'tables_with_rls', (SELECT json_agg(c.relname ORDER BY c.relname) FROM pg_class c
+                          WHERE c.relnamespace = 'public'::regnamespace AND c.relrowsecurity
+                            AND c.relname IN ('market_stores', 'market_store_transfer', 'market_products')),
+     'anon_can_read_products', has_table_privilege('anon', 'public.market_products', 'SELECT'),
+     'anon_can_read_stores', has_table_privilege('anon', 'public.market_stores', 'SELECT'),
+     'anon_can_read_transfer', has_table_privilege('anon', 'public.market_store_transfer', 'SELECT'),
+     'anon_can_write_products', has_table_privilege('anon', 'public.market_products', 'INSERT,UPDATE,DELETE'),
+     'anon_can_write_stores', has_table_privilege('anon', 'public.market_stores', 'INSERT,UPDATE,DELETE'),
+     'image_bucket', (SELECT json_build_object('public', b.public, 'file_size_limit', b.file_size_limit, 'mime_types', b.allowed_mime_types)
+                        FROM storage.buckets b WHERE b.id = 'market-images'),
+     'image_bucket_versioning', (SELECT b.versioning_status FROM storage.buckets b WHERE b.id = 'market-images'),
+     'image_policies', (SELECT count(*) FROM pg_policies p
+                         WHERE p.schemaname = 'storage' AND p.tablename = 'objects' AND p.policyname LIKE 'market images %'),
+     'image_policy_names', (SELECT json_agg(p.policyname || ' ' || p.cmd ORDER BY p.policyname) FROM pg_policies p
+                             WHERE p.schemaname = 'storage' AND p.tablename = 'objects' AND p.policyname LIKE 'market images %')
+   ) AS phase1;" > "$Q"
+   node scripts/supabase-sql.mjs ro "$Q"
+   SUPABASE_PROJECT_REF=cwvpehqcvbfuynabpqop node scripts/check-migrations.mjs
+   ```
+   Expected(JSON 裡的值):
+   - `ledger` = `["20261009120000","20261009120100"]`
+   - `tables_with_rls` = `["market_products","market_store_transfer","market_stores"]`
+   - `anon_can_read_products`、`anon_can_read_stores` = `true`(列由 RLS 再篩);`anon_can_read_transfer`、`anon_can_write_products`、`anon_can_write_stores` = `false`
+   - `image_bucket` = `{"public": true, "file_size_limit": 2097152, "mime_types": ["image/jpeg","image/png","image/webp"]}`
+   - 🔴 `image_bucket_versioning` = `"DISABLED"`;`image_policies` = `2`;`image_policy_names` = `["market images supplier insert INSERT","market images supplier select SELECT"]`
+   - `check-migrations` 最後一行是 `✅ 沒有落差 —— repo 的 migration 都已套用到線上`(repo 43 個、線上 43 個)。
+
+   除了 `ledger`,這些值 2026-10-10 都在乾跑裡(套上兩支 migration)實測過。新表要等 PostgREST 重新載入 schema 才查得到(120000 最後有 `NOTIFY pgrst`);
+   第 8 步若拿到 404 `PGRST205`,照上面「寫了新 migration 之後」的方式送一次 `notify pgrst, 'reload schema';`。
+5. **用線上 schema 再跑一次測試**(不帶 `--with-migration`,一樣包在 BEGIN…ROLLBACK),並確認還原檔在線上 schema 跑得動:
+   ```bash
+   cd /Users/aimand/.gemini/File/ifoodmap && export SUPABASE_ACCESS_TOKEN="$(cat <token 檔>)"
+   RC=supabase/rollbacks/20261009120000_market_catalog.down.sql
+   RS=supabase/rollbacks/20261009120100_market_images_storage.down.sql
+   node scripts/supabase-sql.mjs dry supabase/tests/database/market_catalog.test.sql
+   node scripts/supabase-sql.mjs ro supabase/tests/database/market_residue.sql
+   node scripts/supabase-sql.mjs dry supabase/tests/database/market_images_storage.test.sql
+   node scripts/supabase-sql.mjs ro supabase/tests/database/market_residue.sql
+   node scripts/supabase-sql.mjs dry supabase/tests/database/market_images_storage_rollback.test.sql --with-rollback $RS
+   node scripts/supabase-sql.mjs ro supabase/tests/database/market_residue.sql
+   node scripts/supabase-sql.mjs dry supabase/tests/database/market_catalog_rollback.test.sql --with-rollback $RS --with-rollback $RC
+   node scripts/supabase-sql.mjs ro supabase/tests/database/market_residue.sql
+   ```
+   Expected:依序 `共 112 項` / `共 19 項` / `共 3 項` / `共 3 項`,全部 `失敗 0 項`;每次殘留五個 `0`。
+   (還原的乾跑會拿三張表的 ACCESS EXCLUSIVE 鎖直到 ROLLBACK,一兩秒;這一步在推前端之前做,還沒有人在用。)
+6. **合併 `market` 到 `main`、push**(前端一定在 migration 之後):
+   ```bash
+   git -C /Users/aimand/.gemini/File/ifoodmap fetch origin
+   git -C /Users/aimand/.gemini/File/ifoodmap rev-list --count market..origin/main     # 再確認一次:0(不是 0 就停)
+   git -C /Users/aimand/.gemini/File/ifoodmap switch main
+   git -C /Users/aimand/.gemini/File/ifoodmap merge --ff-only origin/main            # 本機 main 對齊 origin/main(應該是 Already up to date)
+   git -C /Users/aimand/.gemini/File/ifoodmap merge --no-ff market -m "Merge branch 'market':消費者食材市集第 1 階段(上架＋逛店)"
+   git -C /Users/aimand/.gemini/File/ifoodmap diff --stat market main                # 沒有輸出 = 要推的就是測過的那份
+   git -C /Users/aimand/.gemini/File/ifoodmap push origin main
+   git -C /Users/aimand/.gemini/File/ifoodmap rev-parse HEAD                         # 記下合併 commit(等 CI、還原都要用)
+   git -C /Users/aimand/.gemini/File/ifoodmap switch market
+   git -C /Users/aimand/.gemini/File/ifoodmap merge --ff-only main                   # market 也帶上合併 commit
+   ```
+   - 用 `--no-ff` 留一個合併 commit:還原時一個 `git revert -m 1 <合併 commit>` 就退掉整個階段(第 3 階段合併 `market-launch` 也是 `--no-ff`)。
+     最後把 `market` 快轉到 main:第 2 階段繼續在 `market` 上做,部署時「`rev-list --count HEAD..origin/main` 要是 0」才會過(不快轉的話會是 1)。
+   - push 被拒(non-fast-forward)= 這中間有人推了:停下來回報,不要 `--force`、不要 rebase。
+   - push 被 403 擋(`denied to aimand2025`):`gh auth switch --user armand-forge` →
+     `git -C /Users/aimand/.gemini/File/ifoodmap -c credential.helper='!gh auth git-credential' push origin main` → push 完 `gh auth switch --user aimand2025` 切回。
+7. **等 CI**:
+   ```bash
+   gh run list --repo ifoodmap-ai/ifoodmap-ai --commit <合併 commit>
+   gh run watch <run id> --repo ifoodmap-ai/ifoodmap-ai --exit-status
+   ```
+   Expected:兩條 workflow 都是 `completed success` —— `Deploy Frontend to Vercel`(「資料庫 migration 落差檢查」、dish-to-supply、ifoodmap-admin 三個 job)
+   與 `Product CI`(vitest、build (main)、build (admin);「tsc / eslint(只報告)」不擋)。落差檢查不會擋部署(兩邊平行跑),但這次一定要綠:
+   第 4 步本機已經是 ✅,紅了就停下來查。這次沒有改 `landing/`,`landing-deploy.yml` 不會跑。
+   GitHub 的部署狀態可能慢 5 分鐘才出現,以 Actions 結果與第 8 步的 bundle 探針為準。
+8. **線上驗證**:
+   1. 新版真的上線了(bundle 探針:只有新版才有這兩句):
+      ```bash
+      for pair in "https://app.ifoodmap.ai/market|市集還沒有上架的商品" "https://ifoodmap-admin.vercel.app/admin/market/products|讀不到縮圖"; do
+        url=${pair%%|*}; marker=${pair##*|}; origin=$(echo "$url" | grep -o '^https://[^/]*')
+        js=$(curl -s "$url" | grep -o '/assets/index-[^"]*\.js' | head -1)
+        if curl -s "$origin$js" | grep -q "$marker"; then echo "$url 新版"; else echo "$url 還是舊版"; fi
+      done
+      ```
+      Expected:兩行都是「新版」(2026-10-10 部署前實測兩行都是「還是舊版」)。
+   2. anon 的讀寫權限(publishable key 是公開的,但不要印出來;只帶 `apikey` 標頭,REST 與 Storage 都認):
+      ```bash
+      cd /Users/aimand/.gemini/File/ifoodmap && export SUPABASE_ACCESS_TOKEN="$(cat <token 檔>)"
+      UA="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/129.0 Safari/537.36"
+      PK=$(curl -s https://api.supabase.com/v1/projects/cwvpehqcvbfuynabpqop/api-keys -H "Authorization: Bearer $SUPABASE_ACCESS_TOKEN" -H "User-Agent: $UA" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const k=JSON.parse(s).find(x=>x.type==="publishable");process.stdout.write(k?k.api_key:"")})')
+      SB=https://cwvpehqcvbfuynabpqop.supabase.co
+      curl -s -w ' products %{http_code}\n' "$SB/rest/v1/market_products?select=id&limit=1" -H "apikey: $PK"
+      curl -s -w ' stores %{http_code}\n' "$SB/rest/v1/market_stores?select=supplier_id&limit=1" -H "apikey: $PK"
+      curl -s -w ' transfer %{http_code}\n' "$SB/rest/v1/market_store_transfer?select=supplier_id&limit=1" -H "apikey: $PK"
+      curl -s -w ' insert %{http_code}\n' -X POST "$SB/rest/v1/market_products" -H "apikey: $PK" -H "Content-Type: application/json" -d '{}'
+      curl -s -w ' upload %{http_code}\n' -X POST "$SB/storage/v1/object/market-images/a9200000-0000-4000-8000-000000000001/store/a9200000-0000-4000-8000-0000000000aa.jpg" \
+        -H "apikey: $PK" -H "Content-Type: image/jpeg" --data-binary 'not-an-image'
+      node scripts/supabase-sql.mjs ro supabase/tests/database/market_residue.sql
+      ```
+      Expected:`[] products 200`、`[] stores 200`(還沒有核准上架的商品、也還沒有開放的店家);`transfer 401`(內容含 `42501` / permission denied);
+      `insert 401`(`42501`);`upload` 是 400 或 403、內容含 `row-level security`(Storage 的 HTTP 狀態碼常是 400,真正的碼在內容的 `statusCode`;
+      內容是別的錯誤就記下完整回應回報 —— 一樣是被拒,但沒有驗到 policy)。🔴 `upload` 不能是 2xx:萬一上傳成功,殘留檢查的 `fixture_objects` 會變 `1`
+      (路徑刻意用 fixture 的前綴),那個檔只能從 Dashboard 刪,立刻回報。殘留五個 `0`。(2026-10-10 部署前實測:`products` 是 404 `PGRST205`,表還不在。)
+   3. 頁面(手機 375 與桌機 1280,不能有橫向捲動):
+      ```bash
+      mkdir -p /tmp/market-p1-shots/home /tmp/market-p1-shots/nope
+      node ~/.claude/tools/cdp-shot.mjs https://app.ifoodmap.ai/market 375 812 market-main /tmp/market-p1-shots/home
+      node ~/.claude/tools/cdp-shot.mjs https://app.ifoodmap.ai/market 1280 800 market-main /tmp/market-p1-shots/home
+      node ~/.claude/tools/cdp-shot.mjs https://app.ifoodmap.ai/market/nope 375 812 market-main /tmp/market-p1-shots/nope
+      sips -Z 1024 /tmp/market-p1-shots/home/market-main-375x812.png --out /tmp/market-p1-preview-375.png
+      sips -Z 1024 /tmp/market-p1-shots/home/market-main-1280x800.png --out /tmp/market-p1-preview-1280.png
+      sips -Z 1024 /tmp/market-p1-shots/nope/market-main-375x812.png --out /tmp/market-p1-preview-nope.png
+      ```
+      Expected:三行輸出的 `docW` 依序是 `375`、`1280`、`375`;只 Read 三張 preview(原圖不要直接 Read):首頁看得到「iFoodmap 食材市集」標題、搜尋列、
+      分類圖示、「市集還沒有上架的商品,敬請期待。」;`/market/nope` 是「找不到這個頁面。」與「回市集首頁」。
+   4. 管理員站:`curl -s -o /dev/null -w '%{http_code}\n' https://ifoodmap-admin.vercel.app/admin/market/products` → `200`(內容要登入,留給業主在第 3 階段實測)。
+   5. 派一個沒參與實作的 agent 獨立驗收(fresh context;只准讀、乾跑、唯讀查詢,不准改檔、不准 apply、不准輸入任何密碼),清單見實作計畫 Task 31 Step 8,
+      數字以本節為準(`market_catalog` 112、`market_images_storage` 19、`image_policies` 2、`image_bucket_versioning` DISABLED)。
+      有任何一項不過:照下面「還原(第 1 階段)」判斷要不要退版,回報派工者,不要直接進第 2 階段。
+
+### 還原(第 1 階段)
+
+**前端一定先退,資料庫才能退**(新前端會讀 `market_*`;舊前端完全不碰這些表,所以只有前端有問題時,資料庫留著無妨)。
+第 2 階段已經上線的話,先照第 2 階段那一節還原(120000 的還原檔開頭也寫了這個順序)。
+
+1. **前端**:Vercel → `dish-to-supply`、`ifoodmap-admin` 兩個專案 → Deployments → 選合併之前的那一版 → Instant Rollback。
+   只有前端有問題就到這裡為止:在 `market` 修好,照上面第 1、6–8 步重新上線(migration 不用重套)。
+   ⚠️ 用過 Instant Rollback 之後,Vercel 不會再自動把新的 production 部署接到正式網域:之後要上線的那一版,要到專案的 Deployments 按 Promote(或 Undo Rollback)才會生效。
+2. **資料庫**(第 1 步做完才做):
+   1. 先匯出 —— 120000 的還原會 DROP 三張表,零售店家、轉帳資訊(含銀行帳號)、零售商品全部消失。匯出檔放在 repo 外面,不要貼進對話:
+      ```bash
+      cd /Users/aimand/.gemini/File/ifoodmap && export SUPABASE_ACCESS_TOKEN="$(cat <token 檔>)" && mkdir -p ~/supabase-backups && Q=$(mktemp) && printf '%s\n' "
+      SELECT json_build_object(
+        'exported_at', now(),
+        'market_stores', (SELECT COALESCE(json_agg(s ORDER BY s.supplier_id), '[]'::json) FROM public.market_stores s),
+        'market_store_transfer', (SELECT COALESCE(json_agg(t ORDER BY t.supplier_id), '[]'::json) FROM public.market_store_transfer t),
+        'market_products', (SELECT COALESCE(json_agg(p ORDER BY p.supplier_id, p.id), '[]'::json) FROM public.market_products p)
+      ) AS market_export;" > "$Q"
+      node scripts/supabase-sql.mjs ro "$Q" > ~/supabase-backups/market-phase1-$(date +%Y%m%d-%H%M).json && ls -l ~/supabase-backups/market-phase1-*.json
+      ```
+      Expected:檔案不是空的,內容是 `[{"market_export": {"exported_at": …, "market_stores": […], "market_store_transfer": […], "market_products": […]}}]`
+      (唯讀端點的角色 `supabase_read_only_user` 有 BYPASSRLS,三張表的每一列都讀得到)。
+   2. 先乾跑還原(線上已經有兩支 migration,所以不帶 `--with-migration`):
+      ```bash
+      cd /Users/aimand/.gemini/File/ifoodmap && export SUPABASE_ACCESS_TOKEN="$(cat <token 檔>)"
+      RC=supabase/rollbacks/20261009120000_market_catalog.down.sql
+      RS=supabase/rollbacks/20261009120100_market_images_storage.down.sql
+      node scripts/supabase-sql.mjs dry supabase/tests/database/market_images_storage_rollback.test.sql --with-rollback $RS
+      node scripts/supabase-sql.mjs ro supabase/tests/database/market_residue.sql
+      node scripts/supabase-sql.mjs dry supabase/tests/database/market_catalog_rollback.test.sql --with-rollback $RS --with-rollback $RC
+      node scripts/supabase-sql.mjs ro supabase/tests/database/market_residue.sql
+      ```
+      Expected:兩支都 `共 3 項,失敗 0 項`;殘留五個 `0`。
+   3. 正式還原,**先 120100 再 120000**。還原檔自己會刪 ledger 那一列,不能用 `apply`(它只收 migration、還會補 ledger);
+      照「寫了新 migration 之後」的方式把整份檔案當成一個請求送出(= 一個交易),第一支回 `[]` 才送第二支:
+      ```bash
+      cd /Users/aimand/.gemini/File/ifoodmap && export SUPABASE_ACCESS_TOKEN="$(cat <token 檔>)"
+      send_sql() {  # 整份檔案 = 一個請求 = 一個交易;成功印 [],失敗印 {"message":"Failed to run sql query: …"}(已整支回滾)
+        J=$(mktemp)
+        node -e 'const fs = require("fs"); fs.writeFileSync(process.argv[2], JSON.stringify({ query: fs.readFileSync(process.argv[1], "utf8") }))' "$1" "$J"
+        curl -s -X POST "https://api.supabase.com/v1/projects/cwvpehqcvbfuynabpqop/database/query" \
+          -H "Authorization: Bearer $SUPABASE_ACCESS_TOKEN" -H "Content-Type: application/json" \
+          -H "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/129.0 Safari/537.36" \
+          --data-binary @"$J"
+        echo
+      }
+      R1=$(send_sql supabase/rollbacks/20261009120100_market_images_storage.down.sql); echo "120100: $R1"
+      [ "$R1" = "[]" ] && R2=$(send_sql supabase/rollbacks/20261009120000_market_catalog.down.sql) && echo "120000: $R2"
+      ```
+      Expected:`120100: []`、`120000: []`。第一支不是 `[]` 時第二支不會送,停下來回報。
+   4. 還原後確認(唯讀):
+      ```bash
+      cd /Users/aimand/.gemini/File/ifoodmap && export SUPABASE_ACCESS_TOKEN="$(cat <token 檔>)" && Q=$(mktemp) && printf '%s\n' "
+      SELECT json_build_object(
+        'ledger', (SELECT count(*) FROM supabase_migrations.schema_migrations WHERE version IN ('20261009120000', '20261009120100')),
+        'market_tables', (SELECT count(*) FROM pg_class WHERE relnamespace = 'public'::regnamespace
+                            AND relname IN ('market_stores', 'market_store_transfer', 'market_products')),
+        'market_functions', (SELECT count(*) FROM pg_proc WHERE pronamespace = 'public'::regnamespace AND proname ~ '^market_'),
+        'image_policies', (SELECT count(*) FROM pg_policies WHERE schemaname = 'storage' AND policyname LIKE 'market images%'),
+        'bucket_left', (SELECT count(*) FROM storage.buckets WHERE id = 'market-images')
+      ) AS phase1_rollback;" > "$Q"
+      node scripts/supabase-sql.mjs ro "$Q"
+      ```
+      Expected:`ledger`、`market_tables`、`market_functions`、`image_policies` 都是 `0`;`bucket_left` 是 `1`(SQL 刪不掉 bucket)。
+   5. bucket 與裡面的檔案還在,而且還是**公開**的(知道網址就看得到)。要收掉:業主在 Dashboard → Storage → `market-images` 先清空、再刪 bucket
+      (或用 service role key 的 Storage API:清空後 `DELETE /storage/v1/bucket/market-images`)。因為違規內容而還原時,至少先把 bucket 改成不公開。
+3. **repo**:兩支 migration 要跟前端一起退,`check-migrations` 才不會一直紅,之後的 push 也不會把新前端再部署上去:
+   ```bash
+   git -C /Users/aimand/.gemini/File/ifoodmap switch main
+   git -C /Users/aimand/.gemini/File/ifoodmap fetch origin
+   git -C /Users/aimand/.gemini/File/ifoodmap rev-list --count main..origin/main         # 0 才繼續
+   git -C /Users/aimand/.gemini/File/ifoodmap revert -m 1 --no-edit <部署第 6 步記下的合併 commit>
+   git -C /Users/aimand/.gemini/File/ifoodmap push origin main
+   ```
+   照第 7 步等 CI;第 1 步用過 Instant Rollback 的話,這次的部署要到 Vercel 按 Promote。
+   之後要重新上線:先 `git revert <這個 revert commit>` 把內容加回來,再合併修正 —— 只再合併一次 `market` 不會把被 revert 掉的內容帶回來。
+
+### 違規圖片怎麼刪
+
+管理員沒有任何 storage policy,**後台刪不了檔**。照這個順序:
+
+1. 先在管理員站「零售市集 › 商品審核」把商品退回或下架(填原因)。🔴 一定先做這步:刪檔之後同一個路徑又空出來,供應商可以用同一個檔名重傳;
+   商品若還是已核准,新內容不經審核就公開(重傳沒有改到 `photos`,guard 不會重新檢查)。
+   店家 logo / 封面沒有審核流程:先在「零售市集 › 零售店家」停用那家店(填原因),消費者就看不到店家頁與它的商品。
+2. 再刪檔,主圖**和**它的縮圖都要刪(`<uuid>.jpg` 與 `<uuid>_t.jpg`;logo / 封面在 `<supplier_id>/store/`):
+   - Supabase Dashboard → Storage → `market-images` → `<supplier_id>/<商品 id>/`,選兩個檔刪除;或
+   - 用 service role key 呼叫 Storage API,例如 supabase-js `createClient(<專案網址>, <service role key>).storage.from('market-images').remove([主圖路徑, 縮圖路徑])`
+     (service role key 只在業主手上,不要放進前端、repo 或對話)。
+
+   🔴 不能用 SQL 刪(`storage.protect_objects_delete` 會擋)。
+3. bucket 是公開的:只下架商品、不刪檔,知道網址的人還是看得到。刪完確認公開網址不再回 200:
+   `curl -s -o /dev/null -w '%{http_code}\n' https://cwvpehqcvbfuynabpqop.supabase.co/storage/v1/object/public/market-images/<路徑>`。
+   ⚠️ 上傳時帶一年的 `cacheControl`:刪檔之後,CDN 與看過的瀏覽器可能還會顯示快取一段時間(多久沒有實測過)。
+4. 商品的 `photos` 還指著刪掉的檔:供應商換掉那張(或補傳)之前,這個商品核准不了(`photos_not_uploaded`),審核畫面那一格也會顯示「讀不到」。

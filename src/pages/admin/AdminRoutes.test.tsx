@@ -1,5 +1,5 @@
 // 管理員站(VITE_PORTAL=admin)的真實路由表:用 App.tsx 本身渲染,不是複製一份路由。
-// 驗證:①原本 26 條管理員路由全部打得開、渲染的是原本那個頁面 ②每一條落在正確的分區與分頁
+// 驗證:①原本 26 條管理員路由(2026-10 加零售市集 2 條,共 28 條)全部打得開、渲染的是原本那個頁面 ②每一條落在正確的分區與分頁
 //       ③唯一的轉址 /admin/orders/:id/timeline → /admin/orders/:id 真的換了網址
 //       ④每一頁都有 AI 泡泡、主內容底部留白 pb-40 還在。
 // 頁面元件換成空殼(testRouteStub),版面(AdminLayout)、權限閘(AdminRoute)、分頁列(SectionTabs)都是真的;
@@ -49,6 +49,8 @@ vi.mock("./AdminBillingPage", async () => (await import("./testRouteStub")).stub
 vi.mock("./AdminAiOpsPage", async () => (await import("./testRouteStub")).stubPage("AdminAiOpsPage"));
 vi.mock("./AdminNotificationsPage", async () => (await import("./testRouteStub")).stubPage("AdminNotificationsPage"));
 vi.mock("./AdminRoadmapPage", async () => (await import("./testRouteStub")).stubPage("AdminRoadmapPage"));
+vi.mock("./AdminMarketProductsPage", async () => (await import("./testRouteStub")).stubPage("AdminMarketProductsPage"));
+vi.mock("./AdminMarketStoresPage", async () => (await import("./testRouteStub")).stubPage("AdminMarketStoresPage"));
 
 const ORDER_TABS = ["看板", "全部訂單", "爭議"];
 const DEMAND_TABS = ["AI 分析紀錄", "供應商比價", "需求預測", "供給缺口與品質"];
@@ -56,6 +58,7 @@ const MEMBER_TABS = ["餐廳", "供應商", "入駐審核", "帳號", "分眾名
 const DATA_TABS = ["食材主檔", "替代關係", "菜色對應", "價格檢查"];
 const SYSTEM_TABS = ["AI 用量", "通知紀錄", "投資人頁內容"];
 const OVERVIEW_TABS = ["營運", "成長"];
+const MARKET_TABS = ["商品審核", "零售店家"];
 
 // [網址, 渲染的頁面, 側欄分區, 分頁列(null = 不畫分頁列), 選中的分頁]
 const ROUTES: Array<[string, string, string, string[] | null, string | null]> = [
@@ -85,6 +88,8 @@ const ROUTES: Array<[string, string, string, string[] | null, string | null]> = 
   ["/admin/ai-ops", "AdminAiOpsPage", "系統", SYSTEM_TABS, "AI 用量"],
   ["/admin/notifications", "AdminNotificationsPage", "系統", SYSTEM_TABS, "通知紀錄"],
   ["/admin/roadmap", "AdminRoadmapPage", "系統", SYSTEM_TABS, "投資人頁內容"],
+  ["/admin/market/products", "AdminMarketProductsPage", "零售市集", MARKET_TABS, "商品審核"],
+  ["/admin/market/stores", "AdminMarketStoresPage", "零售市集", MARKET_TABS, "零售店家"],
 ];
 
 const renderAt = (path: string) => {
@@ -145,7 +150,7 @@ describe("管理員站路由表(App.tsx)— 舊網址全部還能開,落在正�
       ...ROUTES.map(([path]) => path.replace("/orders/ord-1", "/orders/:id").replace("/analyses/an-1", "/analyses/:id")),
       "/admin/orders/:id/timeline", // 轉址,見下一組測試
     ];
-    expect(declared).toHaveLength(26);
+    expect(declared).toHaveLength(28);
     expect([...declared].sort()).toEqual([...covered].sort());
   });
 });

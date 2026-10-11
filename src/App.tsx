@@ -29,6 +29,13 @@ import SuppliersPage from "./pages/SuppliersPage";
 import BuyerPortalPage from "./pages/BuyerPortalPage";
 import PriceIndexPage from "./pages/PriceIndexPage";
 
+// 消費者食材市集(僅前台站,免登入)
+import MarketLayout from "./components/market/MarketLayout";
+import MarketHomePage from "./pages/market/MarketHomePage";
+import MarketProductPage from "./pages/market/MarketProductPage";
+import MarketStorePage from "./pages/market/MarketStorePage";
+import MarketNotFound from "./pages/market/MarketNotFound";
+
 // 平台營運後台(僅 admin 站)
 import AdminRoute from "./components/AdminRoute";
 import AdminLayout from "./pages/admin/AdminLayout";
@@ -58,6 +65,8 @@ import AdminDisputesPage from "./pages/admin/AdminDisputesPage";
 import AdminRevenuePage from "./pages/admin/AdminRevenuePage";
 import AdminGrowthPage from "./pages/admin/AdminGrowthPage";
 import AdminCampaignsPage from "./pages/admin/AdminCampaignsPage";
+import AdminMarketProductsPage from "./pages/admin/AdminMarketProductsPage";
+import AdminMarketStoresPage from "./pages/admin/AdminMarketStoresPage";
 
 // 供應商後台(僅前台站)
 import SupplierRoute from "./components/SupplierRoute";
@@ -70,6 +79,7 @@ import SupplierPricingPage from "./pages/supplier/SupplierPricingPage";
 import SupplierForecastPage from "./pages/supplier/SupplierForecastPage";
 import SupplierCustomersPage from "./pages/supplier/SupplierCustomersPage";
 import SupplierReviewsPage from "./pages/supplier/SupplierReviewsPage";
+import SupplierMarketStorePage from "./pages/supplier/SupplierMarketStorePage";
 
 // 餐廳後台(僅前台站)
 import RestaurantRoute from "./components/RestaurantRoute";
@@ -121,6 +131,9 @@ const AdminRoutes = () => (
       <Route path="campaigns" element={<AdminCampaignsPage />} />
       <Route path="notifications" element={<AdminNotificationsPage />} />
       <Route path="roadmap" element={<AdminRoadmapPage />} />
+      {/* 消費者食材市集(B2C) */}
+      <Route path="market/products" element={<AdminMarketProductsPage />} />
+      <Route path="market/stores" element={<AdminMarketStoresPage />} />
     </Route>
     <Route path="*" element={<Navigate to="/" replace />} />
   </Routes>
@@ -146,6 +159,14 @@ const MainRoutes = () => (
     <Route path="/supplier/:id" element={<SupplierDetail />} />
     <Route path="/architecture" element={<Architecture />} />
     <Route path="/investors" element={<InvestorsPage />} />
+
+    {/* 消費者食材市集(免登入)。用 /market 前綴:公開的 /supplier/:id 跟供應商後台 /supplier/* 已經撞名,不要再往那邊加 */}
+    <Route path="/market" element={<MarketLayout />}>
+      <Route index element={<MarketHomePage />} />
+      <Route path="p/:productId" element={<MarketProductPage />} />
+      <Route path="s/:supplierId" element={<MarketStorePage />} />
+      <Route path="*" element={<MarketNotFound />} />
+    </Route>
 
     {/* 餐廳後台 */}
     <Route path="/restaurant" element={<RestaurantRoute><RestaurantLayout /></RestaurantRoute>}>
@@ -175,6 +196,8 @@ const MainRoutes = () => (
       <Route path="logistics" element={<Navigate to="/supplier/orders?stage=shipped" replace />} />
       <Route path="shipments" element={<Navigate to="/supplier/orders?stage=shipped" replace />} />
       <Route path="reviews" element={<SupplierReviewsPage />} />
+      {/* 零售市集(B2C) */}
+      <Route path="market/store" element={<SupplierMarketStorePage />} />
     </Route>
 
     {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
