@@ -55,10 +55,12 @@ SELECT pg_temp.expect('第 4 次被擋(RATE_LIMITED)',
   public.market_rate_take('[{"bucket":"test:a","window":"1h","limit":3}]'::jsonb) ->> 'code', 'RATE_LIMITED');
 SELECT pg_temp.expect('被擋的那次不吃額度(計數停在 3)',
   (SELECT hits::text FROM public.market_rate_counters WHERE bucket = 'test:a|1h'), '3');
-SELECT pg_temp.expect('任何一條超過就整批退回:另一條也不加',
-  (public.market_rate_take('[{"bucket":"test:a","window":"1h","limit":3},{"bucket":"test:b","window":"1h","limit":100}]'::jsonb) ->> 'code')
-  || '|' || (SELECT count(*)::text FROM public.market_rate_counters WHERE bucket = 'test:b|1h'),
-  'RATE_LIMITED|0');
+-- 「做」跟「讀」要分兩句:同一句裡的子查詢用的是句子開始時的快照,看不到函式在句子中途寫進去的列(會永遠讀到 0)
+SELECT pg_temp.expect('任何一條超過就整批退回:回 RATE_LIMITED',
+  public.market_rate_take('[{"bucket":"test:a","window":"1h","limit":3},{"bucket":"test:b","window":"1h","limit":100}]'::jsonb) ->> 'code',
+  'RATE_LIMITED');
+SELECT pg_temp.expect('……另一條也不加(另一句重讀)',
+  (SELECT count(*)::text FROM public.market_rate_counters WHERE bucket = 'test:b|1h'), '0');
 SELECT pg_temp.expect('每日上限回 DAILY_CAP,而且優先於 RATE_LIMITED',
   public.market_rate_take('[{"bucket":"test:a","window":"1h","limit":3},{"bucket":"test:c","window":"day","limit":0,"code":"DAILY_CAP"}]'::jsonb) ->> 'code',
   'DAILY_CAP');
