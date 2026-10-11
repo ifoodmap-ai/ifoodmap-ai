@@ -379,6 +379,26 @@ describe("market-notify:token 只出現在寄出的確認信,回應、log、資�
     expect(leaks(s, r, TOKEN)).toEqual(NONE);
   });
 
+  it("錯誤訊息把 token 截斷在中間(Resend 內文只留前 300 字)、或從 token 中間開始:任何 8 字以上的 token 片段都遮掉", async () => {
+    const tok = "Zq3_Kp9-Lm2xVb7nRt5wYc1dHs8fJg4kQe6uAo0iPzT"; // 43 字 base64url,字元不重複出現,片段好認
+    expect(tok).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    const hash = await sha256Hex(tok);
+    const cases = [
+      `Resend 422: {"snippet":"<a href=\\"https://app.ifoodmap.ai/market/orders/${tok.slice(0, 20)}`, // 截在 token 中間
+      `Resend 422: {"snippet":"${tok.slice(12, 40)}\\">查看訂單</a>"}`, // 從 token 中間開始、沒有網址前綴
+    ];
+    for (const error of cases) {
+      const s = setup({ send: async () => ({ ok: false, id: null, error }) });
+      for (const o of s.db.tables.market_orders) o.lookup_token_hash = hash;
+      const r = await s.call({ kind: "placed", checkout_id: CHECKOUT, token: tok });
+      expect(r.body.data).toMatchObject({ sent: 0, total: 1 });
+      const logged = JSON.stringify(s.log.mock.calls);
+      expect(logged).toContain("Resend 422");
+      expect(logged).toContain("***");
+      for (let i = 0; i + 8 <= tok.length; i++) expect(logged, `token 第 ${i} 字起的 8 字片段`).not.toContain(tok.slice(i, i + 8));
+    }
+  });
+
   it("讀資料庫失敗(500)、買家 Email 不能寄:都不含 token", async () => {
     const failed = setup({ fail: (table) => (table === "market_order_items" ? { message: "boom" } : undefined) });
     const r1 = await failed.call({ kind: "placed", checkout_id: CHECKOUT, token: TOKEN });

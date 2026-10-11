@@ -52,14 +52,43 @@ const json = (body: unknown, status = 200) =>
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const TOKEN_RE = /^[A-Za-z0-9_-]{43}$/;
 
+/** token 片段至少幾個字就遮:少於 8 字的片段最多透露 42 bits(token 有 256 bits),剩下的猜不出來 */
+const TOKEN_FRAGMENT_MIN = 8;
+
+/** 把文字裡的 token,以及任何 8 字以上的 token 片段(外部錯誤訊息可能把 token 截斷在中間),換成 *** */
+const redactToken = (text: string, token: string): string => {
+  let out = "";
+  let i = 0;
+  while (i < text.length) {
+    let len = 0;
+    while (i + len < text.length && token.includes(text.slice(i, i + len + 1))) len += 1;
+    if (len >= TOKEN_FRAGMENT_MIN) {
+      out += "***";
+      i += len;
+    } else {
+      out += text[i];
+      i += 1;
+    }
+  }
+  return out;
+};
+
+/** 逐一處理 log 內容裡的字串(不在序列化後的 JSON 上改,跳脫字元不會被弄壞) */
+const redactValue = (v: unknown, token: string): unknown => {
+  if (typeof v === "string") return redactToken(v, token);
+  if (Array.isArray(v)) return v.map((x) => redactValue(x, token));
+  if (v && typeof v === "object") return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, redactValue(x, token)]));
+  return v;
+};
+
 /**
- * 這次請求的每一筆 log 先把查詢 token 遮成 ***:外部回來的錯誤訊息(例如 Resend 的回應內文)可能夾帶信件內容。
- * token 只有 base64url 字元,放進 JSON 不會被跳脫,所以直接在序列化後的字串裡找得到。
+ * 這次請求的每一筆 log 先遮掉查詢 token:外部回來的錯誤訊息(例如 Resend 的回應內文,createResendSender 只留前 300 字)
+ * 可能夾帶信件內容,甚至把 token 截斷在中間 —— 所以連 8 字以上的片段也遮。
  */
 const redactLog =
   (log: LogFn, token: string): LogFn =>
   (level, entry) =>
-    log(level, JSON.parse(JSON.stringify(entry).split(token).join("***")) as Record<string, unknown>);
+    log(level, redactValue(entry, token) as Record<string, unknown>);
 
 type Row = Record<string, unknown>;
 const str = (v: unknown) => (v === null || v === undefined ? "" : String(v));
