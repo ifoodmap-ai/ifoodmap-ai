@@ -369,6 +369,7 @@ describe("market-notify:狀態紀錄", () => {
   it("給消費者的信:html、text、reply_to 都沒有店家的 contact_email,改附店家電話(閘門開 / 關)", async () => {
     for (const live of [true, false]) {
       const s = setup({ live });
+      s.db.tables.suppliers[1].contact_email = "store-b@example.com"; // 第 3 輪審查:B 店也有 contact_email,待匯款那封(B 店)才驗得到
       s.db.tables.market_order_events.push(
         { id: EV(9), order_id: ORDER_A, from_status: "pending", to_status: "rejected", actor_role: "supplier", note: "缺貨", payload: {} },
         { id: EV(10), order_id: ORDER_A, from_status: "confirmed", to_status: "cancelled", actor_role: "supplier", note: "無法出貨", payload: {} },
@@ -379,8 +380,10 @@ describe("market-notify:狀態紀錄", () => {
       expect(consumer, `live=${live}`).toHaveLength(7); // 下單確認、接單、待匯款、平台取消(消費者那封)、出貨、拒單、店家取消
       for (const m of consumer) {
         const label = `live=${live} ${m.subject}`;
-        expect(m.html, label).not.toContain("store-a@example.com");
-        expect(m.text, label).not.toContain("store-a@example.com");
+        for (const storeEmail of ["store-a@example.com", "store-b@example.com"]) {
+          expect(m.html, label).not.toContain(storeEmail);
+          expect(m.text, label).not.toContain(storeEmail);
+        }
         expect(m.replyTo, label).toBe("ifoodmaptw@gmail.com");
       }
       // A 店有電話:A 店的每一封(含下單確認裡 A 店那段)都附;B 店沒有電話就不寫這一行
@@ -456,6 +459,16 @@ describe("market-notify:狀態紀錄", () => {
     expect(logged).not.toContain(TOKEN.slice(0, 8));
   });
 
+  // 第 3 輪審查:notifications 寫入失敗的 log 只記原因,不帶整列(列裡有收件信箱)
+  it("notifications 寫入失敗(平台取消兩封):兩封照寄、sent 2;log 沒有任何 Email", async () => {
+    const s = setup({ live: true, fail: (table, op) => (table === "notifications" && op === "insert" ? { message: "permission denied for table notifications" } : undefined) });
+    const r = await s.call({ kind: "event", event_id: EV(5) });
+    expect(r.body.data).toMatchObject({ sent: 2, total: 2 });
+    const logs = s.log.mock.calls.filter((c) => c[1].step === "notifications");
+    expect(logs).toHaveLength(2);
+    expect(JSON.stringify(logs)).not.toMatch(/@/);
+  });
+
   // 審查追加:同一封信重送(pg_net 重送、有人重放)時 Resend 只寄一次 —— 每封信帶 Idempotency-Key
   it("每封信帶 Idempotency-Key:狀態信 market-notify:<event_id>:<收件對象>,下單確認 market-notify:placed:<checkout_id>", async () => {
     const s = setup();
@@ -481,7 +494,9 @@ describe("market-notify:狀態紀錄", () => {
     for (const o of s.db.tables.market_orders) o.buyer_email = "王小明<buyer@example.com>";
     const r1 = await s.call({ kind: "placed", checkout_id: CHECKOUT, token: TOKEN });
     expect(r1.body.data).toMatchObject({ skipped: true });
+    expect(r1.text).not.toContain("buyer@example.com"); // 回應會存在 net._http_response,不能帶出 Email
     const r2 = await s.call({ kind: "event", event_id: EV(2) });
+    expect(r2.text).not.toContain("buyer@example.com");
     expect(r2.body.data).toMatchObject({ sent: 0, skipped: ["consumer_confirmed"] });
     expect(s.send).not.toHaveBeenCalled();
     expect(s.db.tables.notifications).toHaveLength(2);
@@ -513,6 +528,18 @@ describe("market-notify:狀態紀錄", () => {
     expect(s.db.tables.notifications[0]).toMatchObject({ recipient: "a***@台北市…", status: "failed" });
     const dump = JSON.stringify(s.log.mock.calls) + JSON.stringify(s.db.tables.notifications);
     for (const leak of ["信義區", "市府路", "0912", "王小明 "]) expect(dump, leak).not.toContain(leak);
+  });
+
+  // 第 3 輪審查:閘門關著時,Email 不合格的收件人也不能「轉寄到測試信箱」了事 —— 一樣跳過、留「沒寄」紀錄
+  it("閘門關閉時 Email 不合格:一樣不寄(不轉寄測試信箱)、留「沒寄」紀錄", async () => {
+    const s = setup();
+    for (const o of s.db.tables.market_orders) o.buyer_email = "王小明<buyer@example.com>";
+    s.db.tables.suppliers[0].contact_email = "sales.example.com";
+    await s.call({ kind: "placed", checkout_id: CHECKOUT, token: TOKEN });
+    for (const id of [EV(1), EV(2), EV(5)]) await s.call({ kind: "event", event_id: id });
+    expect(s.send).not.toHaveBeenCalled();
+    expect(s.db.tables.notifications.map((n) => n.status)).toEqual(["failed", "failed", "failed", "failed", "failed"]);
+    expect(s.db.tables.notifications.every((n) => String(n.message).includes("(沒寄:"))).toBe(true);
   });
 
   it("店家聯絡信箱格式不對(不是空的):跳過、記 log 與「沒寄」紀錄;沒有填的也留紀錄", async () => {
@@ -649,6 +676,7 @@ const setupEnv = (env: Record<string, string | undefined>) => {
   db.tables.market_order_events.push(
     { id: EV(9), order_id: ORDER_A, from_status: "pending", to_status: "rejected", actor_role: "supplier", note: "缺貨", payload: {} },
     { id: EV(10), order_id: ORDER_A, from_status: "confirmed", to_status: "cancelled", actor_role: "supplier", note: "無法出貨", payload: {} },
+    { id: EV(11), order_id: ORDER_B, from_status: "paid", to_status: "cancelled", actor_role: "supplier", note: "缺貨", payload: {} },
   );
   const send = vi.fn<MarketSendMail>(async () => ({ ok: true, id: "re_1", error: null }));
   const handler = createMarketNotifyHandler({
@@ -682,10 +710,13 @@ describe("market-notify:MARKET_NOTIFY_LIVE 不是剛好字串 true,就不會寄�
       const label = `MARKET_NOTIFY_LIVE=${JSON.stringify(v)}`;
       // 餐廳訂單的 NOTIFY_LIVE 開了也一樣:零售只看 MARKET_NOTIFY_LIVE
       const s = setupEnv({ MARKET_NOTIFY_LIVE: v, NOTIFY_LIVE: "true" });
+      // 第 3 輪審查:這兩條路徑原本沒走到 —— B 店沒填匯款資訊的待匯款、已收款的單被取消(EV 11)
+      s.db.tables.market_store_transfer = [];
+      Object.assign(s.db.tables.market_orders.find((o) => o.id === ORDER_B)!, { paid_at: "2026-10-11T03:00:00Z" });
       expect((await s.call({ kind: "placed", checkout_id: CHECKOUT, token: TOKEN })).body.data, label).toMatchObject({ live: false, sent: 1 });
       // 新訂單(→ 供應商)、貨到付款接單、待匯款(→ 消費者)、平台取消(→ 消費者 + 供應商)、出貨、拒單、供應商取消(→ 消費者)
       const kinds: string[] = [];
-      for (const id of [EV(1), EV(2), EV(4), EV(5), EV(6), EV(9), EV(10)]) {
+      for (const id of [EV(1), EV(2), EV(4), EV(5), EV(6), EV(9), EV(10), EV(11)]) {
         const data = (await s.call({ kind: "event", event_id: id })).body.data;
         expect(data, `${label} ${id}`).toMatchObject({ live: false });
         kinds.push(...data.kinds);
@@ -702,7 +733,9 @@ describe("market-notify:MARKET_NOTIFY_LIVE 不是剛好字串 true,就不會寄�
         ]),
       );
       const msgs = s.send.mock.calls.map((c) => c[0]);
-      expect(msgs, label).toHaveLength(9);
+      expect(msgs, label).toHaveLength(10);
+      expect(msgs.filter((m) => m.text.includes("退款由店家處理")), `${label} 已收款取消`).toHaveLength(1);
+      expect(msgs.filter((m) => m.text.includes("店家尚未提供")), `${label} 沒填匯款資訊`).toHaveLength(1);
       for (const m of msgs) {
         expect(m.to, label).toEqual(["ifoodmaptw@gmail.com"]);
         expect(m.subject.startsWith("[測試轉寄] "), `${label} ${m.subject}`).toBe(true);
@@ -714,7 +747,7 @@ describe("market-notify:MARKET_NOTIFY_LIVE 不是剛好字串 true,就不會寄�
       // 原收件人只列在轉寄說明裡
       expect(msgs[0].html, label).toContain("原本的收件人(消費者):buyer@example.com");
       expect(msgs[1].html, label).toContain("原本的收件人(供應商):store-a@example.com");
-      expect(s.db.tables.notifications.map((n) => n.recipient), label).toEqual(Array(9).fill("ifoodmaptw@gmail.com"));
+      expect(s.db.tables.notifications.map((n) => n.recipient), label).toEqual(Array(10).fill("ifoodmaptw@gmail.com"));
     }
   });
 
@@ -778,6 +811,14 @@ describe("market-notify:token 只出現在寄出的確認信,回應、log、資�
     expect(s.send).not.toHaveBeenCalled();
     expect(s.log).toHaveBeenCalledWith("error", expect.objectContaining({ error: "token mismatch" }));
     expect(leaks(s, r, WRONG)).toEqual(NONE);
+  });
+
+  it("checkout_id 格式不對(400)但 token 格式對:回應與 log 都沒有 token", async () => {
+    const s = setup();
+    const r = await s.call({ kind: "placed", checkout_id: "not-a-uuid", token: TOKEN });
+    expect(r.status).toBe(400);
+    expect(s.send).not.toHaveBeenCalled();
+    expect(leaks(s, r, TOKEN)).toEqual(NONE);
   });
 
   it("寄信失敗、外部回來的錯誤訊息夾帶信件內容:log 裡的 token 遮成 ***", async () => {
