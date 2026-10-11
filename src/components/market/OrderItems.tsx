@@ -1,4 +1,5 @@
 // 訂單明細表(查詢頁、供應商零售訂單、管理員總覽共用):品名、規格、單價 × 數量、小計;下面運費與總額。
+// 金額欄一律 whitespace-nowrap:360px 寬時品名欄會吃掉剩下的寬度,粗體的總額會被拆成「NT$」與數字兩行。
 import { TEMPERATURES, type Temperature } from "@/lib/market/constants";
 import { formatTwd } from "@/lib/market/format";
 
@@ -38,19 +39,19 @@ export default function OrderItems({ items, subtotal, shippingFee, total }: Orde
           <th scope="row" className="pt-2 text-left font-normal text-slate-600">
             小計
           </th>
-          <td className="pt-2 text-right">{formatTwd(subtotal)}</td>
+          <td className="whitespace-nowrap pt-2 text-right">{formatTwd(subtotal)}</td>
         </tr>
         <tr>
           <th scope="row" className="text-left font-normal text-slate-600">
             運費
           </th>
-          <td className="text-right">{shippingFee === 0 ? "免運" : formatTwd(shippingFee)}</td>
+          <td className="whitespace-nowrap text-right">{shippingFee === 0 ? "免運" : formatTwd(shippingFee)}</td>
         </tr>
         <tr>
           <th scope="row" className="text-left font-semibold text-slate-900">
             總額
           </th>
-          <td className="text-right font-bold text-emerald-800">{formatTwd(total)}</td>
+          <td className="whitespace-nowrap text-right font-bold text-emerald-800">{formatTwd(total)}</td>
         </tr>
       </tfoot>
     </table>

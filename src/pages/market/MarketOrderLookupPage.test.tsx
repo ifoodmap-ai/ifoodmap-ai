@@ -226,6 +226,15 @@ describe("MarketOrderLookupPage:取消、排序、聯絡店家、離線、複製
     expect(await screen.findByText("沒辦法自動複製,請長按上面的網址手動複製。")).toBeInTheDocument();
   });
 
+  it("明細的金額欄一律不換行(360px 寬時粗體的總額不會被拆成「NT$」與數字兩行)", async () => {
+    vi.mocked(fetchOrdersByToken).mockResolvedValue([A]);
+    renderAt(`/market/orders/${TOKEN}`);
+    const table = await screen.findByRole("table", { name: "訂單明細" });
+    const amountCells = [...table.querySelectorAll("tbody td:last-child, tfoot td")];
+    expect(amountCells.map((c) => c.textContent)).toEqual(["NT$ 200", "NT$ 650", "NT$ 120", "NT$ 770"]);
+    for (const c of amountCells) expect(c).toHaveClass("whitespace-nowrap");
+  });
+
   it("背景重抓失敗:繼續顯示之前載入的訂單,只加一行提示(不整頁變錯誤)", async () => {
     const client = newTestQueryClient();
     client.setQueryData(["market", "lookup", TOKEN], [A]);
