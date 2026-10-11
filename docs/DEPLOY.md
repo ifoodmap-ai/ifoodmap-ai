@@ -1174,8 +1174,9 @@ IP / Email / 電話只以「加鹽 sha256 前 16 hex」落地(鹽在 `app_config
 
 - `noip` 只是保險:正常情況一定拿得到 IP;被觸發代表 IP 取得壞了(所有拿不到 IP 的請求共用這一格,正常買家也會被擋),要去查。
 - B 段被擋 → 不建單、不動庫存,A 段已扣的照算;缺貨、價格變了、超過金額上限、配送不到、未達最低金額都不吃 B 段。
-- IP 取自 `market_client_ip()`:`cf-connecting-ip` → `x-real-ip` → `x-forwarded-for` 第一段。🔴 實際用到的是不是偽造不了的那一個,要在打開開關時驗
-  (見「對外開放前待辦」第 6 條)。
+- IP 取自 `market_client_ip()`:`cf-connecting-ip` → `x-real-ip` → `x-forwarded-for` 第一段。2026-10-11 部署時用暫時的探測函式驗過(IPv4,見「部署」第 9-5 步):
+  實際用到的是 `cf-connecting-ip`(Cloudflare 覆寫;用戶端自己帶 `CF-Connecting-IP` 會被 Cloudflare 直接回 403 `error code: 1000`),
+  `x-real-ip` 會被中間的 proxy 改寫成真實 IP,`x-forwarded-for` 第一段偽造得了但只是第三順位。IPv6 /64 還沒驗(見「對外開放前待辦」第 6 條)。
 - 計數表 `market_rate_counters`;**擋下次數** `market_rate_blocks_daily`(`day` 台北日、`rule` 規則種類 = bucket 冒號前的前綴、`hits`,主鍵 `(day, rule)`):
   被擋時把擋下的那種規則 +1,同一次請求被同一種的兩條擋下(例如 Email 每小時與每天)只算 1;沒被擋時不寫;只記次數、不記是誰。兩張表 anon / 登入者都碰不到。
 - 清理:pg_cron `ifoodmap-market-rate-cleanup` 每天 19:50 UTC(台北 03:50)刪 2 天前的計數、**90 天前**的擋下紀錄。
@@ -1376,10 +1377,17 @@ IP / Email / 電話只以「加鹽 sha256 前 16 hex」落地(鹽在 `app_config
       條款、隱私權頁的標題是「食材市集服務條款」「食材市集隱私權政策」,最上面有「草稿:本文件待業主與法律專業確認後定稿。」;
       `/market/orders/abc` 是「找不到這筆訂單。請確認網址完整(從確認信裡的連結打開最保險)。」。
    4. 管理員站:`curl -s -o /dev/null -w '%{http_code}\n' https://ifoodmap-admin.vercel.app/admin/market/orders` → `200`(內容要登入,留給業主實測)。
-   5. 🔴 **IP 標頭檢查(實作計畫 Task 57 Step 8-2)這時做不了**:開關關著時 `market_place_order` 在限流之前(第 4 步)就回 `MARKET_CLOSED`、不寫任何計數;
-      計畫原文的請求也沒帶 token,會先回 `INVALID_INPUT` `token`。改在打開開關的當下做,見「對外開放前待辦」第 6 條。
+   5. **IP 標頭檢查**(取代實作計畫 Task 57 Step 8-2:開關關著時 `market_place_order` 在限流之前就回 `MARKET_CLOSED`、不寫計數,原本的做法驗不到):
+      用 Management API 暫時建一個探測函式,測完立刻刪掉 ——
+      `CREATE FUNCTION public.market_tmp_ip_probe() RETURNS jsonb LANGUAGE sql STABLE SECURITY DEFINER SET search_path = ''`,
+      內容回 `public.market_client_ip()` 與 `request.headers` 裡的 `cf-connecting-ip`、`x-real-ip`、`x-forwarded-for`;只 `GRANT EXECUTE … TO anon`,再 `NOTIFY pgrst, 'reload schema'`。
+      用 anon key、`curl -4` 打 `/rest/v1/rpc/market_tmp_ip_probe`:先不帶偽造標頭,再**分開**帶偽造的 `X-Forwarded-For` + `X-Real-IP`、`CF-Connecting-IP`
+      (三個一起帶時 Cloudflare 會整個請求回 403,看不到結果)。測完 `DROP FUNCTION public.market_tmp_ip_probe(); NOTIFY pgrst, 'reload schema';`,
+      確認 `pg_proc` 查不到、REST 回 404。
+      2026-10-11 結果(紀錄在 session scratchpad 的 `market-deploy/PHASE2-LOG.md`):`used` 每次都是真實 IP、取自 `cf-connecting-ip`;
+      偽造的 `X-Real-IP` 被改寫成真實 IP;偽造的 `CF-Connecting-IP` 被 Cloudflare 擋(403 / 1000)。本機沒有 IPv6,/64 沒驗到。
    6. 派一個沒參與實作的 agent 獨立驗收(fresh context;只准讀、乾跑、唯讀查詢,不准改檔、不准 apply、不准輸入密碼、不准設定任何 secret 或 `app_config`),
-      清單見實作計畫 Task 57 Step 9,數字以本節為準(67 / 9 / 93 / 4);IP 標頭那一項改成確認第 5 點已列入開放前待辦。
+      清單見實作計畫 Task 57 Step 9,數字以本節為準(67 / 9 / 93 / 4);IP 標頭那一項看第 5 點的探測結果。
       另外確認 `MARKET_NOTIFY_LIVE` 不在 `supabase secrets list --project-ref cwvpehqcvbfuynabpqop` 的清單裡(只看名稱、不印值)、`market_checkout_open` 還是 `false`。
       有任何一項不過:照下面「還原(第 2 階段)」判斷要不要退版,回報派工者。
 
@@ -1488,8 +1496,10 @@ from net._http_response order by id desc limit 10;
       Expected:`ledger`、`phase2_tables`、`phase2_functions`、`cleanup_cron`、`phase2_config` 都是 `0`;`phase1_tables` 是 `3`(第 1 階段不受影響)。
       (匯出、三支還原檔、這個確認 2026-10-11 在本機一次性的 Postgres 依序跑過;結果跟上面的 Expected 一樣。)
    5. `market-notify` 不用刪(沒人呼叫就不會寄信);要停用可在 Dashboard → Edge Functions 刪掉那支。`notifications` 裡的零售紀錄留著(那張表不屬於這三支 migration)。
-3. **repo**:同第 1 階段還原第 3 步,`git revert -m 1 --no-edit <部署第 7 步記下的第 2 階段合併 commit>` 再 push
-   (三支 migration 跟前端一起退,`check-migrations` 才不會一直紅);之後要重新上線,一樣先 revert 這個 revert commit。
+3. **repo**:2026-10-11 的部署是 fast-forward(origin/main `6bf196e` → `79a13aa`),**沒有合併 commit**,`git revert -m 1` 用不上。改成把整段退成一個 commit:
+   `git revert --no-commit 6bf196e..79a13aa && git commit -m "revert: 消費者食材市集第 2 階段"` 再 push
+   (三支 migration 跟前端一起退,`check-migrations` 才不會一直紅);之後要重新上線,revert 這個 revert commit。
+   前端也可以先用 Vercel Instant Rollback 退到 `6bf196e` 那一版。
 
 ### 對外開放前待辦(第 3 階段,需要業主核准)
 
@@ -1503,8 +1513,9 @@ from net._http_response order by id desc limit 10;
 4. **目前沒有人機驗證**:全站每天 500 單的上限,可以被「真的建單」的假訂單吃光 —— 每個 IPv4、每個 IPv6 /48 每天各 20 單,大約 25 個 IPv4 或 25 個 /48,
    加上一批假 Email 和電話(每個每天 10 單)就夠;吃光之後當天真的消費者全部下不了單。考慮加 Cloudflare Turnstile。
 5. **待接單沒有逾時自動取消**:假的貨到付款單會一直佔著庫存,直到店家拒單。
-6. **IP 標頭檢查要確認過**:限流靠的 IP 必須是偽造不了的那一個,偽造得了的話 IP 那幾條額度形同虛設(Email、電話、全站上限仍然有效)。
-   🔴 照現在的程式,這項在開關關著時**做不了**(見「部署」第 9-5 步),實作計畫 Task 57 Step 8-2 原本的做法要改成:業主核准、開關打開之後**馬上**做 ——
+6. **IP 標頭檢查**:限流靠的 IP 必須是偽造不了的那一個,偽造得了的話 IP 那幾條額度形同虛設(Email、電話、全站上限仍然有效)。
+   IPv4 已在 2026-10-11 部署時用探測函式驗過、通過(見「部署」第 9-5 步);**還缺 IPv6**:找一個有 IPv6 的網路,照第 9-5 步用 `curl -6` 再做一次,
+   確認 `used` 是 /64 的網段位址。開關打開之後**馬上**再用真的下單 RPC 做一次確認 ——
    用「部署」第 9-2 步的 `$API`、`$PK` 送一個**空購物車**的請求(帶 token 與三個偽造的 IP 標頭;送請求和查自己的 IP 都用 IPv4,`-4`),
    空購物車在 A 段之後才擋,只會寫 A 段的 `ip` 計數、不建單、不吃 B 段:
    ```bash
