@@ -137,6 +137,9 @@ export const checkoutErrorMessage = (
       return "一次最多結帳 50 種商品。";
     case "TOO_MANY_STORES":
       return "一次最多結帳 10 家店,請分次結帳。";
+    case "ORDER_TOO_LARGE":
+      // 資料庫:任一家店「小計 + 運費」超過 1,000,000 就不建單(stores 是超過的那幾家)
+      return `${stores} 這張訂單超過 NT$1,000,000,請減少數量或分開下單。`;
     case "PRODUCT_UNAVAILABLE":
       return "有商品剛剛下架了,請回購物車移除後再結帳。";
     case "OUT_OF_STOCK":
