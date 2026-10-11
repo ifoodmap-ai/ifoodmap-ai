@@ -216,7 +216,7 @@ SELECT cron.schedule(
 --   成功 → {ok:true, token, checkout_id, orders:[{id, supplier_id, total}]}
 --   失敗 → {ok:false, code, …}:MARKET_CLOSED / INVALID_INPUT(field)/ RATE_LIMITED、DAILY_CAP(retry_after)/
 --          EMPTY_CART / TOO_MANY_ITEMS / PRODUCT_UNAVAILABLE(products)/ OUT_OF_STOCK(products)/ TOO_MANY_STORES /
---          ORDER_TOO_LARGE(stores:任一家店「小計 + 運費」超過 1,000,000)/
+--          ORDER_TOO_LARGE(stores:任一家店的商品小計(不含運費)超過 1,000,000)/
 --          NOT_DELIVERABLE(stores)/ BELOW_MINIMUM(stores)/ PAYMENT_NOT_ACCEPTED(stores)/ PRICE_CHANGED(stores)
 -- ---------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION public.market_place_order(p_checkout jsonb)
@@ -411,13 +411,13 @@ BEGIN
     RETURN jsonb_build_object('ok', false, 'code', 'TOO_MANY_STORES');
   END IF;
 
-  -- 金額上限:任一家店「小計 + 運費」超過 1,000,000 → ORDER_TOO_LARGE(bigint 比較,不丟例外;
-  -- 要放在下面任何 ::integer 轉型之前。market_orders 另有 total <= 1000000 的 CHECK 當第二道)
-  SELECT jsonb_agg(jsonb_build_object('supplier_id', x.value->'supplier_id',
-                                      'total', (x.value->>'subtotal')::bigint + (x.value->>'shipping_fee')::bigint))
+  -- 金額上限:任一家店的商品小計(不含運費)超過 1,000,000 → ORDER_TOO_LARGE(bigint 比較,不丟例外;
+  -- 要放在下面任何 ::integer 轉型之前)。只看小計:一件 1,000,000 元的商品加運費照樣買得到,
+  -- 最低訂購金額的上限(1,000,000)也一定達得到。market_orders_money 另有 subtotal BETWEEN 1 AND 1000000 當第二道
+  SELECT jsonb_agg(jsonb_build_object('supplier_id', x.value->'supplier_id', 'subtotal', (x.value->>'subtotal')::bigint))
     INTO v_bad
     FROM jsonb_array_elements(v_stores) AS x(value)
-   WHERE (x.value->>'subtotal')::bigint + (x.value->>'shipping_fee')::bigint > 1000000;
+   WHERE (x.value->>'subtotal')::bigint > 1000000;
   IF v_bad IS NOT NULL THEN
     RETURN jsonb_build_object('ok', false, 'code', 'ORDER_TOO_LARGE', 'stores', v_bad);
   END IF;

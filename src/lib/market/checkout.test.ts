@@ -158,7 +158,7 @@ describe("checkoutErrorMessage", () => {
     expect(msg({ ok: false, code: "TOO_MANY_ITEMS" })).toBe("一次最多結帳 50 種商品。");
     expect(msg({ ok: false, code: "TOO_MANY_STORES" })).toBe("一次最多結帳 10 家店,請分次結帳。");
     expect(msg({ ok: false, code: "ORDER_TOO_LARGE", stores: [{ supplier_id: SUPPLIER_A }] })).toBe(
-      "A 店 這張訂單超過 NT$1,000,000,請減少數量或分開下單。",
+      "A 店 這張訂單的商品金額(不含運費)超過 NT$1,000,000,請減少數量或分開下單。",
     );
     expect(msg({ ok: false, code: "PRODUCT_UNAVAILABLE", products: [CABBAGE.id] })).toBe("有商品剛剛下架了,請回購物車移除後再結帳。");
     expect(msg({ ok: false, code: "OUT_OF_STOCK", products: [{ product_id: SALMON.id, available: 1 }] })).toBe(

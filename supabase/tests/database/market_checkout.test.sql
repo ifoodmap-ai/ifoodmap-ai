@@ -461,12 +461,17 @@ SELECT pg_temp.expect('下單記下每一項真的扣掉的庫存:高麗菜 2、
      FROM public.market_order_items i
     WHERE i.order_id IN (SELECT (o ->> 'id')::uuid FROM _ctx, jsonb_array_elements(v -> 'orders') o WHERE k = 'happy')),
   '有機高麗菜=2,挪威鮭魚=1,牛肉片=0');
--- 5-4 金額用 bigint 算:任一家店「小計 + 運費」超過 1,000,000 → ORDER_TOO_LARGE(不丟例外、不建單、庫存不變)
+-- 5-4 金額用 bigint 算:任一家店的商品小計(不含運費)超過 1,000,000 → ORDER_TOO_LARGE(不丟例外、不建單、庫存不變);
+--     只看小計:一件百萬元商品加運費照樣能買,最低訂購金額的上限 1,000,000 也一定達得到
 SELECT pg_temp.exec_with_claims(pg_temp.jwt('a9100000-0000-4000-8000-000000000003', true), $q$
   INSERT INTO public.market_products (id, supplier_id, name, category, spec, price, stock, review_status)
   SELECT ('a9300000-0000-4000-8000-000000d00' || lpad(n::text, 3, '0'))::uuid, 'a9200000-0000-4000-8000-00000000000a',
          '高價品 ' || n, 'meat', '1 份', 1000000, 100, 'approved'
     FROM generate_series(1, 22) AS n$q$);
+SELECT pg_temp.exec_with_claims(pg_temp.jwt('a9100000-0000-4000-8000-000000000003', true), $q$
+  INSERT INTO public.market_products (id, supplier_id, name, category, spec, price, stock, review_status) VALUES
+    ('a9300000-0000-4000-8000-000000d00b01', 'a9200000-0000-4000-8000-00000000000b', 'B 店百萬元品', 'seafood', '1 份', 1000000, 5, 'approved'),
+    ('a9300000-0000-4000-8000-000000d00a01', 'a9200000-0000-4000-8000-00000000000a', '一元加購品', 'grocery', '1 份', 1, NULL, 'approved')$q$);
 INSERT INTO _ctx VALUES ('too_large', pg_temp.place(pg_temp.anon(), '198.51.107.2', pg_temp.co('big@market-test.invalid',
   (SELECT jsonb_agg(jsonb_build_object('product_id', 'a9300000-0000-4000-8000-000000d00' || lpad(n::text, 3, '0'), 'qty', 99))
      FROM generate_series(1, 22) AS n),
@@ -474,13 +479,20 @@ INSERT INTO _ctx VALUES ('too_large', pg_temp.place(pg_temp.anon(), '198.51.107.
 SELECT pg_temp.expect('22 件百萬元商品各 99 個 → ORDER_TOO_LARGE(帶店家)、不建單、庫存不變',
   (SELECT (v ->> 'code') || '|' || (v -> 'stores' -> 0 ->> 'supplier_id') FROM _ctx WHERE k = 'too_large') || '|' ||
   (SELECT count(*)::text FROM public.market_orders WHERE buyer_email = 'big@market-test.invalid') || '|' ||
-  (SELECT bool_and(stock = 100)::text FROM public.market_products WHERE id::text LIKE 'a9300000-0000-4000-8000-000000d00%'),
+  (SELECT (count(*) = 22 AND bool_and(stock = 100))::text FROM public.market_products WHERE id::text LIKE 'a9300000-0000-4000-8000-000000d000%'),
   'ORDER_TOO_LARGE|a9200000-0000-4000-8000-00000000000a|0|true');
-SELECT pg_temp.expect('剛好 1,000,000(滿額免運)可以下單',
+INSERT INTO _ctx VALUES ('too_large_1', pg_temp.place(pg_temp.anon(), '198.51.107.4', pg_temp.co('big3@market-test.invalid',
+  '[{"product_id":"a9300000-0000-4000-8000-000000d00001","qty":1},{"product_id":"a9300000-0000-4000-8000-000000d00a01","qty":1}]',
+  '{"a9200000-0000-4000-8000-00000000000a":"cod"}')));
+SELECT pg_temp.expect('商品小計 1,000,001(百萬元品 + 一元加購品)→ ORDER_TOO_LARGE(帶店家與小計)、不建單',
+  (SELECT (v ->> 'code') || '|' || (v -> 'stores' -> 0 ->> 'supplier_id') || '|' || (v -> 'stores' -> 0 ->> 'subtotal') FROM _ctx WHERE k = 'too_large_1')
+  || '|' || (SELECT count(*)::text FROM public.market_orders WHERE buyer_email = 'big3@market-test.invalid'),
+  'ORDER_TOO_LARGE|a9200000-0000-4000-8000-00000000000a|1000001|0');
+SELECT pg_temp.expect('一件 1,000,000 元的商品加運費(B 店運費 60)可以下單:總額 1,000,060',
   (SELECT COALESCE(r ->> 'code', 'ok') || '|' || COALESCE(r -> 'orders' -> 0 ->> 'total', '')
      FROM (SELECT pg_temp.place(pg_temp.anon(), '198.51.107.3', pg_temp.co('big2@market-test.invalid',
-             '[{"product_id":"a9300000-0000-4000-8000-000000d00001","qty":1}]', '{"a9200000-0000-4000-8000-00000000000a":"cod"}')) AS r) x),
-  'ok|1000000');
+             '[{"product_id":"a9300000-0000-4000-8000-000000d00b01","qty":1}]', '{"a9200000-0000-4000-8000-00000000000b":"cod"}')) AS r) x),
+  'ok|1000060');
 -- 5-5 限流重排:欄位檢查 → 開關 → A 段(同一個網路的嘗試次數,失敗的也算)→ 購物車、商品、店家檢查與算錢
 --     → B 段(Email / 電話 / 全站,只在準備建單時扣、一次結帳算 1)→ 建單
 -- (a) 失敗的嘗試不吃 Email、電話、全站額度;同一個 IP 照算

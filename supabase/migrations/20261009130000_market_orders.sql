@@ -97,8 +97,11 @@ CREATE TABLE IF NOT EXISTS public.market_orders (
     AND char_length(ship_address) BETWEEN 5 AND 200
     AND (buyer_note IS NULL OR char_length(buyer_note) <= 300)
   ),
-  -- 單張訂單總額上限 1,000,000(下單 RPC 先用 bigint 算、超過回 ORDER_TOO_LARGE;這裡是第二道)
-  CONSTRAINT market_orders_money CHECK (subtotal > 0 AND shipping_fee >= 0 AND total = subtotal + shipping_fee AND total <= 1000000),
+  -- 商品小計(不含運費)上限 1,000,000、運費上限 10,000(跟店家設定一樣):下單 RPC 先用 bigint 算、小計超過就回
+  -- ORDER_TOO_LARGE,這裡是第二道。總額 = 小計 + 運費,可以超過 1,000,000(一件百萬元商品加運費也買得到)
+  CONSTRAINT market_orders_money CHECK (
+    subtotal BETWEEN 1 AND 1000000 AND shipping_fee BETWEEN 0 AND 10000 AND total = subtotal + shipping_fee
+  ),
   -- payment_status / payment_ref 預留給之後的線上付款,目前不用
   CONSTRAINT market_orders_payment CHECK (
     payment_method IN ('cod', 'transfer')

@@ -439,11 +439,23 @@ SELECT pg_temp.expect('下單時沒扣庫存的明細,取消不會憑空補回�
 SELECT pg_temp.expect('拒單 / 取消補庫存先依商品 id 排序鎖列(FOR UPDATE)再 UPDATE',
   (pg_get_functiondef('public.market_apply_event()'::regprocedure) ~ 'ORDER BY p\.id\s+FOR UPDATE;\s+UPDATE public\.market_products')::text,
   'true');
--- 5-6 單張訂單總額上限 1,000,000(第二道;下單 RPC 先用 bigint 算、超過就回 ORDER_TOO_LARGE)
-SELECT pg_temp.expect('訂單總額超過 1,000,000 存不進去',
-  pg_temp.as_exec('postgres', '', $q$
-    INSERT INTO public.market_orders (checkout_id, supplier_id, buyer_name, buyer_phone, buyer_email, ship_city, ship_address,
-                                      subtotal, shipping_fee, total, payment_method, lookup_token_hash, terms_version)
-    VALUES (gen_random_uuid(), 'a9200000-0000-4000-8000-00000000000a', '買家', '0912345678', 'a@market-test.invalid', '臺北市',
-            '測試路 1 號', 1000000, 1, 1000001, 'cod', repeat('d', 64), 'v1')$q$),
-  'ERR 23514');
+-- 5-6 金額 CHECK(第二道;下單 RPC 先用 bigint 算,商品小計超過 1,000,000 就回 ORDER_TOO_LARGE):
+--     小計 1–1,000,000(不含運費)、運費 0–10,000、總額 = 小計 + 運費 —— 一件百萬元商品加運費也存得進去
+SELECT pg_temp.expect('金額 CHECK:小計 1,000,001 存不進去;小計 1,000,000 + 運費 120 存得進去;運費 10,001 存不進去',
+  concat_ws('|',
+    pg_temp.as_exec('postgres', '', $q$
+      INSERT INTO public.market_orders (checkout_id, supplier_id, buyer_name, buyer_phone, buyer_email, ship_city, ship_address,
+                                        subtotal, shipping_fee, total, payment_method, lookup_token_hash, terms_version)
+      VALUES (gen_random_uuid(), 'a9200000-0000-4000-8000-00000000000a', '買家', '0912345678', 'a@market-test.invalid', '臺北市',
+              '測試路 1 號', 1000001, 0, 1000001, 'cod', repeat('d', 64), 'v1')$q$),
+    pg_temp.as_exec('postgres', '', $q$
+      INSERT INTO public.market_orders (checkout_id, supplier_id, buyer_name, buyer_phone, buyer_email, ship_city, ship_address,
+                                        subtotal, shipping_fee, total, payment_method, lookup_token_hash, terms_version)
+      VALUES (gen_random_uuid(), 'a9200000-0000-4000-8000-00000000000a', '買家', '0912345678', 'a@market-test.invalid', '臺北市',
+              '測試路 1 號', 1000000, 120, 1000120, 'cod', repeat('e', 64), 'v1')$q$),
+    pg_temp.as_exec('postgres', '', $q$
+      INSERT INTO public.market_orders (checkout_id, supplier_id, buyer_name, buyer_phone, buyer_email, ship_city, ship_address,
+                                        subtotal, shipping_fee, total, payment_method, lookup_token_hash, terms_version)
+      VALUES (gen_random_uuid(), 'a9200000-0000-4000-8000-00000000000a', '買家', '0912345678', 'a@market-test.invalid', '臺北市',
+              '測試路 1 號', 100, 10001, 10101, 'cod', repeat('f', 64), 'v1')$q$)),
+  'ERR 23514|OK|ERR 23514');
