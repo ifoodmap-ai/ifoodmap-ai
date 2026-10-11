@@ -17817,3 +17817,36 @@ gate / render / handler / index 與 `config.toml` 先照計畫的程式碼區塊
    - 畫面實測(同 Task 48–52 一節的腳本;假 Supabase 的下單改成原樣回傳瀏覽器送的 token,另有「回 TOKEN_REUSED」與「切斷連線」兩種模式):多 3 個情境 —— `TOKEN_REUSED`(連結的 href = 送出的 token、sessionStorage 已清、沒有自動重送)、連線中斷(token 留在 sessionStorage)、斷線 → 重新整理 → 再送(每一次 `market_place_order` 的 token 都一樣,成功後進 `/market/orders/<同一個 token>`)。12 個情境 × 390 / 360 / 1280 共 36 組全過;所有請求只到本機、console 沒有錯誤。
    - 實測發現:Chrome 在重複使用的連線被切斷、還沒收到任何回應時,會自己再送一次 POST(這個情境共 4 次呼叫、token 全部一樣)—— 瀏覽器自己的重送也是靠 token 才不會重複下單。
 5. **沒有處理**:sessionStorage 不能用時 token 只在記憶體,重新整理之後會換新的(斷線、又重新整理再送,而第一次其實成功了的話,會建出第二張);`INVALID_INPUT` `field: 'token'` 沒有專屬訊息,也不會自動換 token(token 由同一個正規式產生與檢查,正常不會發生)。
+
+### 2026-10-11:審查修正補充(四)—— 刻意的取捨寫進檔頭、依規則記錄擋下次數(commit `165a449`、`e4d7b39`、`7234d55`,分支 `market`)
+
+接「審查修正補充(三)」。協調者對上一輪四點的決定:第 1、2 點接受現狀,在檔頭寫明是刻意的取捨;第 4 點 `UNIQUE (lookup_token_hash, supplier_id)` 留著;第 3 點照做。這次只動 SQL 與資料庫測試,沒有動 `src/`。每一項都先寫測試、看到失敗才改。**以 repo 為準。**
+
+1. **刻意的取捨**(`165a449`,只改 130200 檔頭註解):同一個 token 的重送(`duplicate`、`TOKEN_REUSED`)在開關與限流之前就回傳、不吃任何額度(重送不能被擋,成本是一次 advisory lock 加一次索引查詢);格式錯的請求(`INVALID_INPUT`,含 `TOO_MANY_ITEMS` 與購物車每行的格式)也在限流之前回傳、不算進 A 段(不鎖任何商品或計數列),`EMPTY_CART` 照樣算進 A 段。
+2. **依規則記錄擋下次數**(`e4d7b39`;130200、130200 還原檔、`market_checkout.test.sql`、`market_phase2_rollback.test.sql`):
+   - 新表 `market_rate_blocks_daily`:`day date`(台北日)、`rule text`(1–100 字)、`hits integer`(≥ 0),`PRIMARY KEY (day, rule)`;RLS 開著、沒有 policy,`PUBLIC` / `anon` / `authenticated` 全收回(只有 service role 與 Dashboard 查得到)。只記次數、不記是誰。
+   - `market_rate_take` 被擋時,在子交易(IFM02)之外,把這次擋下的規則種類(bucket 冒號前的前綴:`ip`、`ip48`、`noip`、`email`、`phone`、`ipo`、`ip48o`、`global`)各加 1:同一次被同一種的兩條擋下(例如 Email 每小時與每天)只算 1;依種類排序寫,鎖的順序固定。計數照樣整批退回(被擋的請求不吃額度);沒被擋時什麼都不寫。這一列的鎖是被擋的交易最後才拿的(寫完就回傳),不會跟商品、計數的鎖造成死結。
+   - bucket 冒號前的種類不能是空的:`":x"` 改回 `22023`(原本要等到被擋時才因 CHECK 報 `23514`)。
+   - 清理:沿用 `ifoodmap-market-rate-cleanup`(每天 19:50 UTC),同一個指令加一句 `DELETE FROM public.market_rate_blocks_daily WHERE day < (now() AT TIME ZONE 'Asia/Taipei')::date - 90`(留今天與前 90 天)。
+   - 檔頭附查詢範例(唯讀端點或 Dashboard 的 SQL Editor):`SELECT day, rule, hits FROM public.market_rate_blocks_daily WHERE day >= (now() AT TIME ZONE 'Asia/Taipei')::date - 7 ORDER BY day DESC, hits DESC;`。`ipo` / `ip48o` 擋得多 = 共用網路的成單上限該調高;`noip` 有任何一筆 = 拿 IP 壞了。
+   - 還原檔加 `DROP TABLE IF EXISTS public.market_rate_blocks_daily`。清理排程是 130200 自己建的,還原檔原本就整個 `cron.unschedule`,沒有更早的指令要改回 ——「cron 指令改回原本的」= 排程整個拿掉(`market_phase2_rollback`「排程與設定拆掉」那項驗)。
+   - 測試(`market_checkout` +5 項):沒被擋時不寫擋下紀錄(額度照常扣);被擋時那種加 1(同一次同一種兩條算 1、擋兩次 = 2)、沒擋的那種不記、計數照樣整批不扣;前面各節真的下單流程被擋的都依種類記到(`email=2,ip=1,ip48=1,ip48o=1,ipo=1,noip=1,test=4`);anon、登入者讀不到也沒有任何權限、RLS 開著;清理排程的指令在交易裡實際跑一次(3 天前的計數、91 天前的紀錄刪掉,1 天前的計數、剛好 90 天前的紀錄留著)。「規則格式不對直接報錯」那項多驗 `":x"`(改之前 `23514` 紅)。`market_phase2_rollback`「表都不在」的清單加上新表(用拿掉 DROP 那一行的還原檔副本跑過,該項紅)。
+3. **套用、開放之後再跑也不受線上資料影響**(`7234d55`,只改 `market_checkout.test.sql`,項數不變):130200 的測試檔頭寫明開放之後還會再跑這支。塞入每一種 bucket 的假線上資料(今天已有擋下紀錄、超過 2 天還沒清的計數、95 天前的紀錄)跑 `e4d7b39` 的版本紅 3 項:我這次的兩項(比今天的絕對值、數整張表)與原本的「開關關閉被擋的嘗試不寫任何計數」(數整張表裡 `test:` 以外的列)。改成:擋下紀錄比本檔造成的增量(檔頭先記今天既有的紀錄);清理排程只數「該留著」的範圍;開關那項只看這兩次嘗試會用到的 bucket(`198.51.100.1` 的 `ip` / `ipo`、兩個 `.invalid` Email 的 `email`;開關若跑到限流之後,A 段一定先寫這個 IP 的 `ip` 列)。同一份假資料 93 / 93;正向對照(先塞一筆這個 IP 的 `ip` 列)只紅該項。
+
+**數字**
+
+| 乾跑 | 上一節(三) | 現在 |
+|---|---|---|
+| `market_orders` | 67 | 67 |
+| `market_notify` | 9 | 9 |
+| `market_checkout` | 88 | **93**(擋下紀錄 +5) |
+| `market_phase2_rollback` | 4 | 4(清單多一張表) |
+
+- **Task 57** Step 2(第 16560 行)的 Expected 改成依序 `共 67 項` / `共 9 項` / `共 93 項` / `共 4 項`,Step 5(第 16611 行)改成 `共 67 項` / `共 9 項` / `共 93 項`(上一節的 88 作廢);「F. 共用指令與基準數字」第 116 行同樣改成 67 / 9 / 93 / 4。
+- `7234d55` 照順序乾跑 orders → notify → checkout → rollback,每支之後殘留五個 0;攻擊測試副本 `atk_checkout` 33 / 33、`atk_r2` 24 / 24、`atk_rollback_fp` 2 / 2(線上指紋另用唯讀查過,跟期待值逐欄相同),第 1 階段 `market_catalog` 112、`market_images_storage` 20(這幾支在 `264c769` 跑,migration 與現在相同);唯讀查正式庫沒有任何第 2 階段的物件(含新表)。vitest:`264c769`(已含 `e4d7b39`)的乾淨副本跑一次 **115 檔 / 1787 項**全過。
+
+**沒有處理**
+
+- 被擋的請求都會更新同一列(今天, 種類),要等前一個交易 commit 才寫得進去:同一種規則大量擋下(灌爆)時,這一列會變成排隊點,每個被擋的請求多佔一次 commit(含 WAL flush)的時間。目前的量不是問題;要調的話,被擋時加 `set_config('synchronous_commit', 'off', true)` 就能把排隊時間縮到微秒(被擋的交易不建單,當機時掉幾筆計數無妨),交給協調者決定。
+- 乾跑是一整個交易:開放之後跑的那幾秒內若剛好有真的請求被擋或下單,比增量的那幾項(含原本的「限流計數總和不變」)仍可能差 1,重跑即可。其他測試檔(`market_orders` 等)沒有用假線上資料檢查過。
+- DEPLOY.md 由協調者另外派人寫;查詢範例在 130200 檔頭。
