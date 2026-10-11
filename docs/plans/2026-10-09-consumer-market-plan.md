@@ -17693,3 +17693,48 @@ gate / render / handler / index 與 `config.toml` 先照計畫的程式碼區塊
 
 - **Task 57** Step 2(第 16560 行)的 Expected 改成依序 `共 65 項` / `共 9 項` / `共 79 項` / `共 4 項`,Step 5(第 16611 行)改成 `共 65 項` / `共 9 項` / `共 79 項`(上一節的 77 作廢);「F. 共用指令與基準數字」第 116 行同樣改成 65 / 9 / 79 / 4。
 - 每支乾跑之後殘留五個 0;唯讀查正式庫沒有任何第 2 階段的物件。vitest:`3ff02c2` 的乾淨副本全套 **114 檔 / 1752 項**全過(這次只改 SQL)。
+
+### 2026-10-11:Task 53–55 供應商零售訂單、管理員零售訂單總覽(commit `75b506f`、`da55c0c`、`487ee1b`、`3ad315d`、`53b47ab`;審查修正 `3fab124`、`e7710db`,分支 `market`)
+
+三個 Task 都先寫測試、看到失敗才實作,各自一個 commit;`orders.ts` 的修改都各自先 commit(派工規則:動 Task 43–47 的檔先確認沒有別人沒 commit 的修改、改完立刻測立刻 commit)。Task 54、55 對 `SupplierLayout(.test).tsx`、`AdminLayout(.test).tsx`、`AdminRoutes.test.tsx`、`App.tsx` 的 15 組「找到 → 換成」用程式從計畫逐字抽出,套到當時的 repo 都剛好命中一次(Task 52 的 `/market` 路由已先 commit,不影響)。**以 repo 為準。** 沒有乾跑、沒有查正式庫、沒有登入任何網站。
+
+**A. 跟計畫不一樣的地方**
+
+1. **Task 55 改成唯讀總覽(派工指示)**:計畫的「平台取消」整個拿掉 —— 這一頁沒有任何寫入動作,接單、出貨、取消都由店家在供應商後台處理。計畫第 15960 行「唯一的動作是平台取消」與 Task 55 的第 3 個測試「平台取消:要填原因;送出後重新載入清單」作廢,換成三項唯讀測試(B 節);上面「第 2 階段三支 migration 審查修正」第 1 點「Task 55 管理員的『平台取消』在已收款也會出現(`adminActions`)」不適用。`orders.ts` 的 `adminActions` 留著(沒有畫面用);資料庫轉移表仍允許管理員取消、`market-notify` 的「平台取消」信也還在 —— 之後要做平台取消請另開 Task。
+2. **`OrderActionDialog` 只給供應商用**(計畫寫供應商與管理員共用)。取消已收款(`paid`)的單時加提醒「這筆訂單你已確認收款,取消後要由你自行退款給消費者(取消通知信會請消費者直接聯絡你)」,待匯款的單提醒「如果消費者已經匯款,請退款給他」(跟 `754ab43` 的消費者取消信一致);接單的說明依付款方式分開寫;拒單 / 取消說明庫存會加回去。
+3. **已收款的轉帳單可以取消**(`2e843dd`):按鈕一律由 `supplierActions` 推出來(畫面沒有寫死),已收款的轉帳單同時有「出貨」與「取消訂單」。計畫 Task 53 的測試沒有已收款的單,另外新增測試(B 節)。
+4. **物流的前端檢查跟 guard 一致**(`75b506f`,`validateOrderAction`):guard 的物流 / 單號已改用 `market_visible` + `market_trim`(上面「第 2 階段三支 migration 審查修正」第 7 點),前端原本 `trim()` 之後判斷空字串,去不掉 U+200B,只填零寬字元的物流會送出去再被 `carrier_required` 擋 → 改用 `hasVisibleText`。單號選填,只有看不見的字元時 guard 當成沒填,前端也不擋。
+5. **管理員的查詢多帶店家電話與 `contact_email`**(`da55c0c`,派工說明 `contact_email` 可以在管理後台顯示):`ADMIN_ORDER_COLUMNS` 改成 `market_stores(suppliers(name, phone, contact_email))`,`MarketOrderRow.market_stores.suppliers` 多 `phone?`、`contact_email?`,「查看」加「店家聯絡」(處理客訴要聯絡店家)。供應商的查詢仍是 `ORDER_COLUMNS`,測試釘住不含 `contact_email` / `market_stores` / `suppliers`;消費者頁沒有動。
+6. **時間軸依 `created_at` 排序、比到微秒**:`4efbf5b` 之後同一張單的紀錄嚴格遞增、可能只差 1 微秒,`Date` 只到毫秒,分不出接單與自動補的待匯款;改成把秒以下的位數另外比,不看 id、不看 PostgREST 內嵌回來的順序(計畫第 16312 行的 `localeCompare` 不用)。測試用相差 1 微秒、反著給的三筆紀錄釘住。
+7. **供應商清單分兩次查**(`3fab124`,審查修正第 1 項):計畫的 `fetchSupplierOrders(supplierId)` 是所有狀態共用一次 `limit(200)`、前端再分頁籤 —— 已結束的單一多,舊的「已收款、還沒出貨」會從「待處理」消失、件數也偏少(收了款卻出不了貨)。改成 `fetchSupplierOrders(supplierId, group)`,在伺服器依狀態篩:`active`(新 export `ACTIVE_STATUSES` = `OPEN_STATUSES` + `shipped`)用 `fetchAllPages` 分頁讀完(`created_at`、`id` 新到舊,換頁不重複、不漏);`closed`(`CLOSED_STATUSES`)只抓最新 `ORDER_LIST_LIMIT`(200)張,到上限時分頁寫「已結束(200+)」、清單下面提示「只顯示最新的 200 張已結束的訂單。」。頁面兩個 query,key 是 `["market", "supplier-orders", supplierId, group]`(換供應商登入不看到上一家的快取),動作後兩組都重抓。
+8. **頁面的強化**(每一項都有測試,或在截圖裡確認):
+   - 供應商頁:讀不到供應商帳號、訂單讀取失敗 → 標題 + 原因 + 「重新載入」(計畫只有一行紅字 / 一句「請重新整理」);背景重抓失敗保留清單並提示;還沒讀到不顯示件數(不會寫成 0);外層加 `mx-auto max-w-4xl p-4 md:p-6`(`SupplierLayout` 的主內容區沒有 padding,計畫寫法在 390 寬整頁貼齊左邊;同 `SupplierOrdersPage`);動作鈕與分類鈕 44px(`min-h-11`);頁首照 `resolveEventMails` 寫會寄信的步驟:「你接單、拒單、出貨、取消時,消費者會收到 Email 通知(轉帳單接單後寄的是匯款資訊);確認已收款、標記完成不寄信。」(計畫寫「每一步都寄信」不正確,審查修正第 3 項)。
+   - 視窗:檢查沒過時出錯的欄位 `aria-invalid` + `aria-describedby` + 紅框,焦點移到那一欄;送出中不能關(關掉再打開另一張單,這次回來的「關窗」會把另一張關掉);不是畫面過期的錯誤用 `friendlyDbError` 的中文備援、視窗留著可以再按;確定鈕是「確定」+ 動作,但「確認已收款」寫成「確定已收款」(不會變「確定確認已收款」);轉帳單接單成功提示「訂單 #… 已接單,等消費者匯款(狀態:待匯款)」(資料庫同一個交易就轉成待匯款,不寫「已改成已接單」)(審查修正第 4 項)。
+   - 管理員頁:載入失敗 → 原因 + 「重新載入」(計畫只有 toast,畫面寫「沒有符合的訂單」);換篩選時慢回來的舊查詢(成功或失敗)丟掉;「查看」加物流與單號、店家聯絡;清單到 200 張上限時提示更早的單搜尋不到。
+9. Task 53 Step 2 的失敗訊息:vitest 2.1.9 實際印 `Failed to resolve import "./SupplierMarketOrdersPage"`(計畫寫 `@/lib/market/orderFixtures`;都是實作還不存在)。
+10. 新增測試檔 `src/pages/supplier/SupplierMarketRoutes.test.tsx`(`e7710db`,審查修正第 2(a) 項):用 `App.tsx` 本身渲染(`SupplierRoute`、`SupplierLayout`、分頁列是真的,頁面換 `testRouteStub` 空殼、Supabase 用 `testFakeSupabase`),路徑直接從 `market-notify/handler.ts` 的 `supplierOrdersUrl` 讀出來 —— 新訂單通知信「到後台查看」的連結打得開零售訂單頁、落在「零售市集 › 零售訂單」;店家設定頁也還在。
+
+**B. 測試數字**
+
+- Task 53 Step 4:`Tests  6 passed (6)` → 實作時 **12**,審查修正後 **`Tests  22 passed (22)`**:計畫 6 項;16 種「狀態 × 付款方式」的按鈕對照轉移表(另附一張看得懂的規格表,規格表本身也對照轉移表);已收款的出貨 / 取消與退款提醒;原因 / 物流的 5 種看不見輸入 × 拒單 / 取消 / 出貨;不是畫面過期的錯誤(網路、`one_event_per_order`);訂單讀取失敗;讀不到供應商帳號;呼叫帶 supplierId 與組別;超過上限時舊的已收款單仍在待處理、「200+」與提示;沒到上限不提示;換供應商登入重查;視窗每次從空白開始(用看得見的字測);送出中不能關;確定鈕文字;轉帳接單提示;頁首寄信步驟對照 `market-notify/render.ts` 的 `resolveEventMails`(讀原始碼,Deno 程式不直接 import)。
+- Task 54 跟計畫一樣:Step 2 是 2 failed(`/supplier/market/orders`、`/supplier/market/store`,`Unable to find an accessible element with the role "tab"`),Step 4 `Tests  25 passed (25)`。
+- Task 55 Step 2 跟計畫一樣(頁面 `Failed to resolve import "./AdminMarketOrdersPage"`、`AdminRoutes` 4 failed);Step 4 `Tests  66 passed (66)`(3 + 35 + 28)→ **`Tests  70 passed (70)`**(7 + 35 + 28),審查修正後頁面 **8** 項。頁面測試:計畫的前 2 項(第 2 項另驗物流、店家聯絡、明細)、唯讀三項(16 種組合打開「查看」都只有關閉鈕且從頭到尾沒有寫入 —— 假 client 的 `from` / `rpc` 一被呼叫就丟錯;原始碼不用 `addOrderEvent` / `OrderActionDialog` / `adminActions`、從 `orders.ts` 只 import 讀取用的東西)、時間軸比到微秒、載入失敗、慢回來的舊查詢、到上限的提示。
+- `orders.test.ts` 11 → **14**(A-4、A-5、A-7;出貨 payload 改成完整比對 —— 原本 `toMatchObject` 多送 `tracking_no: ""` 也會綠,審查修正第 2(h) 項)。A-7 那項用照條件篩(`eq` / `in`、排序、`range`、`limit`、一次最多 1000 列)的假資料表:1101 張還沒結束的單(最舊的是已收款轉帳單)+ 300 張比它們都新的已結束單 + 別家的單 → `active` 全部讀到、`closed` 只有最新 200 張、每次查詢都限定自家。
+- `SupplierMarketRoutes.test.tsx` **3** 項(A-10)。
+- 突變驗證(乾淨副本裡改壞再跑):實作時 13 處、審查修正 15 處,共 **28 處全紅**,審查修正後重跑原本 13 處也全紅。審查修正的 15 處:`active` 只抓 200 張、`active` 不在伺服器篩狀態、`App.tsx` 拿掉路由、視窗不清空、送出中可以關、返回鈕沒停用、任何資料庫錯誤都關窗重抓、查詢沒帶 supplierId、queryKey 沒帶 supplierId、供應商 / 管理員到上限不提示、沒填單號也送 `tracking_no`、頁首改回「每一步都寄信」、確定鈕「確定確認已收款」、轉帳接單照寫「已接單」。
+- 全套:`e7710db` 的乾淨副本(`git archive`)vitest 連跑 2 次都是 **115 檔 / 1767 項**全過(含其他實作者同時 commit 的檔;`53b47ab` 時是 114 檔 / 1750 項);tsc 錯誤 **72**、eslint 錯誤 **10**(改到的檔都是 0 error、0 warning),兩種 build 都 exit 0 —— 前台站 bundle 只有供應商零售訂單頁,管理員站只有零售訂單總覽。
+- 畫面:不進 repo 的預覽頁(真的 `SupplierLayout` / `AdminLayout` + 這兩頁,Supabase 換成 repo 的 `createFakeSupabase` 假資料、照查詢的狀態與 limit 回資料,擋掉所有外部網路,不連任何資料庫)用 headless Chrome(自己的 user-data-dir,用完刪掉)在 390×844、1280×800 截圖:兩頁都沒有橫向捲動(`scrollWidth` = 視窗寬)、外部請求 0、寫入 0,console 只有 React Router 既有的 future flag 警告;另外放 250 張比較新的已結束單,待處理照樣是全部 4 張、分頁寫「已結束(200+)」、清單最下面有提示。
+
+**C. 給後續 Task 的注意事項**
+
+- Task 56 Step 1 的 Expected(111 檔 / 1428 項)以實測為準:`e7710db` 時是 115 檔 / 1767 項(含各節勘誤與其他實作者的檔)。
+- Task 56 寫 `docs/DEPLOY.md` 時:管理後台的零售訂單是唯讀的;要取消某張單只能請店家在供應商後台做(或另開 Task 做平台取消)。
+- 通知信「到後台查看」的連結(`market-notify` 的 `/supplier/market/orders`)現在有頁面了,而且有 `SupplierMarketRoutes.test.tsx` 釘住;改信裡的路徑或拿掉路由都會紅。
+- 改 `market-notify` 的 `resolveEventMails`(哪些狀態寄信給消費者)時,`SupplierMarketOrdersPage.test.tsx` 的「頁首寫的寄信步驟」會紅,要回來改供應商頁的說明。
+
+**D. 自查發現、沒有處理(記錄)**
+
+- 已結束的單(供應商)與管理員清單一次最多 200 張、沒有分頁(計畫「風險」第 7 點);管理員搜尋只在已載入的那 200 張裡找(到上限時有提示);管理員「進行中」也是 200 張上限(放量後要改成伺服器分頁)。供應商的還沒結束的單一次全讀(很多時每張單帶明細,清單會變大)。
+- 供應商頁沒有新訂單的即時提醒:靠新訂單信、或切回分頁時 React Query 自動重抓;分類與篩選沒有記在網址(重新整理回到預設分頁)。
+- 唯讀只是畫面不提供:管理員帳號直接打 API 新增 `market_order_events` 仍然可以取消(轉移表與 RLS 允許);要完全禁止得改 migration。
+- 「已結束(200+)」在剛好 200 張時也會帶「+」(只抓 200 張,分不出有沒有更多)。
