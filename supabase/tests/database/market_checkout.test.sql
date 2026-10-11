@@ -33,6 +33,10 @@ SELECT pg_temp.exec_with_claims(pg_temp.jwt('a9100000-0000-4000-8000-00000000000
     ('a9300000-0000-4000-8000-0000000000b1', 'a9200000-0000-4000-8000-00000000000b', '挪威鮭魚', 'seafood', '200g/片', 200, 3, 'frozen', 'approved', true),
     ('a9300000-0000-4000-8000-0000000000b2', 'a9200000-0000-4000-8000-00000000000b', '暫停販售的蝦', 'seafood', '1 盒', 300, NULL, 'frozen', 'approved', false)$q$);
 
+-- 擋下紀錄的基準:正式庫套用、對外開放之後再跑這支時,今天可能已經有真的擋下紀錄;5-9 節比的是本檔造成的增量
+CREATE TEMP TABLE _blk0 ON COMMIT DROP AS
+  SELECT rule, hits FROM public.market_rate_blocks_daily WHERE day = (now() AT TIME ZONE 'Asia/Taipei')::date;
+
 -- ---------------------------------------------------------------------
 -- 1. 限流
 -- ---------------------------------------------------------------------
@@ -155,9 +159,16 @@ SELECT pg_temp.expect('開關關閉:平台管理員可以下單(業主實測用)
   pg_temp.place(pg_temp.jwt('a9100000-0000-4000-8000-000000000003', true), '198.51.100.1',
     pg_temp.co('owner-test@market-test.invalid', jsonb_build_array(pg_temp.item('a2', 1)), '{"a9200000-0000-4000-8000-00000000000a":"cod"}')) ->> 'ok',
   'true');
--- 開關檢查在限流之前:開關關著時被擋的嘗試不寫任何計數(管理員本來就不限流;第 1 節的單元測試只寫 test: 開頭的 bucket)
-SELECT pg_temp.expect('開關關閉被擋的嘗試不寫任何計數(沒有 IP / Email / 電話 / 全站的列)',
-  (SELECT count(*)::text FROM public.market_rate_counters WHERE bucket NOT LIKE 'test:%'), '0');
+-- 開關檢查在限流之前:開關關著時被擋的嘗試不寫任何計數(管理員本來就不限流)。只看這兩次嘗試會用到的 bucket:
+-- 198.51.100.1 是文件用位址、.invalid 是保留網域,真的流量不會有,套用、開放之後再跑時線上已有的計數不算進來;
+-- 開關若跑到限流之後,A 段一定先寫這個 IP 的 ip 列、B 段再寫 Email 的列,看這幾個就夠
+SELECT pg_temp.expect('開關關閉被擋的嘗試不寫任何計數(這個 IP 沒有 ip / ipo 的列、兩個 Email 都沒有 email 的列)',
+  (SELECT count(*)::text FROM public.market_rate_counters
+    WHERE split_part(bucket, '|', 1) IN (
+      SELECT public.market_rate_key(k.kind, k.val, (SELECT value FROM public.app_config WHERE key = 'market_rate_salt'))
+        FROM (VALUES ('ip', '198.51.100.1'), ('ipo', '198.51.100.1'),
+                     ('email', 'closed@market-test.invalid'), ('email', 'owner-test@market-test.invalid')) AS k(kind, val))),
+  '0');
 
 SELECT pg_temp.expect('開關狀態:關閉時 anon 不能下單、管理員可以',
   pg_temp.as_val('anon', pg_temp.anon(), 'SELECT public.market_checkout_status()::text') || '|' ||
@@ -723,8 +734,9 @@ SELECT pg_temp.expect('被擋時那種規則加 1(同一次被同一種的兩條
     (SELECT count(*)::text FROM public.market_rate_counters WHERE bucket LIKE 'blkhit:%' OR bucket LIKE 'blkother:%')),
   '2|0|0');
 SELECT pg_temp.expect('真的下單流程:前面各節被擋下的都依種類記到(Email 2、IP 1、/48 嘗試 1、/48 成單 1、IPv4 成單 1、noip 1;單元測試 test 4)',
-  (SELECT string_agg(rule || '=' || hits, ',' ORDER BY rule) FROM public.market_rate_blocks_daily
-    WHERE day = (now() AT TIME ZONE 'Asia/Taipei')::date AND rule NOT LIKE 'blk%'),
+  (SELECT string_agg(b.rule || '=' || (b.hits - COALESCE(z.hits, 0)), ',' ORDER BY b.rule)
+     FROM public.market_rate_blocks_daily b LEFT JOIN _blk0 z USING (rule)
+    WHERE b.day = (now() AT TIME ZONE 'Asia/Taipei')::date AND b.rule NOT LIKE 'blk%' AND b.hits > COALESCE(z.hits, 0)),
   'email=2,ip=1,ip48=1,ip48o=1,ipo=1,noip=1,test=4');
 SELECT pg_temp.expect('anon、登入者讀不到擋下紀錄、也沒有任何權限;RLS 開著',
   concat_ws('|',
@@ -734,22 +746,23 @@ SELECT pg_temp.expect('anon、登入者讀不到擋下紀錄、也沒有任何�
      OR has_table_privilege('authenticated', 'public.market_rate_blocks_daily', 'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER,MAINTAIN'))::text,
     (SELECT relrowsecurity::text FROM pg_class WHERE oid = 'public.market_rate_blocks_daily'::regclass)),
   'ERR 42501|ERR 42501|false|true');
--- 清理排程的指令實際跑一次(同一個 job 的兩句都要跑得動):先記下前面各節留下幾列,再放幾筆舊資料進去
+-- 清理排程的指令實際跑一次(同一個 job 的兩句都要跑得動):先記下「該留著」的範圍裡有幾列,再放幾筆舊資料進去
+-- (只數該留著的範圍:套用之後再跑時,線上可能有超過 2 天、還沒輪到清理的計數,會在這個交易裡被刪,不能算進去)
 INSERT INTO _ctx SELECT 'cron_before', jsonb_build_object(
-  'counters', (SELECT count(*) FROM public.market_rate_counters),
-  'blocks',   (SELECT count(*) FROM public.market_rate_blocks_daily));
+  'counters', (SELECT count(*) FROM public.market_rate_counters WHERE window_start >= now() - interval '2 days'),
+  'blocks',   (SELECT count(*) FROM public.market_rate_blocks_daily WHERE day >= (now() AT TIME ZONE 'Asia/Taipei')::date - 90));
 INSERT INTO public.market_rate_counters (bucket, window_start, hits) VALUES
   ('cronold:x|1h', now() - interval '3 days', 1), ('cronnew:x|1h', now() - interval '1 day', 1);
 INSERT INTO public.market_rate_blocks_daily (day, rule, hits) VALUES
   ((now() AT TIME ZONE 'Asia/Taipei')::date - 91, 'cronold', 1),
   ((now() AT TIME ZONE 'Asia/Taipei')::date - 90, 'cronkeep', 1);
 DO $$ BEGIN EXECUTE (SELECT command FROM cron.job WHERE jobname = 'ifoodmap-market-rate-cleanup'); END $$;
-SELECT pg_temp.expect('清理排程的指令實際跑得動:3 天前的計數、91 天前的擋下紀錄刪掉;1 天前的計數、剛好 90 天前的紀錄留著;前面各節的列一筆都沒少',
+SELECT pg_temp.expect('清理排程的指令實際跑得動:3 天前的計數、91 天前的擋下紀錄刪掉;1 天前的計數、剛好 90 天前的紀錄留著;2 天內的計數、90 天內的紀錄一筆都沒少',
   concat_ws('|',
     (SELECT string_agg(split_part(bucket, ':', 1), ',' ORDER BY bucket) FROM public.market_rate_counters WHERE bucket LIKE 'cron%'),
     (SELECT string_agg(rule, ',' ORDER BY rule) FROM public.market_rate_blocks_daily WHERE rule LIKE 'cron%'),
-    ((SELECT count(*) FROM public.market_rate_counters WHERE bucket NOT LIKE 'cron%')
+    ((SELECT count(*) FROM public.market_rate_counters WHERE window_start >= now() - interval '2 days' AND bucket NOT LIKE 'cron%')
        = (SELECT (v ->> 'counters')::bigint FROM _ctx WHERE k = 'cron_before'))::text,
-    ((SELECT count(*) FROM public.market_rate_blocks_daily WHERE rule NOT LIKE 'cron%')
+    ((SELECT count(*) FROM public.market_rate_blocks_daily WHERE day >= (now() AT TIME ZONE 'Asia/Taipei')::date - 90 AND rule NOT LIKE 'cron%')
        = (SELECT (v ->> 'blocks')::bigint FROM _ctx WHERE k = 'cron_before'))::text),
   'cronnew|cronkeep|true|true');
