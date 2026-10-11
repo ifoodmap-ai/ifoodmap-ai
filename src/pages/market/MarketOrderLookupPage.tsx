@@ -157,7 +157,7 @@ export default function MarketOrderLookupPage() {
                 {o.store.phone ? (
                   <>
                     ,電話{" "}
-                    <a href={`tel:${o.store.phone}`} className={`text-red-900 underline ${MARKET_FOCUS_RING}`}>
+                    <a href={`tel:${o.store.phone}`} className={`whitespace-nowrap text-red-900 underline ${MARKET_FOCUS_RING}`}>
                       {o.store.phone}
                     </a>
                   </>

@@ -342,6 +342,8 @@ describe("MarketOrderLookupPage:過了自動取消的期限、排程還沒跑到
     const warning = b.getByText(/已超過匯款期限/);
     expect(warning).toHaveTextContent(`${EXPIRED},電話 02-2345-6789。`);
     expect(within(warning).getByRole("link", { name: "02-2345-6789" })).toHaveAttribute("href", "tel:02-2345-6789");
+    // 電話號碼不要在「-」那裡斷成兩行(390px 實測會斷)
+    expect(within(warning).getByRole("link", { name: "02-2345-6789" })).toHaveClass("whitespace-nowrap");
     expect(container.textContent).not.toContain("0001234-5678901");
     expect(container.textContent).not.toContain("郵局");
     expect(container.innerHTML).not.toContain("0001234-5678901");
