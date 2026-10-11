@@ -52,6 +52,17 @@ const json = (body: unknown, status = 200) =>
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const TOKEN_RE = /^[A-Za-z0-9_-]{43}$/;
 
+/**
+ * 共享密鑰的常數時間比對:兩邊先做 sha256(一律 64 個 hex 字,長度不透露),再逐字 XOR 累加 ——
+ * 比對時間跟密鑰對了幾個字、長度多少都無關(原本用 !==,遇到第一個不同的字就停)。
+ */
+export const secretMatches = async (given: string, expected: string): Promise<boolean> => {
+  const [a, b] = await Promise.all([sha256Hex(given), sha256Hex(expected)]);
+  let diff = 0;
+  for (let i = 0; i < a.length; i += 1) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+};
+
 /** token 片段至少幾個字就遮:少於 8 字的片段最多透露 42 bits(token 有 256 bits),剩下的猜不出來 */
 const TOKEN_FRAGMENT_MIN = 8;
 
@@ -273,7 +284,7 @@ export const createMarketNotifyHandler =
     if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
     if (req.method !== "POST") return json({ message: "Method not allowed" }, 405);
     if (!deps.secret) return json({ message: "NOTIFY_SECRET 未設定" }, 503);
-    if ((req.headers.get("authorization") ?? "") !== `Bearer ${deps.secret}`) return json({ message: "Unauthorized" }, 401);
+    if (!(await secretMatches(req.headers.get("authorization") ?? "", `Bearer ${deps.secret}`))) return json({ message: "Unauthorized" }, 401);
 
     const body = (await req.json().catch(() => null)) as Row | null;
     const live = deps.isLive();

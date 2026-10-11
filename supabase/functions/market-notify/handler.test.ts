@@ -6,7 +6,7 @@ import type { MailConfig, SendMail } from "../_shared/supplier-mail.ts";
 import { formatOrderNo } from "../../../src/lib/order-number.ts";
 import { sha256Hex } from "../ai/crypto.ts";
 import { marketLiveFromEnv } from "./gate.ts";
-import { createMarketNotifyHandler, EVENT_COLUMNS, ITEM_COLUMNS, ORDER_COLUMNS } from "./handler.ts";
+import { createMarketNotifyHandler, EVENT_COLUMNS, ITEM_COLUMNS, ORDER_COLUMNS, secretMatches } from "./handler.ts";
 
 const SECRET = "notify-secret";
 const TOKEN = `tok_${"x".repeat(39)}`; // 43 字元 base64url
@@ -106,6 +106,33 @@ describe("market-notify:驗證", () => {
     expect((await s.call({ kind: "event", event_id: EV(1) }, "Bearer wrong")).status).toBe(401);
     expect((await s.call(null, `Bearer ${SECRET}`, "GET")).status).toBe(405);
     expect(s.send).not.toHaveBeenCalled();
+  });
+
+  // 審查追加:密鑰改成常數時間比對(secretMatches);只對開頭、長度不同、大小寫不同、少了 Bearer 一律擋
+  // (計畫規定密鑰不對回 401;token 對不上才是 403)
+  it("密鑰只對開頭、多一個字、重複兩次、少一個字、大小寫不同、沒有 Bearer、空的:都 401、都不寄", async () => {
+    const s = setup();
+    for (const auth of [
+      `Bearer ${SECRET.slice(0, 6)}`,
+      `Bearer ${SECRET}x`,
+      `Bearer ${SECRET}${SECRET}`,
+      `Bearer ${SECRET.slice(0, -1)}`,
+      `Bearer ${SECRET.toUpperCase()}`,
+      `bearer ${SECRET}`,
+      SECRET,
+      "",
+    ]) {
+      expect((await s.call({ kind: "event", event_id: EV(2) }, auth)).status, JSON.stringify(auth)).toBe(401);
+    }
+    expect(s.send).not.toHaveBeenCalled();
+    expect((await s.call({ kind: "event", event_id: EV(2) })).status).toBe(200); // 對照組:完全相同才過
+  });
+
+  it("secretMatches:完全相同才是 true(兩邊先 sha256 再逐字比,長度不同也照樣跑完)", async () => {
+    expect(await secretMatches("Bearer abc", "Bearer abc")).toBe(true);
+    for (const given of ["Bearer ab", "Bearer abcd", "Bearer abC", "", "Bearer abc ".repeat(50)]) {
+      expect(await secretMatches(given, "Bearer abc"), JSON.stringify(given)).toBe(false);
+    }
   });
 
   it("kind 不對、id 格式不對 400", async () => {
