@@ -57,6 +57,19 @@ const refundWarning = ({ order, to }: OrderActionTarget): string | null => {
   return null;
 };
 
+/** 視窗裡確定鈕的字:「確定」+ 動作;「確認已收款」本身有「確認」,寫成「確定已收款」 */
+const confirmText = (to: OrderStatus, label: string): string => (to === "paid" ? "確定已收款" : `確定${label}`);
+
+/**
+ * 成功提示照資料庫實際的狀態寫:轉帳單接單時,同一個交易就自動轉成「待匯款」(apply trigger),
+ * 所以不寫「已改成已接單」。
+ */
+const successText = ({ order, to }: OrderActionTarget): string => {
+  const no = formatOrderNo(order.id);
+  if (to === "confirmed" && order.payment_method === "transfer") return `訂單 ${no} 已接單,等消費者匯款(狀態:待匯款)`;
+  return `訂單 ${no} 已改成「${ORDER_STATUS_LABEL[to]}」`;
+};
+
 /** validateOrderAction 的訊息是哪一欄的(標 aria-invalid、移焦點用) */
 const fieldOf = (message: string): "reason" | "carrier" | "tracking" =>
   message.startsWith("物流單號") ? "tracking" : message.includes("物流") ? "carrier" : "reason";
@@ -107,7 +120,7 @@ export default function OrderActionDialog({ target, onClose, onChanged }: OrderA
     setBusy(true);
     try {
       await addOrderEvent(target.order, target.to, input);
-      toast.success(`訂單 ${formatOrderNo(target.order.id)} 已改成「${ORDER_STATUS_LABEL[target.to]}」`);
+      toast.success(successText(target));
       setBusy(false);
       onClose();
       onChanged();
@@ -194,7 +207,7 @@ export default function OrderActionDialog({ target, onClose, onChanged }: OrderA
                 disabled={busy}
                 onClick={() => void submit()}
               >
-                確定{meta.label}
+                {confirmText(target.to, meta.label)}
               </Button>
             </DialogFooter>
           </>

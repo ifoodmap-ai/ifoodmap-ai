@@ -3,14 +3,26 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { calls } = vi.hoisted(() => ({
-  calls: [] as Array<{ table: string; op: string; columns?: string; payload?: unknown; filters: Array<[string, string, unknown]> }>,
+type Call = {
+  table: string;
+  op: string;
+  columns?: string;
+  payload?: unknown;
+  filters: Array<[string, string, unknown]>;
+  order: Array<[string, boolean]>;
+  limit?: number;
+  range?: [number, number];
+};
+const { calls, respond } = vi.hoisted(() => ({
+  calls: [] as Call[],
+  /** null = 一律回空陣列;個別測試換成依條件回資料的假資料表 */
+  respond: { current: null as null | ((call: Call) => { data: unknown; error: unknown }) },
 }));
 
 vi.mock("@/integrations/supabase/client", () => ({
   supabase: {
     from: (table: string) => {
-      const call = { table, op: "select", columns: undefined as string | undefined, payload: undefined as unknown, filters: [] as Array<[string, string, unknown]> };
+      const call: Call = { table, op: "select", filters: [], order: [] };
       calls.push(call);
       const b = {
         select: (columns?: string) => {
@@ -30,9 +42,20 @@ vi.mock("@/integrations/supabase/client", () => ({
           call.filters.push(["in", c, v]);
           return b;
         },
-        order: () => b,
-        limit: () => b,
-        then: (ok: (v: unknown) => unknown) => Promise.resolve({ data: [], error: null }).then(ok),
+        order: (c: string, o: { ascending: boolean }) => {
+          call.order.push([c, o.ascending]);
+          return b;
+        },
+        limit: (n: number) => {
+          call.limit = n;
+          return b;
+        },
+        range: (from: number, to: number) => {
+          call.range = [from, to];
+          return b;
+        },
+        then: (ok: (v: unknown) => unknown) =>
+          Promise.resolve(respond.current ? respond.current(call) : { data: [], error: null }).then(ok),
       };
       return b;
     },
@@ -46,6 +69,7 @@ import {
   fetchSupplierOrders,
   MARKET_TRANSITIONS,
   ORDER_COLUMNS,
+  ORDER_LIST_LIMIT,
   ORDER_STATUS_LABEL,
   ORDER_STATUSES,
   supplierActions,
@@ -61,7 +85,26 @@ const block = (name: string) => {
 
 beforeEach(() => {
   calls.length = 0;
+  respond.current = null;
 });
+
+/** 假資料表:照查詢條件篩(eq / in)、排序、range、limit,一次最多回 1000 列(= Supabase 的 max rows) */
+const serve = (rows: Array<Record<string, unknown>>, call: Call) => {
+  let out = rows.filter((r) =>
+    call.filters.every(([op, col, v]) => (op === "eq" ? r[col] === v : op === "in" ? (v as unknown[]).includes(r[col]) : true)),
+  );
+  out = [...out].sort((a, b) => {
+    for (const [col, asc] of call.order) {
+      const x = String(a[col]);
+      const y = String(b[col]);
+      if (x !== y) return (x < y ? -1 : 1) * (asc ? 1 : -1);
+    }
+    return 0;
+  });
+  if (call.range) out = out.slice(call.range[0], call.range[1] + 1);
+  if (call.limit !== undefined) out = out.slice(0, call.limit);
+  return out.slice(0, 1000);
+};
 
 describe("跟 migration 一致", () => {
   it("狀態清單", () => {
@@ -150,11 +193,18 @@ describe("寫入與查詢", () => {
 
   it("出貨帶物流與單號(去頭尾空白;沒單號就不送);拒單帶原因", async () => {
     await addOrderEvent({ id: "o1", status: "confirmed" }, "shipped", { carrier: " 黑貓 ", trackingNo: " 9001 " });
-    expect(calls[0].payload).toMatchObject({ payload: { carrier: "黑貓", tracking_no: "9001" } });
+    expect(calls[0].payload).toEqual({
+      order_id: "o1",
+      from_status: "confirmed",
+      to_status: "shipped",
+      note: null,
+      payload: { carrier: "黑貓", tracking_no: "9001" },
+    });
+    // 完整比對:沒填單號時 payload 裡連 tracking_no 這個 key 都不能有(多送 tracking_no: "" 也要紅)
     await addOrderEvent({ id: "o1", status: "confirmed" }, "shipped", { carrier: "自行配送", trackingNo: "" });
-    expect(calls[1].payload).toMatchObject({ payload: { carrier: "自行配送" } });
+    expect(calls[1].payload).toEqual({ order_id: "o1", from_status: "confirmed", to_status: "shipped", note: null, payload: { carrier: "自行配送" } });
     await addOrderEvent({ id: "o2", status: "pending" }, "rejected", { reason: " 缺貨 " });
-    expect(calls[2].payload).toMatchObject({ note: "缺貨", payload: {} });
+    expect(calls[2].payload).toEqual({ order_id: "o2", from_status: "pending", to_status: "rejected", note: "缺貨", payload: {} });
   });
 
   it("管理員總覽的篩選", async () => {
@@ -167,9 +217,44 @@ describe("寫入與查詢", () => {
   it("店家的電話與 contact_email 只有管理員的查詢會帶(處理客訴用);供應商的查詢不碰店家資料", async () => {
     await fetchAdminOrders("all");
     expect(calls[0].columns).toContain("market_stores(suppliers(name, phone, contact_email))");
-    await fetchSupplierOrders("a9200000-0000-4000-8000-00000000000a");
-    expect(calls[1].columns).toBe(ORDER_COLUMNS);
-    expect(calls[1].columns).not.toMatch(/contact_email|market_stores|suppliers/);
-    expect(calls[1].filters).toEqual([["eq", "supplier_id", "a9200000-0000-4000-8000-00000000000a"]]);
+    await fetchSupplierOrders("a9200000-0000-4000-8000-00000000000a", "active");
+    await fetchSupplierOrders("a9200000-0000-4000-8000-00000000000a", "closed");
+    for (const c of calls.slice(1)) {
+      expect(c.columns).toBe(ORDER_COLUMNS);
+      expect(c.columns).not.toMatch(/contact_email|market_stores|suppliers/);
+    }
+  });
+
+  it("供應商:還沒結束的單一張都不漏(在伺服器依狀態篩、分頁讀完,不跟已結束的單共用上限);已結束的只抓最新 200 張", async () => {
+    const SUP = "a9200000-0000-4000-8000-00000000000a";
+    const at = (n: number) => new Date(Date.UTC(2026, 9, 1) + n * 60_000).toISOString();
+    const ACTIVE = ["pending", "confirmed", "awaiting_payment", "paid", "shipped"];
+    const CLOSED = ["completed", "rejected", "cancelled"];
+    const rows: Array<Record<string, unknown>> = [
+      // 最舊的一張:已收款、還沒出貨的轉帳單 —— 共用上限時最先被擠掉(收了款卻出不了貨)
+      { id: "old-paid", supplier_id: SUP, status: "paid", payment_method: "transfer", created_at: at(0) },
+      // 1100 張還沒結束的單(超過一頁 1000 列)
+      ...Array.from({ length: 1100 }, (_, i) => ({ id: `a-${String(i + 1).padStart(4, "0")}`, supplier_id: SUP, status: ACTIVE[i % 5], payment_method: "transfer", created_at: at(i + 1) })),
+      // 300 張已結束的單,全部比還沒結束的新
+      ...Array.from({ length: 300 }, (_, i) => ({ id: `c-${String(i + 1).padStart(4, "0")}`, supplier_id: SUP, status: CLOSED[i % 3], payment_method: "cod", created_at: at(5000 + i) })),
+      // 別家的單不能混進來
+      { id: "other", supplier_id: "a9200000-0000-4000-8000-00000000000b", status: "pending", payment_method: "cod", created_at: at(9999) },
+    ];
+    respond.current = (call) => ({ data: serve(rows, call), error: null });
+
+    const active = await fetchSupplierOrders(SUP, "active");
+    expect(active).toHaveLength(1101);
+    expect(active.map((o) => o.id)).toContain("old-paid");
+    expect(new Set(active.map((o) => o.status))).toEqual(new Set(ACTIVE));
+    expect(active[0].id).toBe("a-1100");
+    expect(active[active.length - 1].id).toBe("old-paid");
+
+    const closed = await fetchSupplierOrders(SUP, "closed");
+    expect(closed).toHaveLength(ORDER_LIST_LIMIT);
+    expect(closed.every((o) => CLOSED.includes(o.status))).toBe(true);
+    expect(closed[0].id).toBe("c-0300");
+
+    // 每一次查詢都限定自家
+    expect(calls.every((c) => c.filters.some(([op, col, v]) => op === "eq" && col === "supplier_id" && v === SUP))).toBe(true);
   });
 });

@@ -4,8 +4,9 @@
 //    (market_orders 的 status CHECK、market_transition_rules()、market_order_status_label());
 //    orders.test.ts 解析 @market-statuses / @market-transitions 標記比對,改一邊一定要改另一邊。
 // 狀態只能經 market_order_events 改變:前端只「新增一筆紀錄」,資料庫的 guard 再檢查身分、目前狀態(畫面過期會擋)、原因、物流。
+import { fetchAllPages } from "@/lib/metrics";
 import { LIMITS, type PaymentMethod, type Temperature, type TwCity } from "./constants";
-import { marketDb, unwrap } from "./db";
+import { MarketDbError, marketDb, unwrap, type PgResult } from "./db";
 import { hasVisibleText } from "./productForm";
 
 export const ORDER_STATUSES = [
@@ -33,6 +34,10 @@ export const ORDER_STATUS_LABEL: Record<OrderStatus, string> = {
 
 /** 還要有人處理的狀態(供應商「待處理」、管理員「進行中」) */
 export const OPEN_STATUSES: readonly OrderStatus[] = ["pending", "confirmed", "awaiting_payment", "paid"];
+/** 還沒結束的單(供應商「待處理」+「已出貨」) */
+export const ACTIVE_STATUSES: readonly OrderStatus[] = [...OPEN_STATUSES, "shipped"];
+/** 已結束的單 */
+export const CLOSED_STATUSES: readonly OrderStatus[] = ["completed", "rejected", "cancelled"];
 
 /** 供應商、管理員、系統共用的轉移表;payment = 只限哪一種付款方式 */
 export const MARKET_TRANSITIONS: ReadonlyArray<{ from: OrderStatus; to: OrderStatus; payment: "any" | PaymentMethod }> = [
@@ -153,14 +158,48 @@ const ADMIN_ORDER_COLUMNS = `${ORDER_COLUMNS}, market_stores(suppliers(name, pho
 /** 一次最多抓幾張(訂單多到這個數字時要加分頁 —— 見計畫「風險」) */
 export const ORDER_LIST_LIMIT = 200;
 
-export const fetchSupplierOrders = async (supplierId: string): Promise<MarketOrderRow[]> =>
-  unwrap(
-    await marketDb<MarketOrderRow[]>("market_orders")
+/** 供應商清單分兩次查:還沒結束的(active)、已結束的(closed) */
+export type SupplierOrderGroup = "active" | "closed";
+
+/** db.ts 的 MarketQuery 沒有 range:分頁讀完用得到的那一小段另外描述(同 admin.ts 的 pagedDb,loose cast,不用 any) */
+interface RangeQuery<T> extends PromiseLike<PgResult<T>> {
+  eq(column: string, value: unknown): RangeQuery<T>;
+  in(column: string, values: readonly unknown[]): RangeQuery<T>;
+  order(column: string, options: { ascending: boolean }): RangeQuery<T>;
+  range(from: number, to: number): RangeQuery<T>;
+}
+const rangeDb = <T>(table: string) => marketDb<T>(table) as never as { select(columns: string): RangeQuery<T> };
+
+/**
+ * 供應商自己的零售訂單,在伺服器依狀態分兩組查(RLS 另外只放行自家的單):
+ * - active(還沒結束):一張都不能漏 —— 跟已結束的單共用上限時,舊的「已收款、還沒出貨」會被新單擠出清單,收了款卻出不了貨。
+ *   分頁讀完(PostgREST 一次最多回 1000 列),同時間再用 id 排,換頁不重複、不漏。
+ * - closed(已結束):只抓最新 ORDER_LIST_LIMIT 張(畫面到上限時會提示)。
+ */
+export const fetchSupplierOrders = async (supplierId: string, group: SupplierOrderGroup): Promise<MarketOrderRow[]> => {
+  if (group === "closed") {
+    return unwrap(
+      await marketDb<MarketOrderRow[]>("market_orders")
+        .select(ORDER_COLUMNS)
+        .eq("supplier_id", supplierId)
+        .in("status", CLOSED_STATUSES)
+        .order("created_at", { ascending: false })
+        .order("id", { ascending: false })
+        .limit(ORDER_LIST_LIMIT),
+    );
+  }
+  const res = await fetchAllPages((from, to) =>
+    rangeDb<MarketOrderRow[]>("market_orders")
       .select(ORDER_COLUMNS)
       .eq("supplier_id", supplierId)
+      .in("status", ACTIVE_STATUSES)
       .order("created_at", { ascending: false })
-      .limit(ORDER_LIST_LIMIT),
+      .order("id", { ascending: false })
+      .range(from, to),
   );
+  if (res.error) throw new MarketDbError(res.error);
+  return res.data;
+};
 
 export type AdminOrderFilter = "open" | "shipped" | "closed" | "all";
 
