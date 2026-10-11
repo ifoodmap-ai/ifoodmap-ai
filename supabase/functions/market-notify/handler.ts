@@ -166,12 +166,17 @@ const recordNotification = async (deps: MarketNotifyDeps, audience: MarketAudien
   if (error) deps.log("error", { fn: "market-notify", step: "notifications", audience, error: error.message });
 };
 
-/** log / 紀錄裡的 Email 遮罩:帳號只留第一個字,網域照留(看得出是不是打錯網域);空的回 null */
-const maskEmail = (email: string): string | null => {
+/**
+ * log / 紀錄裡的 Email 遮罩:帳號只留第一個字、網域只留前 3 個字(「王***@exa…」);空的回 null。
+ * 店家的 contact_email 沒有格式限制,填進去的若是地址、電話,不能整段留在 log 與 notifications。
+ */
+export const maskEmail = (email: string): string | null => {
   if (!email) return null;
   const first = Array.from(email)[0];
   const at = email.lastIndexOf("@");
-  return at > 0 ? `${first}***${email.slice(at, at + 100)}` : `${first}***`;
+  if (at <= 0) return `${first}***`;
+  const domain = Array.from(email.slice(at + 1));
+  return `${first}***@${domain.slice(0, 3).join("")}${domain.length > 3 ? "…" : ""}`;
 };
 
 /**

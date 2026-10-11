@@ -11,6 +11,7 @@ import {
   createMarketNotifyHandler,
   EVENT_COLUMNS,
   ITEM_COLUMNS,
+  maskEmail,
   ORDER_COLUMNS,
   secretMatches,
   STORE_COLUMNS,
@@ -485,14 +486,33 @@ describe("market-notify:狀態紀錄", () => {
     expect(s.send).not.toHaveBeenCalled();
     expect(s.db.tables.notifications).toHaveLength(2);
     for (const n of s.db.tables.notifications) {
-      expect(n).toMatchObject({ recipient: "王***@example.com>", channel: "email", status: "failed", sent_at: null });
+      expect(n).toMatchObject({ recipient: "王***@exa…", channel: "email", status: "failed", sent_at: null });
       expect(String(n.message)).toContain("(沒寄:買家 Email 格式不對)");
     }
     expect(s.db.tables.notifications[0].title).toBe("訂單已送出(共 2 家店)— iFoodmap 食材市集");
-    expect(s.log).toHaveBeenCalledWith("error", expect.objectContaining({ step: "placed", recipient: "王***@example.com>" }));
-    expect(s.log).toHaveBeenCalledWith("error", expect.objectContaining({ step: "event", kind: "consumer_confirmed", recipient: "王***@example.com>" }));
+    expect(s.log).toHaveBeenCalledWith("error", expect.objectContaining({ step: "placed", recipient: "王***@exa…" }));
+    expect(s.log).toHaveBeenCalledWith("error", expect.objectContaining({ step: "event", kind: "consumer_confirmed", recipient: "王***@exa…" }));
     // 帳號部分只留第一個字
     expect(JSON.stringify(s.log.mock.calls) + JSON.stringify(s.db.tables.notifications)).not.toContain("小明<buyer");
+  });
+
+  // 第 3 輪審查:原本保留 @ 之後最多 100 字,店家的 contact_email 沒有格式限制,亂填的地址、電話會留在 log
+  it("maskEmail:帳號只留第一個字、網域只留前 3 個字", () => {
+    expect(maskEmail("王小明<buyer@example.com>")).toBe("王***@exa…");
+    expect(maskEmail("a@b@台北市信義區市府路 1 號 王小明 0912-345-678")).toBe("a***@台北市…");
+    expect(maskEmail("0912345678")).toBe("0***");
+    expect(maskEmail("x@ab")).toBe("x***@ab");
+    expect(maskEmail("\u{1F600}x@example.com")).toBe("\u{1F600}***@exa…");
+    expect(maskEmail("")).toBeNull();
+  });
+
+  it("店家把地址、電話填進聯絡信箱:log 與「沒寄」紀錄只留很短一段", async () => {
+    const s = setup({ live: true });
+    s.db.tables.suppliers[0].contact_email = "a@b@台北市信義區市府路 1 號 王小明 0912-345-678";
+    await s.call({ kind: "event", event_id: EV(1) });
+    expect(s.db.tables.notifications[0]).toMatchObject({ recipient: "a***@台北市…", status: "failed" });
+    const dump = JSON.stringify(s.log.mock.calls) + JSON.stringify(s.db.tables.notifications);
+    for (const leak of ["信義區", "市府路", "0912", "王小明 "]) expect(dump, leak).not.toContain(leak);
   });
 
   it("店家聯絡信箱格式不對(不是空的):跳過、記 log 與「沒寄」紀錄;沒有填的也留紀錄", async () => {
