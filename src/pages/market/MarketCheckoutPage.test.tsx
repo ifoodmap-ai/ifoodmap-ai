@@ -1,8 +1,9 @@
 // /market/checkout:欄位驗證(錯誤在欄位旁、焦點移過去)、配送縣市決定哪些店能結帳、付款方式、送出內容、成功導到查詢頁、失敗訊息。
 // 檔尾另外釘住:錯誤訊息一律用 checkout.ts 的對照、離線 / 載入失敗不顯示表單、已下架的商品要讓人看到、店家不收的付款方式不會送出去。
-import { act, cleanup, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { onlineManager } from "@tanstack/react-query";
+import { onlineManager, QueryClientProvider } from "@tanstack/react-query";
+import { MemoryRouter, Route, Routes, useNavigate } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createMemoryStorage } from "@/test/memory-storage";
 
@@ -23,7 +24,7 @@ import { TERMS_VERSION } from "@/lib/market/legal";
 import { BEEF, CABBAGE, SALMON, STORE_A, SUPPLIER_A, SUPPLIER_B } from "@/lib/market/testFixtures";
 import { cartStore } from "@/lib/market/useCart";
 import MarketCheckoutPage from "./MarketCheckoutPage";
-import { renderMarketRoute } from "./testUtils";
+import { newTestQueryClient, renderMarketRoute } from "./testUtils";
 
 const TOKEN = `tok_${"x".repeat(39)}`;
 const renderCheckout = () =>
@@ -228,5 +229,64 @@ describe("MarketCheckoutPage:錯誤對照、離線與載入失敗、下架商品
     await userEvent.click(screen.getByRole("button", { name: /送出訂單/ }));
     expect(placeOrder).toHaveBeenCalledTimes(2);
     expect(vi.mocked(placeOrder).mock.calls[1][0].payments).toEqual({ [SUPPLIER_A]: "cod", [SUPPLIER_B]: "cod" });
+  });
+
+  it("每個欄位都有 autocomplete(備註沒有對應的自動填入,明講 off)", async () => {
+    renderCheckout();
+    expect(await screen.findByLabelText("收件人姓名")).toHaveAttribute("autocomplete", "name");
+    expect(screen.getByLabelText("電話")).toHaveAttribute("autocomplete", "tel");
+    expect(screen.getByLabelText(/^Email/)).toHaveAttribute("autocomplete", "email");
+    expect(screen.getByLabelText("收件縣市")).toHaveAttribute("autocomplete", "address-level1");
+    expect(screen.getByLabelText(/^收件地址/)).toHaveAttribute("autocomplete", "street-address");
+    expect(screen.getByLabelText(/^備註/)).toHaveAttribute("autocomplete", "off");
+  });
+
+  it("下單開關查不到:表單照樣顯示但先講沒辦法確認,可以重新確認;確認是關著就換成還沒開放的說明", async () => {
+    vi.mocked(fetchCheckoutStatus).mockRejectedValueOnce(new Error("network")).mockResolvedValueOnce({ open: false, can_order: false });
+    renderCheckout();
+    expect(await screen.findByText("沒辦法確認線上訂購是否開放,請檢查網路;送出訂單時會再確認一次。")).toBeInTheDocument();
+    expect(screen.getByLabelText("收件人姓名")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "重新確認" }));
+    expect(await screen.findByText(checkoutErrorMessage({ ok: false, code: "MARKET_CLOSED" }, () => ""))).toBeInTheDocument();
+    expect(screen.queryByLabelText("收件人姓名")).toBeNull();
+  });
+
+  it("送出時才知道還沒開放(MARKET_CLOSED):重新確認開關,表單換成還沒開放的說明;購物車不動", async () => {
+    vi.mocked(fetchCheckoutStatus).mockResolvedValueOnce({ open: true, can_order: true }).mockResolvedValue({ open: false, can_order: false });
+    vi.mocked(placeOrder).mockResolvedValue({ ok: false, code: "MARKET_CLOSED" });
+    renderCheckout();
+    await fill();
+    await agreeAndSubmit();
+    await waitFor(() => expect(screen.queryByLabelText("收件人姓名")).toBeNull());
+    expect(screen.getByText(checkoutErrorMessage({ ok: false, code: "MARKET_CLOSED" }, () => ""))).toBeInTheDocument();
+    expect(fetchCheckoutStatus).toHaveBeenCalledTimes(2);
+    expect(cartStore.get()).toHaveLength(3);
+  });
+
+  it("成功後用 replace 進查詢頁:按上一頁回到結帳之前那一頁,不會回到已經送出的結帳頁", async () => {
+    vi.mocked(placeOrder).mockResolvedValue({ ok: true, token: TOKEN, checkout_id: "c1", orders: [] });
+    const Back = () => {
+      const navigate = useNavigate();
+      return (
+        <button type="button" onClick={() => navigate(-1)}>
+          上一頁
+        </button>
+      );
+    };
+    render(
+      <QueryClientProvider client={newTestQueryClient()}>
+        <MemoryRouter initialEntries={["/market/cart", "/market/checkout"]} initialIndex={1}>
+          <Routes>
+            <Route path="/market/cart" element={<p>購物車頁</p>} />
+            <Route path="/market/checkout" element={<MarketCheckoutPage />} />
+            <Route path="/market/orders/:token" element={<Back />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    await fill();
+    await agreeAndSubmit();
+    await userEvent.click(await screen.findByRole("button", { name: "上一頁" }));
+    expect(await screen.findByText("購物車頁")).toBeInTheDocument();
   });
 });

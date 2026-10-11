@@ -122,6 +122,8 @@ export default function MarketCheckoutPage() {
       if (r.ok === false) {
         setSubmitError(checkoutErrorMessage(r, storeNameOf));
         if (REFETCH_CODES.includes(r.code)) await queryClient.invalidateQueries({ queryKey: ["market", "cart-products"] });
+        // 開關在這頁打開之後被關掉了:重新確認,畫面換成「還沒開放」的說明(不留著一張送不出去的表單)
+        if (r.code === "MARKET_CLOSED") await queryClient.invalidateQueries({ queryKey: ["market", "checkout-status"] });
         return;
       }
       cartStore.remove(ready.flatMap((g) => g.lines.map((l) => l.product.id)));
@@ -171,6 +173,15 @@ export default function MarketCheckoutPage() {
   return (
     <div className="mx-auto max-w-3xl px-4 py-6">
       <h1 className="mb-4 text-2xl font-bold text-slate-900">結帳</h1>
+      {/* 開關查不到時表單照樣給填(伺服器送出時會再確認),但先講清楚,不要讓人填完才知道還沒開放 */}
+      {status.isLoadingError ? (
+        <p role="status" className="mb-4 flex flex-wrap items-center gap-x-2 rounded-lg border border-amber-300 bg-amber-50 px-3 text-sm text-amber-900">
+          沒辦法確認線上訂購是否開放,請檢查網路;送出訂單時會再確認一次。
+          <button type="button" onClick={() => void status.refetch()} className={`min-h-11 font-semibold underline ${MARKET_FOCUS_RING}`}>
+            重新確認
+          </button>
+        </p>
+      ) : null}
       {products.isRefetchError ? (
         <div className="mb-4">
           <MarketStaleNotice onRetry={() => void products.refetch()} />
@@ -225,7 +236,7 @@ export default function MarketCheckoutPage() {
             <label htmlFor="checkout-note" className="mb-1 block text-sm font-medium">
               備註(選填,例如:請放管理室)
             </label>
-            <textarea {...field("note")} rows={2} maxLength={LIMITS.buyerNote} value={buyer.note} onChange={(e) => set("note", e.target.value)} className={`${INPUT} py-2`} />
+            <textarea {...field("note")} autoComplete="off" rows={2} maxLength={LIMITS.buyerNote} value={buyer.note} onChange={(e) => set("note", e.target.value)} className={`${INPUT} py-2`} />
             <FieldError id="checkout-note-error" message={errors.note} />
           </div>
         </fieldset>
