@@ -324,3 +324,24 @@ SELECT pg_temp.expect('原因頭尾的全形空白、零寬字元會去掉(紀�
      JOIN public.market_order_events e ON e.order_id = o.id AND e.to_status = 'rejected'
     WHERE o.id = 'a9600000-0000-4000-8000-000000000008'),
   'rejected|今日停止接單|今日停止接單');
+-- 4-4 身分:沒有 sub 的 authenticated JWT 不能操作(第 1 階段第 2 輪複審的同類問題:用 auth.uid() 判斷會被當成 system);
+--     service_role 與資料庫擁有者直接寫(沒有 JWT)= system
+SELECT pg_temp.mk_order('a9600000-0000-4000-8000-000000000009', 'a9200000-0000-4000-8000-00000000000a', 'transfer');
+SELECT pg_temp.expect('沒有 sub 的 authenticated JWT 不能操作(不會被當成 system)',
+  pg_temp.as_exec('authenticated', '{"role":"authenticated"}', $q$
+    INSERT INTO public.market_order_events (order_id, from_status, to_status)
+    VALUES ('a9600000-0000-4000-8000-000000000009', 'pending', 'confirmed')$q$),
+  'ERR 42501:not_order_party');
+SELECT pg_temp.expect('service_role(沒有登入者)接單:身分 system、沒有 actor_id',
+  pg_temp.as_val('service_role', '{"role":"service_role"}', $q$
+    WITH e AS (INSERT INTO public.market_order_events (order_id, from_status, to_status)
+               VALUES ('a9600000-0000-4000-8000-000000000009', 'pending', 'confirmed')
+               RETURNING actor_role || '/' || COALESCE(actor_id::text, '-') AS r)
+    SELECT r FROM e$q$),
+  'system/-');
+SELECT pg_temp.expect('資料庫擁有者直接寫(沒有 JWT)也是 system:待匯款 → 已收款',
+  pg_temp.as_val('postgres', '', $q$
+    WITH e AS (INSERT INTO public.market_order_events (order_id, from_status, to_status)
+               VALUES ('a9600000-0000-4000-8000-000000000009', 'awaiting_payment', 'paid') RETURNING actor_role)
+    SELECT actor_role FROM e$q$),
+  'system');
