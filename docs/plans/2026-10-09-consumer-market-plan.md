@@ -18103,3 +18103,25 @@ gate / render / handler / index 與 `config.toml` 先照計畫的程式碼區塊
 
 - market-notify vitest:**4 檔 / 117 項**(gate 8、send 11、render 46、handler 52;上一節 107 項)→ Task 42 Step 4 的 Expected 改成 **`Tests  117 passed (117)`**;「F. 共用指令與基準數字」第 2、3 階段的總數比計畫多 **87 項、1 檔**。
 - 全套:`7c21f0b` 的乾淨副本(`git archive`)連跑兩次 **116 檔 / 1853 項**全過;tsc strict 兩份設定 0 error,eslint 沒有輸出。
+
+### 2026-10-12:hardening 第四輪審查 Minor(commit `802e1a8`,分支 `market`)
+
+第四輪審查沒有 Critical、Important,可以套用並開放;下面幾項 Minor 趁 20261012100000 還沒套用直接改原檔。先寫測試、看到失敗才改。**以 repo 為準。**
+
+1. **防飢餓(審查 E4)**:候選加上「至少有一筆狀態紀錄」(沒有紀錄的單 guard 一定擋,排在前面只會一直失敗);每次最多看 50 張候選(`c_scan`)、逐張嘗試,成功取消 5 張(`c_per_run`)就停。兩個常數放在 72 旁邊並註明理由。
+2. **`SET lock_timeout = '5s'`**(函式的 SET 子句,proconfig = `search_path="",lock_timeout=5s`):補庫存遇到被長時間鎖住的商品列時,那一張照 EXCEPTION 跳過、下一輪再處理。
+3. **每次只取消 5 張**:Resend 預設每秒 2 個請求,一次取消 200 張會同時排出約 400 封信。每 10 分鐘 5 張 = 一小時 30 張。
+4. **清 pg_cron 執行紀錄**:用 `cron.alter_job` 換 `ifoodmap-market-rate-cleanup` 的指令(時間 `50 19 * * *` 不變),130200 的兩句照舊,多刪 jobname 開頭 `ifoodmap-market-` 的工作、`COALESCE(end_time, start_time)` 超過 14 天的 `cron.job_run_details`,別的工作不碰。排程不存在時 migration 直接報錯。還原檔把指令換回 130200 的原樣(逐字),還原測試的排程指紋跟線上相同。正式庫的 postgres 對 `cron.job_run_details` 有 INSERT / DELETE、`cron.alter_job` 可以執行(唯讀查過,pg_cron 1.6.4)。
+5. **檔頭「營運注意」**:
+   - `market_hardening.test.sql` 會在乾跑交易裡對線上資料執行取消、暫時換掉 guard,開放後只能在離峰時段跑。
+   - 轉帳單「快到期限才匯款、店家過了期限才按已收款」的競態刻意接受,只能人工退款,會告知業主。
+   - 這段沒有寫 72 這個數字:72 全檔仍只在標記(第 324 行)與常數(第 325 行)。
+6. **測試** 36 → **41**:
+   - 「一次 200 張」的兩項換成「每次 5 張」(7 張 → 5、2、0,先取最舊的)。
+   - 新增:飢餓(60 張沒有紀錄的舊單在前面,後面那張照樣取消);每次看 50 張(49 張取消不了的單在前面,第 50 張取消、第 51 張下一輪,同時證明一張失敗不讓整批失敗);清理排程的指令;清理指令實跑(假的執行紀錄 runid 用負數,我們的工作 15 天的刪掉、13 天的留著,`ifoodmap-ai-guard-cleanup` 的不碰)。
+   - 函式屬性那項釘住 lock_timeout。「沒有紀錄的壞資料」那項改成「不當候選」。
+   - 「取消不了」的單用 fixture guard 寫一筆時間是 timestamptz 最大值的紀錄:真的 guard 算「上一筆 + 1 微秒」會溢位,每次都失敗(沒有紀錄的單已經不當候選,要另一種失敗才測得到 EXCEPTION 那條路)。
+   - 先紅 7 項;突變 5 處全殺:拿掉有紀錄的條件、每次 6 張、看 51 張、拿掉 lock_timeout、清理範圍寫成 `ifoodmap-%`。
+7. **審查員的 atk_hardening**:複製到 `scratchpad/atk-adapted/atk_hardening.test.sql`,只改 E5 的 proconfig 期待值(加上 `lock_timeout=5s`),**13 / 13**;原檔沒動。
+
+**數字**(`802e1a8`;乾跑只帶 20261012100000,每支之後殘留五個 0):`market_hardening` **41**、`market_orders` 67、`market_notify` 9、`market_checkout` 93、`market_hardening_rollback` 4,審查員副本 13。vitest:`802e1a8` 的乾淨副本 116 檔 / 1853 項全過(這次只改 SQL)。🔴 DEPLOY.md 第 3 階段的乾跑項數要改成 41,另外照協調者的決定寫上「量變大時改成每張單各自 commit 的 procedure」(由寫文件的人改)。
