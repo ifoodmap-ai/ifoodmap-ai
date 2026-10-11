@@ -18067,3 +18067,19 @@ gate / render / handler / index 與 `config.toml` 先照計畫的程式碼區塊
 - 取消失敗只有 `RAISE WARNING`,`cron.job_run_details` 不記 WARNING(只記成功的指令或錯誤),實際上看不到。真正的監控是「過期但還沒被取消」的單:`SELECT count(*) FROM public.market_orders WHERE status = 'pending' AND created_at < now() - interval '72 hours 20 minutes'`(待匯款同理),正常應該是 0。
 - 整批是同一個交易:最多 200 張單和它們商品的鎖會留到整批跑完(通常 0–5 張,很快)。理論上會跟同時在拒單 / 取消、而且共用商品的供應商死結,由資料庫偵測;排程這邊被選中時只有那一張進 WARNING,下一輪再試。
 - 如果有 200 張以上「永遠取消不了」的壞資料,排在後面的單會一直輪不到(目前只有沒有任何紀錄的訂單會這樣,正常建單不會發生)。
+
+### 2026-10-12:hardening 補上 Cloudflare Pseudo IPv4 的回退(commit `e9121e3`,分支 `market`)
+
+接上一節。20261012100000 還沒套用,直接改原檔;先寫測試、看到失敗才改。**以 repo 為準。**
+
+1. **`market_client_ip`**:cf-connecting-ip 落在 240.0.0.0/4(Class E,真的用戶端不可能是這個位址,只有 Cloudflare 的 Pseudo IPv4 會產生),而且 cf-connecting-ipv6 是合法的 IPv6 位址(family 6、不是網段)時,改用 cf-connecting-ipv6,照 /64 正規化(下單 RPC 的 /48 規則 ip48 / ip48o 才接得上)。兩個條件同時成立,代表兩個標頭都是 Cloudflare 設的:用戶端自帶 CF-Connecting-IP 會被擋(部署時實測 403 / 1000)。其他情況照舊 cf-connecting-ip → x-real-ip → NULL;一般位址帶了 cf-connecting-ipv6 一律不理;只有 cf-connecting-ipv6 也不理;任一個解析不了就當作不成立。註解與檔頭寫明:不一定會發生(要看 Supabase 的 Cloudflare 有沒有開 Pseudo IPv4),IPv6 實測仍是開放前待辦。
+2. **測試** +5 項(31 → 36):
+   - 240.1.2.3 與 255.255.255.254 + 2001:db8:1:2::5 → `2001:db8:1:2::`。
+   - 240.x 沒有 ipv6,或 ipv6 是亂填、IPv4、網段 → 240.1.2.3。
+   - 203.0.113.5 與 239.255.255.255(240/4 外面緊鄰)+ 偽造的 ipv6 → 用 cf-connecting-ip。
+   - 只有 ipv6 標頭 → 照 x-real-ip。
+   - Pseudo IPv4 的下單算在真正 IPv6 的 ip / ip48 / ip48o,240.x 沒有任何列。
+   - 先紅 2 項(回 240.1.2.3;下單算在 240.x 的 ip / ipo)。突變 4 處全殺:拿掉 240/4 條件、拿掉 IPv6 合法檢查、範圍寫成 240/8、寫成 224/3。
+3. 還原檔不用改:它換回的是 130200 的 `market_client_ip`(還原測試的 md5 照樣跟線上相同)。標記 `@market-auto-cancel-hours` 沒動,行號從 290 移到 310(常數在 311),全檔仍只有一處。
+
+**數字**(`e9121e3`;乾跑只帶 20261012100000,每支之後殘留五個 0):`market_hardening` **36**、`market_orders` 67、`market_notify` 9、`market_checkout` 93、`market_hardening_rollback` 4。vitest:`e9121e3` 的乾淨副本 116 檔 / 1843 項全過(這次只改 SQL)。🔴 DEPLOY.md 第 3 階段的乾跑項數(`207235a` 寫的 31)要改成 36,由寫文件的人改。
