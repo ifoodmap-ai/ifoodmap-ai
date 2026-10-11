@@ -17352,3 +17352,39 @@ Task 23–25 先照計畫做完(三個 commit 跟計畫的程式碼區塊逐字�
 8. (自查)拿掉清單的「核准」後,390 寬時狀態與兩顆按鈕剛好擠進同一行,品名欄被壓到約 58px → 品名欄 `min-w-[10rem]`、放不下時按鈕換行,搜尋鈕跟輸入框同一行(`886157c`,headless Chrome 1280 / 390 截圖確認)。
 9. **測試數字**:`admin.test.ts` 7 → **20**、`AdminMarketPages.test.tsx` 21 → **43**。`886157c` 的乾淨副本(`git archive`)連跑 3 次都是 **99 檔 / 1544 項**全過(含其他節同時新增的測試),tsc 72、eslint 錯誤 10,兩種 build 都過,前台站的 build 裡沒有這兩頁。
 10. 之後的 Task:Task 55 對 `App.tsx`、`AdminLayout.tsx`、兩支版面 / 路由測試的「找到 → 換成」不受影響(這次沒動那幾個檔)。
+
+### 2026-10-10:Task 29 全套檢查、Task 30 `docs/DEPLOY.md`(commit `5ffafbe`,分支 `market`)
+
+**Task 29 實測**(HEAD `440ac4b`,這個 Task 沒有改任何檔):
+
+- vitest 連跑 3 次都是 **99 檔 / 1544 項**全過(Task 29 Step 1 的 97 / 1311 是勘誤前的數字);tsc 錯誤 72、eslint 錯誤 10,都在既有檔案
+  (`SupplierCatalogPage.tsx` 的 6 個 tsc 錯誤是開工前就有的 `(supabase as never)`,只是行號往下移);兩種 build 都 exit 0
+  (前台站的 build 裡沒有管理員審核頁、管理員站的 build 裡沒有市集首頁);形象站 `npm test` 211 / 211。
+- 乾跑:`market_harness` 5、`market_catalog` 112、`market_catalog_rollback` 3、`market_images_storage` 19、`market_images_storage_rollback` 3,全部失敗 0;
+  每支之後殘留五個 0。另外乾跑「兩支 migration + 依序 120100、120000 兩支還原檔」再跑 `market_catalog_rollback`,也是 3 / 3(還原順序可行)。
+- 正式庫唯讀查:ledger 最新是 `20261007100200`,還沒有任何 `market_*` 資料表 / 函式、bucket、policy;repo 比線上只多這兩支 migration(線上沒有 repo 以外的版本)。
+
+**Task 30**:DEPLOY.md 不照抄第 8203–8245 行的區塊,改寫進各輪勘誤(2 條 policy、物件只能寫一次、版本 DISABLED、商品照片只收 .jpg、
+核准前主圖與縮圖都要上傳、管理員停用店家不受轉帳檢查影響、違規圖片怎麼刪),新段落在 `docs/DEPLOY.md` 第 756–1076 行。
+**Task 31 以 DEPLOY.md「消費者食材市集 B2C」一節的「部署(第 1 階段)」「還原(第 1 階段)」為準**,跟 Task 31 原文不一樣的地方:
+
+1. Step 4 的查詢多 `anon_can_read_stores`、`anon_can_write_stores`、`image_bucket_versioning`(= `"DISABLED"`)、`image_policy_names`(insert、select 兩條);
+   `image_policies` = 2;另跑 `scripts/check-migrations.mjs`(應該是 ✅,repo 43 個、線上 43 個)。除了 `ledger`,每個值都在乾跑裡套兩支 migration 實測過。
+2. Step 5 多兩支「線上 schema + 還原檔」的乾跑(各 3 項):推前端之前先確認還原檔在線上跑得動。
+3. Step 6:原文是在 main 上直接 push;實際開發在 `market` 分支,改成 fetch → `market..origin/main` 是 0 → `switch main` → `merge --ff-only origin/main`
+   → `merge --no-ff market` → `diff --stat market main` 沒有輸出 → push → 記下合併 commit → `market` 快轉到 main。
+   用 `--no-ff`:還原時一個 `git revert -m 1 <合併 commit>` 就退掉整個階段;最後快轉 `market`,第 2 階段 Task 57 Step 1 的 `rev-list --count HEAD..origin/main` 才會是 0。
+4. Step 7 用 `gh run list --commit <合併 commit>`;線上驗證多 bundle 探針(只有新版 bundle 才有的兩句字;部署前實測兩站都是舊版)、anon 讀 `market_stores`、
+   anon 上傳 Storage 被拒(路徑用 fixture 前綴,萬一上傳成功,殘留檢查的 `fixture_objects` 會抓到)。
+5. 還原多「先匯出」(唯讀端點的角色 `supabase_read_only_user` 有 BYPASSRLS)、「先乾跑還原」、用 `send_sql` 送還原檔(整份檔案一個請求;第一支回 `[]` 才送第二支)、
+   「還原後確認」,repo 用 `git revert -m 1 <合併 commit>`。
+6. DEPLOY.md 裡的 SQL 用 `printf '%s\n' "…" > "$Q"` 寫檔,不用 heredoc(指令在清單裡有縮排,照原樣複製時 heredoc 的結尾那一行對不上)。
+   三段 SQL、bundle 探針、`send_sql` 都照原樣抽出來在 zsh 與 bash 跑過;SQL 另外放進乾跑確認輸出跟 Expected 一致。
+
+**沒有處理(記錄)**:
+
+- 前端上傳帶 `cacheControl: "31536000"`(一年,`src/lib/market/images.ts`):刪掉違規圖之後,CDN 與看過的瀏覽器可能還會顯示快取一段時間,沒有實測。
+  DEPLOY.md「違規圖片怎麼刪」寫了刪完要用 curl 確認公開網址。
+- 店家 logo / 封面沒有審核流程(上傳就公開);runbook 寫的是先停用店家再刪檔。
+- 派工時給的 token 檔(「執行前必讀」B 節的 scratchpad `.sbp`)在 2026-10-11 00:00 左右不見了;Task 29 要用 token 的乾跑都在那之前跑完。
+  Task 31 開工前要先向派工者確認新的 token 檔。
