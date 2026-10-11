@@ -17392,3 +17392,23 @@ Task 23–25 先照計畫做完(三個 commit 跟計畫的程式碼區塊逐字�
 ### 2026-10-11:Supabase Storage 2026-10-10 更新後的測試修正(commit `c261a85`,分支 `market`)
 
 Supabase 在 2026-10-10 23:48(台北)自動更新 Storage schema(storage migration 72 `drop-bucketid-objname-index`),拿掉 `storage.objects` 的 `(bucket_id, name)` unique index、只剩帶條件的 `idx_objects_current_version (bucket_id, name COLLATE "C") WHERE archived_at IS NULL`,`market_images_storage.test.sql` 原本的 `ON CONFLICT (bucket_id, name)` 因此回 42P10:upsert 覆寫那項改成 Storage 現在的寫法 `ON CONFLICT (bucket_id, name COLLATE "C") WHERE archived_at IS NULL`(仍是 42501),並新增一項不綁 ON CONFLICT 的檢查「同一路徑直接再 INSERT 被擋(23505 或 42501 都算)」,乾跑 19 → **20** 項(前面要改成 19 的 Expected 一律改成 20);migration 120100 只有 `storage.buckets` 的 `ON CONFLICT (id)`,不受影響。🔴 不要在 Dashboard 打開 `market-images` 的版本功能:打開後關不回 DISABLED,「照片只能寫一次」就不成立。
+
+### 2026-10-11:Task 32–34 migration 130000(commit `dc73b8a`、`3fe11c7`、`ca584e0`,分支 `market`)
+
+`supabase/migrations/20261009130000_market_orders.sql` 跟計畫的三段程式碼區塊(第 8557–8818、8911–9045、9177–9229 行)逐字相同(diff 過);測試照抄,只改了下面第 1、3 點兩處。乾跑項數跟計畫一樣:Task 32 之後 **17**、Task 33 之後 **28**(確認失敗那次 9 項失敗,第一項「第一筆紀錄的身分是消費者」got `supplier`)、Task 34 之後 **45**(確認失敗那次 12 項失敗,第一項「狀態與接單時間套上去」got `pending|false|…`),每次乾跑之後殘留五個 0。
+
+1. **乾跑不再帶 120000 / 120100**:第 1 階段已上線(合併 commit `6bf196e`,ledger 有這兩個版本),第 2 階段開頭(第 8402 行)「乾跑都要帶 `--with-migration …120000…`,帶著也沒關係」不再適用 —— 依派工指示不帶(派工者說重帶會報「已存在」;另外 120000 的 DROP / CREATE POLICY、DROP TRIGGER、ENABLE ROW LEVEL SECURITY 會在線上的 `market_stores` / `market_products` 拿 ACCESS EXCLUSIVE 鎖到 ROLLBACK,乾跑期間擋住市集的公開讀取)。
+   - Task 32 Step 2:`dry supabase/tests/database/market_orders.test.sql`(不帶任何 migration;Expected 一樣是 42P01 `relation "public.market_orders" does not exist`)。
+   - Task 32 Step 4、Task 33 / 34 的 Step 2 / 4:`dry supabase/tests/database/market_orders.test.sql --with-migration supabase/migrations/20261009130000_market_orders.sql`。
+   - 測試檔開頭的執行說明改成只帶 130000。
+   - 之後的 Task 也一樣,看到 `--with-migration …20261009120000…` / `…20261009120100…` 就拿掉:Task 35(第 9262、9330 行)、Task 36(第 9437、9525 行)、Task 39(第 10527 行)、Task 57 Step 2(第 16549–16556 行的 `$C`)。
+2. **fixture 不用改**:共用工具 `_market_helpers.sql` 只建暫存表與 pg_temp 函式,沒有假設 120000 在交易裡建。測試的 fixture 直接打在線上第 1 階段的表上,也符合現行規則 —— 店家用資料庫擁有者身分 INSERT(`auth.role()` 是 NULL,不受擁有權檢查;A 店先建轉帳資訊再建店,轉帳檢查過得去)、已核准商品的 `photos` 是空陣列(核准時沒有照片要查,不受「只收 .jpg、核准前主圖與縮圖都要上傳」影響)、沒有自己帶 `created_at`、品名看得到字、沒有超過 10000 字、沒有刪店。Task 32 Step 2 失敗在建 `pg_temp.mk_order`(42P01),表示前面的 fixture 都已經在線上跑過。
+3. **兩項權限檢查多驗 TRUNCATE / REFERENCES / TRIGGER / MAINTAIN**(第 1 節「anon 對訂單三張表沒有任何權限」「登入者:訂單、明細只能讀;紀錄只能讀和新增」,項數不變):計畫原本只驗 SELECT / INSERT / UPDATE / DELETE,跟第 1 階段審查找到的 MAINTAIN 漏洞同一類;TRUNCATE 不觸發逐列 trigger,漏收就能整張清掉「只能新增」的紀錄。突變驗證:把 migration 的 `REVOKE ALL` 改成只收 SELECT / INSERT / UPDATE / DELETE,計畫原本的測試仍是 17 項全過,改過的測試正好這兩項紅(anon got `true`、authenticated got `true|true|true|true|true`)。migration 不用改(本來就是 REVOKE ALL)。
+4. **第 1 階段沒有受影響**:`market_catalog` **112**、`market_images_storage` **20**,不帶 migration(= 線上現況)與帶 130000(= 130000 套上之後)各跑一次,都是失敗 0;每次之後殘留五個 0。vitest **99 檔 / 1544 項**全過(目前還沒有 vitest 讀 130000,Task 43 起才有)。
+5. **自查發現、沒有處理(記錄)**(另外用不提交的乾跑實測):
+   - Task 34 開頭(第 9066 行)說轉帳自動待匯款那筆是「actor = system」,實際上**跟接單的人同一個身分**(guard 依登入身分決定;程式碼註解「同一個交易、同一個身分」才對):供應商接單 → `supplier`、管理員 → `admin`、service_role / 資料庫直連 → `system`。Task 42 的 notify 測試 fixture(第 11203 行)把這筆寫成 `actor_role: "system"`;`resolveEventMails` 對 `awaiting_payment` 不看身分(Task 41,第 10765 行),寄信結果不受影響,但之後若有畫面依 `actor_role` 顯示「系統」,會跟資料庫不一致。
+   - 補庫存的 `UPDATE … FROM market_order_items`:同一張單同一個商品有兩列時只加回其中一列(實測 1 + 2 只加回 2)。下單 RPC(Task 37,第 10147–10151 行)先 `GROUP BY product_id` 合併,正式流程不會發生,只有繞過下單 RPC 直接寫明細才會。
+   - 拒單 / 取消原因用 `btrim`(只去半形空白),只填全形空白或零寬字元也算有填原因(第 1 階段只有商品欄位用 `market_trim` / `market_visible`);前端送出前可以用 `hasVisibleText` 擋。
+   - 45 項沒有測到 system 身分(service_role / 資料庫直連)與沒有 sub 的 authenticated JWT(第 1 階段第 2 輪複審的同類問題);實測行為正確(service_role 接轉帳單 OK、兩筆都記 `system`;沒有 sub → `ERR 42501:not_order_party`),但測試沒有釘住。
+   - 乾跑 130000 會在線上的 `market_stores` / `market_products` 拿 SHARE ROW EXCLUSIVE 鎖(建外鍵),擋寫不擋讀,到 ROLLBACK 為止(每次幾秒)。
+   - `market_*` 測試的 fixture 共用同一組 UUID / Email:兩支乾跑同時送會在唯一鍵上互等,超過 3 秒(`lock_timeout`)就失敗 —— 依序跑,不要並行。
