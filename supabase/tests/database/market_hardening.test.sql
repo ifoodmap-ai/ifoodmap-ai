@@ -358,23 +358,26 @@ SELECT pg_temp.expect('再跑一次回 0(冪等),也沒有多寫任何紀錄',
   ((SELECT count(*) FROM public.market_order_events) - (SELECT (v #>> '{}')::bigint FROM _ctx WHERE k = 'ev1')),
   '0|0');
 
--- 每次最多取消 5 張(通知信的寄送速率):7 張「80 小時又 n 秒前」的待接單(n 越大越舊),第一筆紀錄由真的 guard 寫
+-- 每次最多取消 3 張(配合寄信的限速):7 張「80 小時又 n 秒前」的待接單(n 越大越舊),第一筆紀錄由真的 guard 寫
 SELECT pg_temp.mk(('a9600000-0000-4000-8000-' || lpad(to_hex(4096 + n), 12, '0'))::uuid,
                   'a9200000-0000-4000-8000-00000000000a', 'cod', interval '80 hours' + n * interval '1 second')
   FROM generate_series(1, 7) AS n;
 INSERT INTO public.market_order_events (order_id, from_status, to_status)
 SELECT ('a9600000-0000-4000-8000-' || lpad(to_hex(4096 + n), 12, '0'))::uuid, NULL, 'pending' FROM generate_series(1, 7) AS n;
 INSERT INTO _ctx VALUES ('cap1', to_jsonb(public.market_expire_orders()));
-SELECT pg_temp.expect('每次最多取消 5 張:7 張逾時的待接單第一次只取消最舊的 5 張(剩下最晚下單的 2 張)',
+SELECT pg_temp.expect('每次最多取消 3 張:7 張逾時的待接單第一次只取消最舊的 3 張(剩下最晚下單的 4 張)',
   (SELECT v #>> '{}' FROM _ctx WHERE k = 'cap1') || '|' ||
   (SELECT string_agg(n::text, ',' ORDER BY n) FROM generate_series(1, 7) AS n
      JOIN public.market_orders o ON o.id = ('a9600000-0000-4000-8000-' || lpad(to_hex(4096 + n), 12, '0'))::uuid
     WHERE o.status = 'pending'),
-  '5|1,2');
+  '3|1,2,3,4');
 INSERT INTO _ctx VALUES ('cap2', to_jsonb(public.market_expire_orders()));
 INSERT INTO _ctx VALUES ('cap3', to_jsonb(public.market_expire_orders()));
-SELECT pg_temp.expect('……第二次取消剩下的 2 張(排在後面那 49 張取消不了的照樣失敗、不算),第三次 0',
-  (SELECT v #>> '{}' FROM _ctx WHERE k = 'cap2') || '|' || (SELECT v #>> '{}' FROM _ctx WHERE k = 'cap3'), '2|0');
+INSERT INTO _ctx VALUES ('cap4', to_jsonb(public.market_expire_orders()));
+SELECT pg_temp.expect('……第二次 3 張、第三次剩下的 1 張(排在後面那 49 張取消不了的照樣失敗、不算)、第四次 0',
+  concat_ws('|', (SELECT v #>> '{}' FROM _ctx WHERE k = 'cap2'), (SELECT v #>> '{}' FROM _ctx WHERE k = 'cap3'),
+                 (SELECT v #>> '{}' FROM _ctx WHERE k = 'cap4')),
+  '3|1|0');
 
 -- 飢餓(審查 E4):60 張沒有任何紀錄的舊單(500 小時又 n 秒前)排在最前面,後面一張真的逾時的單照樣被取消
 SELECT pg_temp.mk(('a9600000-0000-4000-8000-' || lpad(to_hex(8192 + n), 12, '0'))::uuid,
