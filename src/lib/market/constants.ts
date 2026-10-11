@@ -75,6 +75,14 @@ export const LIMITS = {
   freeShippingThreshold: 1_000_000,
   minOrderAmount: 1_000_000,
   shipDays: 30,
+  // 訂單(20261009130000_market_orders.sql、20261009130200_market_checkout.sql)
+  buyerName: 50,
+  addressMin: 5,
+  address: 200,
+  buyerNote: 300,
+  orderNote: 300,
+  carrier: 50,
+  trackingNo: 100,
 } as const;
 
 export const PHOTO_RULES = {

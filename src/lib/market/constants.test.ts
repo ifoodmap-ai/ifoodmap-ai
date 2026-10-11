@@ -1,5 +1,6 @@
 // 前端的縣市、分類、溫層必須跟資料庫一字不差:直接解析 migration 標記之間的字串比對。
-// 長度 / 金額上限、照片張數、付款方式、審核狀態、bucket 設定也從 migration 120000 / 120100 讀出來比對 —— 改了任何一邊這裡都會紅。
+// 長度 / 金額上限(商品與店家在 120000、訂單在 130000)、照片張數、付款方式、審核狀態、bucket 設定也從 migration
+// 120000 / 120100 / 130000 讀出來比對 —— 改了任何一邊這裡都會紅。
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -23,6 +24,10 @@ const MIGRATION = readFileSync(
 );
 const STORAGE_MIGRATION = readFileSync(
   resolve(__dirname, "../../../supabase/migrations/20261009120100_market_images_storage.sql"),
+  "utf8",
+);
+const ORDERS_MIGRATION = readFileSync(
+  resolve(__dirname, "../../../supabase/migrations/20261009130000_market_orders.sql"),
   "utf8",
 );
 
@@ -100,13 +105,30 @@ const LIMIT_PREFIXES: Array<[keyof typeof LIMITS, string]> = [
   ["minOrderAmount", "\\bmin_order_amount BETWEEN \\d+ AND "],
   ["shipDays", "\\bship_days BETWEEN \\d+ AND "],
 ];
+/** 訂單相關的上限在 migration 130000:訂單與狀態紀錄的 CHECK、guard 的物流檢查(market_guard_event) */
+const ORDER_LIMIT_PREFIXES: Array<[keyof typeof LIMITS, string]> = [
+  ["buyerName", "char_length\\(buyer_name\\) BETWEEN \\d+ AND "],
+  ["addressMin", "char_length\\(ship_address\\) BETWEEN "],
+  ["address", "char_length\\(ship_address\\) BETWEEN \\d+ AND "],
+  ["buyerNote", "char_length\\(buyer_note\\) <= "],
+  ["orderNote", "char_length\\(note\\) <= "],
+  ["carrier", "char_length\\(v_carrier\\) > "],
+  ["trackingNo", "char_length\\(v_tracking\\) > "],
+];
+/** 每份 migration 跟它負責的上限(LIMITS 的每個 key 都要在其中一份) */
+const LIMIT_SOURCES: Array<[sql: string, prefixes: Array<[keyof typeof LIMITS, string]>]> = [
+  [MIGRATION, LIMIT_PREFIXES],
+  [ORDERS_MIGRATION, ORDER_LIMIT_PREFIXES],
+];
 const PHOTO_COUNT_PREFIX = "cardinality\\(photos\\) <= ";
 const BUCKET_RE =
   /INSERT INTO storage\.buckets \(id, name, public, file_size_limit, allowed_mime_types\)\s*VALUES \('([^']+)', '[^']+', (true|false), (\d+), ARRAY\[([^\]]*)\]\)/g;
 
 describe("上限與設定跟 migration 一致", () => {
-  it("LIMITS 每一個上限都等於 migration 120000 的 CHECK(多一個 key、少一個 key 都會紅)", () => {
-    const fromMigration = Object.fromEntries(LIMIT_PREFIXES.map(([key, prefix]) => [key, readNumber(MIGRATION, prefix)]));
+  it("LIMITS 每一個上限都等於 migration 120000 / 130000 的 CHECK(多一個 key、少一個 key 都會紅)", () => {
+    const fromMigration = Object.fromEntries(
+      LIMIT_SOURCES.flatMap(([sql, prefixes]) => prefixes.map(([key, prefix]) => [key, readNumber(sql, prefix)])),
+    );
     expect(fromMigration).toEqual({ ...LIMITS });
   });
 
@@ -132,8 +154,10 @@ describe("上限與設定跟 migration 一致", () => {
   });
 
   it("數字真的是從 migration 讀出來的:migration 任何一個數字改了,讀到的值就跟著變(比對會紅)", () => {
-    for (const [key, prefix] of LIMIT_PREFIXES) {
-      expect(readNumber(bumpNumber(MIGRATION, prefix), prefix), key).toBe(LIMITS[key] + 1);
+    for (const [sql, prefixes] of LIMIT_SOURCES) {
+      for (const [key, prefix] of prefixes) {
+        expect(readNumber(bumpNumber(sql, prefix), prefix), key).toBe(LIMITS[key] + 1);
+      }
     }
     expect(readNumber(bumpNumber(MIGRATION, PHOTO_COUNT_PREFIX), PHOTO_COUNT_PREFIX)).toBe(PHOTO_RULES.maxCount + 1);
   });
