@@ -37,8 +37,8 @@ describe("resolveEventMails", () => {
     expect(resolveEventMails({ toStatus: "completed", actorRole: "supplier", paymentMethod: "cod" })).toEqual([]);
   });
 
-  // 勘誤(Task 32–34 自查):轉帳訂單接單後自動補的「待匯款」紀錄,身分跟接單的人一樣
-  // (供應商接單 → supplier、管理員 → admin、service_role / 資料庫直連 → system),不一定是 system
+  // 轉帳訂單接單後自動補的「待匯款」紀錄:migration 130000 自 commit f04df17 起一律記成 system
+  // (之前跟接單的人一樣,supplier / admin / system 都有可能)。寄信不看身分 —— 三種都寄匯款資訊,之後 migration 再改也不受影響
   it("待匯款不看身分:supplier / admin / system 補的那一筆都寄匯款資訊給消費者", () => {
     for (const actorRole of ["supplier", "admin", "system"]) {
       expect(resolveEventMails({ toStatus: "awaiting_payment", actorRole, paymentMethod: "transfer" }), actorRole).toEqual([
