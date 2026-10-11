@@ -43,8 +43,8 @@ const order = (over: Row): Row => ({
 
 const tables = (): Record<string, Row[]> => ({
   suppliers: [
-    { id: SUP_A, name: "市集測試 A 店", contact_email: "store-a@example.com" },
-    { id: SUP_B, name: "市集測試 B 店", contact_email: null },
+    { id: SUP_A, name: "市集測試 A 店", contact_email: "store-a@example.com", phone: "02-2345-6789" },
+    { id: SUP_B, name: "市集測試 B 店", contact_email: null, phone: null },
   ],
   market_stores: [
     { supplier_id: SUP_A, ship_days: 2 },
@@ -167,13 +167,14 @@ describe("market-notify:狀態紀錄", () => {
     expect(msg.html).toContain('href="https://app.ifoodmap.ai/supplier/market/orders"');
   });
 
-  it("貨到付款接單 → 消費者;回信給店家", async () => {
+  // 審查修正:原本回信給店家(contact_email);第 1 階段定案 contact_email 是收新訂單通知的信箱、不給消費者 → 回信到平台信箱
+  it("貨到付款接單 → 消費者;回信到平台信箱(不給店家的 contact_email)", async () => {
     const s = setup({ live: true });
     await s.call({ kind: "event", event_id: EV(2) });
     const msg = s.send.mock.calls[0][0];
     expect(msg.to).toEqual(["buyer@example.com"]);
     expect(msg.subject).toContain("市集測試 A 店 已接單");
-    expect(msg.replyTo).toBe("store-a@example.com");
+    expect(msg.replyTo).toBe("ifoodmaptw@gmail.com");
   });
 
   it("轉帳訂單:confirmed 不寄,緊接著的 awaiting_payment 寄匯款資訊", async () => {
@@ -182,7 +183,7 @@ describe("market-notify:狀態紀錄", () => {
     await s.call({ kind: "event", event_id: EV(4) });
     expect(s.send).toHaveBeenCalledTimes(1);
     expect(s.send.mock.calls[0][0].html).toContain("郵局(700) 帳號 0001234-5678901");
-    // B 店沒有聯絡信箱 → 回信退回平台信箱
+    // 回信一律到平台信箱
     expect(s.send.mock.calls[0][0].replyTo).toBe("ifoodmaptw@gmail.com");
   });
 
@@ -258,6 +259,34 @@ describe("market-notify:狀態紀錄", () => {
       const subject = s.send.mock.calls[0][0].subject;
       expect(subject).toBe(`${live ? "" : "[測試轉寄] "}A 店 Bcc: victim@example.com 已接單 — 零售訂單 ${formatOrderNo(ORDER_A)}`);
       expect(subject).not.toMatch(/[\r\n]/);
+    }
+  });
+
+  // 審查追加:店家的 contact_email 是收新訂單通知的信箱(第 1 階段定案),給消費者的信一律不出現;要聯絡店家看店家電話
+  it("給消費者的信:html、text、reply_to 都沒有店家的 contact_email,改附店家電話(閘門開 / 關)", async () => {
+    for (const live of [true, false]) {
+      const s = setup({ live });
+      s.db.tables.market_order_events.push(
+        { id: EV(9), order_id: ORDER_A, from_status: "pending", to_status: "rejected", actor_role: "supplier", note: "缺貨", payload: {} },
+        { id: EV(10), order_id: ORDER_A, from_status: "confirmed", to_status: "cancelled", actor_role: "supplier", note: "無法出貨", payload: {} },
+      );
+      await s.call({ kind: "placed", checkout_id: CHECKOUT, token: TOKEN });
+      for (const id of [EV(2), EV(4), EV(5), EV(6), EV(9), EV(10)]) await s.call({ kind: "event", event_id: id });
+      const consumer = s.send.mock.calls.map((c) => c[0]).filter((m) => !m.subject.includes("請不要出貨"));
+      expect(consumer, `live=${live}`).toHaveLength(7); // 下單確認、接單、待匯款、平台取消(消費者那封)、出貨、拒單、店家取消
+      for (const m of consumer) {
+        const label = `live=${live} ${m.subject}`;
+        expect(m.html, label).not.toContain("store-a@example.com");
+        expect(m.text, label).not.toContain("store-a@example.com");
+        expect(m.replyTo, label).toBe("ifoodmaptw@gmail.com");
+      }
+      // A 店有電話:A 店的每一封(含下單確認裡 A 店那段)都附;B 店沒有電話就不寫這一行
+      for (const m of consumer.filter((x) => !x.subject.startsWith(`${live ? "" : "[測試轉寄] "}請匯款`))) {
+        expect(m.html, m.subject).toContain("店家電話:02-2345-6789");
+        expect(m.text, m.subject).toContain("店家電話:02-2345-6789");
+      }
+      const awaitingB = consumer.find((x) => x.subject.includes("請匯款"))!;
+      expect(awaitingB.html).not.toContain("店家電話");
     }
   });
 

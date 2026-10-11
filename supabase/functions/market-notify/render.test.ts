@@ -5,6 +5,7 @@ import { placedMail, renderEventMail, resolveEventMails, twd, type EventContext,
 const ORDER: MailOrder = {
   id: "a9600000-0000-4000-8000-0000000000a1",
   storeName: "鮮綠<b>農產</b>",
+  storePhone: "02-2345-6789",
   paymentMethod: "transfer",
   subtotal: 650,
   shippingFee: 120,
@@ -129,6 +130,7 @@ const htmlEscaped = (s: string) =>
 const EVIL_ORDER: MailOrder = {
   ...ORDER,
   storeName: evil("S-NAME"),
+  storePhone: evil("S-PHONE"),
   items: [{ product_name: evil("P-NAME"), spec: evil("P-SPEC"), qty: 2, unit_price: 100, line_total: 200 }],
 };
 const EVIL_CTX: EventContext = {
@@ -147,13 +149,13 @@ const EVIL_CTX: EventContext = {
 describe("店家、買家能控制的欄位放進 HTML 前一律跳脫", () => {
   // 每一封信的 HTML 會印出哪些欄位(新訂單信只放收件縣市、不放地址;地址任何一封都不出現)
   const RENDERED: Record<string, string[]> = {
-    placed: ["S-NAME", "P-NAME", "P-SPEC", "B-NAME"],
+    placed: ["S-NAME", "S-PHONE", "P-NAME", "P-SPEC", "B-NAME"],
     supplier_new: ["B-NAME", "B-CITY", "P-NAME", "P-SPEC", "B-NOTE"],
-    consumer_confirmed: ["S-NAME", "P-NAME", "P-SPEC"],
-    consumer_awaiting_payment: ["S-NAME", "X-BANK", "X-ACCOUNT", "P-NAME", "P-SPEC"],
-    consumer_rejected: ["S-NAME", "R-REASON"],
-    consumer_shipped: ["S-NAME", "T-CARRIER", "T-NO"],
-    consumer_cancelled: ["S-NAME", "R-REASON"],
+    consumer_confirmed: ["S-NAME", "S-PHONE", "P-NAME", "P-SPEC"],
+    consumer_awaiting_payment: ["S-NAME", "S-PHONE", "X-BANK", "X-ACCOUNT", "P-NAME", "P-SPEC"],
+    consumer_rejected: ["S-NAME", "S-PHONE", "R-REASON"],
+    consumer_shipped: ["S-NAME", "S-PHONE", "T-CARRIER", "T-NO"],
+    consumer_cancelled: ["S-NAME", "S-PHONE", "R-REASON"],
     supplier_cancelled_by_platform: ["B-NAME", "R-REASON"],
   };
   const mails = () => [
@@ -261,6 +263,28 @@ describe("主旨只有一行(店名等變數去掉 CR / LF / 控制字元 / U+20
       expect(s, JSON.stringify(s)).not.toMatch(/[\p{Cc}\p{Zl}\p{Zp}]/u);
       expect(s, JSON.stringify(s)).not.toMatch(/\s{2,}/u);
       expect(s, JSON.stringify(s)).toBe(s.trim());
+    }
+  });
+});
+
+describe("給消費者的信附店家電話(不給店家的 contact_email)", () => {
+  const CONSUMER = ["consumer_confirmed", "consumer_awaiting_payment", "consumer_rejected", "consumer_shipped", "consumer_cancelled"] as const;
+
+  it("有電話:下單確認與每一封給消費者的狀態信都有「店家電話」;寄給店家的信不放", () => {
+    const placed = placedMail({ buyerName: "王小明", orders: [ORDER], lookupUrl: "https://app.ifoodmap.ai/market/orders/TOKEN123" });
+    for (const m of [placed, ...CONSUMER.map((k) => renderEventMail(k, CTX))]) {
+      expect(m.html, m.subject).toContain("店家電話:02-2345-6789");
+      expect(m.text, m.subject).toContain("店家電話:02-2345-6789");
+    }
+    for (const k of ["supplier_new", "supplier_cancelled_by_platform"] as const) expect(renderEventMail(k, CTX).html, k).not.toContain("店家電話");
+  });
+
+  it("店家沒有填電話:不寫這一行", () => {
+    const order = { ...ORDER, storePhone: "" };
+    const placed = placedMail({ buyerName: "王小明", orders: [order], lookupUrl: "https://app.ifoodmap.ai/market/orders/TOKEN123" });
+    for (const m of [placed, ...CONSUMER.map((k) => renderEventMail(k, { ...CTX, order }))]) {
+      expect(m.html, m.subject).not.toContain("店家電話");
+      expect(m.text, m.subject).not.toContain("店家電話");
     }
   });
 });

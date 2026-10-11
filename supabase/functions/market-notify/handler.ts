@@ -104,10 +104,10 @@ const one = async (q: PromiseLike<DbResult>): Promise<Row | null> => {
   return (data ?? null) as Row | null;
 };
 
-/** 訂單 → 信裡要用的樣子(店名、明細、出貨天數),順便回傳供應商資料(收件信箱) */
+/** 訂單 → 信裡要用的樣子(店名、店家電話、明細、出貨天數),順便回傳供應商資料(contact_email 只用來寄給店家) */
 const loadMailOrder = async (db: Db, order: Row): Promise<{ mail: MailOrder; supplier: Row | null }> => {
   const [supplier, store, items] = await Promise.all([
-    one(db.from("suppliers").select("name, contact_email").eq("id", order.supplier_id).maybeSingle()),
+    one(db.from("suppliers").select("name, contact_email, phone").eq("id", order.supplier_id).maybeSingle()),
     one(db.from("market_stores").select("ship_days").eq("supplier_id", order.supplier_id).maybeSingle()),
     many(db.from("market_order_items").select(ITEM_COLUMNS).eq("order_id", order.id)),
   ]);
@@ -125,6 +125,7 @@ const loadMailOrder = async (db: Db, order: Row): Promise<{ mail: MailOrder; sup
     mail: {
       id: str(order.id),
       storeName: str(supplier?.name) || "店家",
+      storePhone: str(supplier?.phone).trim(),
       paymentMethod: order.payment_method === "transfer" ? "transfer" : "cod",
       subtotal: Number(order.subtotal),
       shippingFee: Number(order.shipping_fee),
@@ -147,7 +148,6 @@ const deliver = async (
   recipient: { email: string; audience: MarketAudience },
   mail: Mail,
   logMessage: string,
-  replyTo: string | null,
 ): Promise<DeliveryResult[]> => {
   const results: DeliveryResult[] = [];
   for (const d of planMarketDeliveries([recipient], mail.subject, live)) {
@@ -159,8 +159,8 @@ const deliver = async (
       subject: d.subject,
       html: (d.forwardNote ?? "") + mail.html,
       text: forwarded ? `${TEST_SUBJECT_PREFIX} 原本的收件人:${original}\n\n${mail.text}` : mail.text,
-      // 消費者回信給店家(訂單由店家處理);測試轉寄時一律回平台信箱
-      replyTo: forwarded ? deps.config.replyTo : (replyTo ?? deps.config.replyTo),
+      // 回信一律到平台信箱:🔴 店家的 contact_email 是收新訂單通知的信箱,不給消費者(要聯絡店家看信裡的店家電話)
+      replyTo: deps.config.replyTo,
     });
     await deps.db.from("notifications").insert({
       recipient: d.to,
@@ -209,7 +209,6 @@ const handlePlaced = async (deps: MarketNotifyDeps, live: boolean, body: Row): P
     { email, audience: "consumer" },
     mail,
     `零售下單確認:${mailOrders.map((o) => orderLabel(o.id)).join("、")}`,
-    null,
   );
   return summary(live, results, { orders: mailOrders.length });
 };
@@ -260,8 +259,7 @@ const handleEvent = async (deps: MarketNotifyDeps, live: boolean, body: Row): Pr
       skipped.push(kind);
       continue;
     }
-    const replyTo = audience === "consumer" && isDeliverableEmail(supplierEmail) ? supplierEmail : null;
-    const sent = await deliver(deps, live, { email, audience }, renderEventMail(kind, ctx), `${orderLabel(mailOrder.id)} → ${toStatus}`, replyTo);
+    const sent = await deliver(deps, live, { email, audience }, renderEventMail(kind, ctx), `${orderLabel(mailOrder.id)} → ${toStatus}`);
     results.push(...sent.map((r) => ({ ...r, kind })));
   }
   return summary(live, results, { kinds, skipped });
