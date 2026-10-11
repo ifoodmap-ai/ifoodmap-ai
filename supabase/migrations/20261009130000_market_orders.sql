@@ -430,12 +430,17 @@ BEGIN
    WHERE o.id = NEW.order_id
   RETURNING o.payment_method INTO v_payment;
 
-  -- 拒單 / 取消:有設庫存的商品把數量加回去(商品已刪除的就算了)
+  -- 拒單 / 取消:有設庫存的商品把數量加回去(商品已刪除的就算了)。
+  -- 先依商品加總:同一個商品在明細裡有好幾列時,UPDATE … FROM 一個商品只會配到其中一列
+  -- (下單 RPC 會先合併同一個商品,正常不會有;直接寫明細才會)
   IF NEW.to_status IN ('rejected', 'cancelled') THEN
     UPDATE public.market_products p
        SET stock = LEAST(p.stock + i.qty, 100000)
-      FROM public.market_order_items i
-     WHERE i.order_id = NEW.order_id AND i.product_id = p.id AND p.stock IS NOT NULL;
+      FROM (SELECT oi.product_id, sum(oi.qty) AS qty
+              FROM public.market_order_items oi
+             WHERE oi.order_id = NEW.order_id AND oi.product_id IS NOT NULL
+             GROUP BY oi.product_id) i
+     WHERE i.product_id = p.id AND p.stock IS NOT NULL;
   END IF;
 
   -- 轉帳訂單:接單後同一個交易自動進入「待匯款」(供應商畫面上只有一顆「接單」);這筆的身分由 guard 記成 system

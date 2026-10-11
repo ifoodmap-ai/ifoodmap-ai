@@ -293,3 +293,17 @@ SELECT pg_temp.expect('管理員接轉帳單:接單那筆是管理員,自動補�
     WHERE o.id = 'a9600000-0000-4000-8000-000000000006'
     GROUP BY o.status),
   'awaiting_payment|awaiting_payment=system/-,confirmed=admin/a9100000-0000-4000-8000-000000000003');
+-- 4-2 同一張單裡同一個商品有好幾列時,取消要把每一列的數量都加回去
+--     (下單 RPC 會先合併同一個商品,正常不會有;直接寫明細時 UPDATE … FROM 一個商品只會配到其中一列)
+SELECT pg_temp.mk_order('a9600000-0000-4000-8000-000000000007', 'a9200000-0000-4000-8000-00000000000a', 'cod');
+INSERT INTO public.market_order_items (order_id, product_id, product_name, spec, temperature, unit_price, qty, line_total) VALUES
+  ('a9600000-0000-4000-8000-000000000007', 'a9300000-0000-4000-8000-0000000000a1', '有機高麗菜', '1 顆', 'ambient', 100, 1, 100),
+  ('a9600000-0000-4000-8000-000000000007', 'a9300000-0000-4000-8000-0000000000a1', '有機高麗菜', '1 顆', 'ambient', 100, 2, 200);
+SELECT pg_temp.as_exec('authenticated', pg_temp.ua(), $q$
+  INSERT INTO public.market_order_events (order_id, from_status, to_status, note)
+  VALUES ('a9600000-0000-4000-8000-000000000007', 'pending', 'cancelled', '測試:同一個商品兩列')$q$);
+SELECT pg_temp.expect('同一個商品兩列(1 + 2)的單取消:兩列都加回去(10 → 13)',
+  (SELECT o.status || '|' || p.stock::text
+     FROM public.market_orders o, public.market_products p
+    WHERE o.id = 'a9600000-0000-4000-8000-000000000007' AND p.id = 'a9300000-0000-4000-8000-0000000000a1'),
+  'cancelled|13');
