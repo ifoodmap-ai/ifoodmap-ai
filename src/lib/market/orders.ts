@@ -110,7 +110,8 @@ export interface MarketOrderRow {
   market_order_items: MarketOrderItemRow[];
   /** 只有管理員的查詢會帶(店家電話與 contact_email 給管理員處理客訴用;供應商、消費者的查詢都不帶 contact_email) */
   market_stores?: { suppliers: { name: string; phone?: string | null; contact_email?: string | null } | null } | null;
-  market_order_events?: MarketOrderEventRow[];
+  /** 管理員的查詢帶完整的紀錄;供應商「還沒結束」的查詢只帶 to_status、created_at(SUPPLIER_ACTIVE_ORDER_COLUMNS,算自動取消期限用) */
+  market_order_events?: Array<Pick<MarketOrderEventRow, "to_status" | "created_at"> & Partial<MarketOrderEventRow>>;
 }
 
 const allowedTargets = (o: Pick<MarketOrderRow, "status" | "payment_method">): OrderStatus[] =>
@@ -155,6 +156,12 @@ export const ORDER_COLUMNS =
 
 const ADMIN_ORDER_COLUMNS = `${ORDER_COLUMNS}, market_stores(suppliers(name, phone, contact_email)), market_order_events(to_status, actor_role, note, created_at)`;
 
+/**
+ * 供應商「還沒結束」的單多帶狀態紀錄的 to_status、created_at:待匯款的 72 小時自動取消期限從「待匯款」那一筆算(autoCancel.ts)。
+ * 不帶 actor_role / note(畫面用不到);已結束的單不需要期限,照 ORDER_COLUMNS。
+ */
+export const SUPPLIER_ACTIVE_ORDER_COLUMNS = `${ORDER_COLUMNS}, market_order_events(to_status, created_at)`;
+
 /** 一次最多抓幾張(訂單多到這個數字時要加分頁 —— 見計畫「風險」) */
 export const ORDER_LIST_LIMIT = 200;
 
@@ -190,7 +197,7 @@ export const fetchSupplierOrders = async (supplierId: string, group: SupplierOrd
   }
   const res = await fetchAllPages((from, to) =>
     rangeDb<MarketOrderRow[]>("market_orders")
-      .select(ORDER_COLUMNS)
+      .select(SUPPLIER_ACTIVE_ORDER_COLUMNS)
       .eq("supplier_id", supplierId)
       .in("status", ACTIVE_STATUSES)
       .order("created_at", { ascending: false })

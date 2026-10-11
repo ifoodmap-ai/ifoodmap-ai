@@ -70,6 +70,7 @@ import {
   MARKET_TRANSITIONS,
   ORDER_COLUMNS,
   ORDER_LIST_LIMIT,
+  SUPPLIER_ACTIVE_ORDER_COLUMNS,
   ORDER_STATUS_LABEL,
   ORDER_STATUSES,
   supplierActions,
@@ -219,10 +220,15 @@ describe("寫入與查詢", () => {
     expect(calls[0].columns).toContain("market_stores(suppliers(name, phone, contact_email))");
     await fetchSupplierOrders("a9200000-0000-4000-8000-00000000000a", "active");
     await fetchSupplierOrders("a9200000-0000-4000-8000-00000000000a", "closed");
-    for (const c of calls.slice(1)) {
-      expect(c.columns).toBe(ORDER_COLUMNS);
-      expect(c.columns).not.toMatch(/contact_email|market_stores|suppliers/);
-    }
+    expect(calls.slice(1).map((c) => c.columns)).toEqual([SUPPLIER_ACTIVE_ORDER_COLUMNS, ORDER_COLUMNS]);
+    for (const c of calls.slice(1)) expect(c.columns).not.toMatch(/contact_email|market_stores|suppliers/);
+  });
+
+  it("供應商還沒結束的單多帶狀態紀錄的 to_status、created_at(待匯款的 72 小時期限從「待匯款」那一筆算),不帶身分與備註", async () => {
+    expect(SUPPLIER_ACTIVE_ORDER_COLUMNS).toBe(`${ORDER_COLUMNS}, market_order_events(to_status, created_at)`);
+    await fetchSupplierOrders("a9200000-0000-4000-8000-00000000000a", "active");
+    expect(calls[0].columns).toContain("market_order_events(to_status, created_at)");
+    expect(calls[0].columns).not.toMatch(/actor_role|actor_id/);
   });
 
   it("供應商:還沒結束的單一張都不漏(在伺服器依狀態篩、分頁讀完,不跟已結束的單共用上限);已結束的只抓最新 200 張", async () => {
