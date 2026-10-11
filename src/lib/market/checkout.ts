@@ -6,6 +6,7 @@
 import type { CartGroup } from "./cart";
 import { isTwCity, LIMITS, type PaymentMethod, type TwCity } from "./constants";
 import { marketRpc } from "./db";
+import { hasVisibleText } from "./productForm";
 
 export const PHONE_PATTERN = /^0[0-9]{8,9}$/;
 export const EMAIL_PATTERN = /^[A-Za-z0-9._%+-]+@([A-Za-z0-9-]+\.)+[A-Za-z]{2,}$/;
@@ -26,17 +27,18 @@ export const emptyBuyer = (): BuyerForm => ({ name: "", phone: "", email: "", ci
 export const normalizePhone = (s: string): string => s.replace(/[\s()-]/g, "");
 export const normalizeEmail = (s: string): string => s.trim().toLowerCase();
 
+/** 姓名、地址用 hasVisibleText:market_place_order 用 market_visible 判斷,只有全形空白、零寬字元也算沒填 */
 export const validateBuyer = (f: BuyerForm): BuyerErrors => {
   const e: BuyerErrors = {};
   const name = f.name.trim();
-  if (!name) e.name = "請填寫收件人姓名";
+  if (!hasVisibleText(name)) e.name = "請填寫收件人姓名";
   else if (name.length > LIMITS.buyerName) e.name = `姓名最多 ${LIMITS.buyerName} 字`;
   if (!PHONE_PATTERN.test(normalizePhone(f.phone))) e.phone = "請填寫手機或市話,例如 0912345678 或 02-2345-6789";
   const email = normalizeEmail(f.email);
   if (!EMAIL_PATTERN.test(email) || email.length > 254) e.email = "Email 格式不對(訂單通知會寄到這裡)";
   if (!isTwCity(f.city)) e.city = "請選擇收件縣市";
   const address = f.address.trim();
-  if (address.length < LIMITS.addressMin || address.length > LIMITS.address) {
+  if (!hasVisibleText(address) || address.length < LIMITS.addressMin || address.length > LIMITS.address) {
     e.address = `請填寫完整的收件地址(${LIMITS.addressMin}–${LIMITS.address} 字)`;
   }
   if (f.note.trim().length > LIMITS.buyerNote) e.note = `備註最多 ${LIMITS.buyerNote} 字`;

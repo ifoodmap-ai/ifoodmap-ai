@@ -67,6 +67,12 @@ describe("validateBuyer", () => {
     expect(validateBuyer({ ...GOOD, note: "字".repeat(301) }).note).toBe("備註最多 300 字");
     expect(validateBuyer(GOOD)).toEqual({});
   });
+
+  it("姓名、地址只有全形空白、零寬字元也算沒填(資料庫的 market_visible 一樣會擋成 INVALID_INPUT)", () => {
+    expect(validateBuyer({ ...GOOD, name: "\u{3000}\u{200B}" }).name).toBe("請填寫收件人姓名");
+    expect(validateBuyer({ ...GOOD, address: "\u{200B}".repeat(6) }).address).toBe("請填寫完整的收件地址(5–200 字)");
+    expect(validateBuyer({ ...GOOD, name: "\u{200B}王小明" }).name).toBeUndefined();
+  });
 });
 
 describe("buildCheckoutPayload", () => {
