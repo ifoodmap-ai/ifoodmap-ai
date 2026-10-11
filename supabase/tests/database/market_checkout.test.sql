@@ -307,11 +307,13 @@ SELECT pg_temp.expect('……被擋的那次不吃額度(Email 計數停在 3)',
     WHERE bucket = public.market_rate_key('email', 'rate@market-test.invalid',
                                           (SELECT value FROM public.app_config WHERE key = 'market_rate_salt')) || '|1h'),
   '3');
-SELECT pg_temp.expect('同一個 IP 一小時第 6 次 RATE_LIMITED',
-  (SELECT string_agg(pg_temp.place(pg_temp.anon(), '198.51.104.1', pg_temp.co('ip' || n || '@market-test.invalid',
-            jsonb_build_array(pg_temp.item('a2', 1)), '{"a9200000-0000-4000-8000-00000000000a":"cod"}')) ->> 'code', ',' ORDER BY n)
+-- 手機業者的 IPv4 常是一大群人共用一個(CGNAT):同一個 IP 一小時內不同買家各下一單都照常
+-- (A 段同一個 IP 每小時 30 次嘗試、B 段同一個 IPv4 每天 20 單;見第 5 節)
+SELECT pg_temp.expect('同一個 IPv4 一小時內 6 個買家各下一單都照常(CGNAT 共用位址不會誤擋)',
+  (SELECT string_agg(COALESCE(pg_temp.place(pg_temp.anon(), '198.51.104.1', pg_temp.co('ip' || n || '@market-test.invalid',
+            jsonb_build_array(pg_temp.item('a2', 1)), '{"a9200000-0000-4000-8000-00000000000a":"cod"}')) ->> 'code', 'ok'), ',' ORDER BY n)
      FROM generate_series(1, 6) AS n),
-  'RATE_LIMITED');
+  'ok,ok,ok,ok,ok,ok');
 SELECT pg_temp.expect('拿不到 IP 的請求不算 IP 額度(改算全站共用的保底 noip,每小時 60 次,見第 5 節)',
   pg_temp.place(pg_temp.anon(), NULL, pg_temp.co('noip@market-test.invalid',
     jsonb_build_array(pg_temp.item('a2', 1)), '{"a9200000-0000-4000-8000-00000000000a":"cod"}')) ->> 'ok',
@@ -321,7 +323,7 @@ SELECT pg_temp.expect('拿不到 IP 的請求不算 IP 額度(改算全站共用
 SELECT pg_temp.expect('計數表裡沒有明文 Email / 電話 / IP(bucket 都是雜湊格式)',
   (SELECT count(*)::text FROM public.market_rate_counters
     WHERE bucket NOT LIKE 'test:%' AND bucket <> 'global|day'
-      AND bucket !~ '^((ip|ip48|ip48o|email|phone):[0-9a-f]{16}|noip)[|](1h|day)$'), '0');
+      AND bucket !~ '^((ip|ip48|ipo|ip48o|email|phone):[0-9a-f]{16}|noip)[|](1h|day)$'), '0');
 SELECT pg_temp.expect('anon 讀不到訂單、明細、紀錄、計數',
   concat_ws('|',
     pg_temp.as_val('anon', pg_temp.anon(), $q$SELECT count(*)::text FROM public.market_orders$q$),
@@ -601,3 +603,28 @@ SELECT pg_temp.expect('……noip 計數 60(被擋的那次不算);不吃 B 段�
                                                      (SELECT value FROM public.app_config WHERE key = 'market_rate_salt')) || '|day'), '0'),
     ((SELECT hits FROM public.market_rate_counters WHERE bucket = 'global|day') - (SELECT v::text::integer FROM _ctx WHERE k = 'g1'))::text),
   '60|0|0|0');
+-- 5-7 IPv4 共用位址(CGNAT):A 段同一個 IP 每小時 30 次嘗試、不設每天(只防灌爆);B 段同一個 IPv4 每天 20 單(ipo,只算成單)
+SELECT pg_temp.expect('同一個 IPv4:失敗嘗試 29 次之後(第 30 次)照樣能下單,第 31 次嘗試 RATE_LIMITED',
+  (SELECT string_agg(COALESCE(pg_temp.place(pg_temp.anon(), '198.51.130.1',
+            CASE WHEN n <= 29 THEN pg_temp.co('cgnat-fail-' || n || '@market-test.invalid', jsonb_build_array(pg_temp.item('b1', 99)),
+                                              '{"a9200000-0000-4000-8000-00000000000b":"cod"}')
+                 ELSE pg_temp.co('cgnat-' || n || '@market-test.invalid', jsonb_build_array(pg_temp.item('a2', 1)),
+                                 '{"a9200000-0000-4000-8000-00000000000a":"cod"}') END) ->> 'code', 'ok'), ',' ORDER BY n)
+     FROM generate_series(1, 31) AS n),
+  repeat('OUT_OF_STOCK,', 29) || 'ok,RATE_LIMITED');
+SELECT pg_temp.place(pg_temp.anon(), '198.51.131.1', pg_temp.co('ipo-' || n || '@market-test.invalid',
+  jsonb_build_array(pg_temp.item('a2', 1)), '{"a9200000-0000-4000-8000-00000000000a":"cod"}'))
+  FROM generate_series(1, 20) AS n;
+INSERT INTO _ctx VALUES ('ipo_stock', to_jsonb((SELECT stock FROM public.market_products WHERE id = 'a9300000-0000-4000-8000-0000000000a1')));
+INSERT INTO _ctx VALUES ('ipo_21', pg_temp.place(pg_temp.anon(), '198.51.131.1', pg_temp.co('ipo-21@market-test.invalid',
+  jsonb_build_array(pg_temp.item('a1', 3)), '{"a9200000-0000-4000-8000-00000000000a":"cod"}')));
+SELECT pg_temp.expect('同一個 IPv4 當天第 21 單:RATE_LIMITED、不建單、庫存不變;這個 IPv4 的成單計數 20(只算成單)',
+  concat_ws('|',
+    (SELECT v ->> 'code' FROM _ctx WHERE k = 'ipo_21'),
+    (SELECT count(*)::text FROM public.market_orders WHERE buyer_email LIKE 'ipo-%@market-test.invalid'),
+    ((SELECT stock FROM public.market_products WHERE id = 'a9300000-0000-4000-8000-0000000000a1')
+       = (SELECT v::text::integer FROM _ctx WHERE k = 'ipo_stock'))::text,
+    COALESCE((SELECT hits::text FROM public.market_rate_counters
+               WHERE bucket = public.market_rate_key('ipo', '198.51.131.1',
+                                                     (SELECT value FROM public.app_config WHERE key = 'market_rate_salt')) || '|day'), '0')),
+  'RATE_LIMITED|20|true|20');

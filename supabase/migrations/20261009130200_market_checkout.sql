@@ -15,24 +15,28 @@
 -- 下單開關 app_config.market_checkout_open(預設 'false'):對外開放前只有平台管理員能下單,其他人拿到 MARKET_CLOSED;
 --   開關擋下的嘗試不寫任何計數。🔴 改成 'true' = 對外開放,待業主核准。
 --
--- 防灌單(market_rate_take,不沿用 ai_rate_take —— 理由見計畫「關鍵技術決定」第 1 點);平台管理員(業主實測)不限流:
---   A 段:同一個網路的嘗試次數,失敗的嘗試也算(回 RATE_LIMITED)
---     同一個 IP(IPv4 用完整位址、IPv6 取 /64):每小時 5 次、每天 20 次
---     IPv6 另外彙總到 /48(bucket 種類 ip48):每小時 200 次,只用來防灌爆 —— /48 是電信、寬頻業者的共用位址池,
---       手機、家用寬頻拿到的 /64、/56 都從這裡切,一個 /48 背後可能是成千上萬個互不相干的用戶;
---       所以 /48 嚴格的額度只算成單(B 段的 ip48o),不算嘗試(不然鄰居送幾次空購物車就能讓別人下不了單)
---     拿不到 IP:改用全站共用的一格 noip,每小時 60 次、每天 300 次(拿得到 IP 時不加這條)。
+-- 防灌單(market_rate_take,不沿用 ai_rate_take —— 理由見計畫「關鍵技術決定」第 1 點);平台管理員(業主實測)不限流。
+--   A 段只防灌爆:同一個網路的嘗試次數,失敗的嘗試也算(回 RATE_LIMITED)
+--     ip(IPv4 用完整位址、IPv6 取 /64):每小時 30 次,不設每天 —— 手機業者的 IPv4 常是一大群人共用一個(CGNAT),
+--       每天的上限會誤擋同一個出口後面的正常買家;成單另外由 B 段的 ipo / ip48o 管
+--     ip48(IPv6 的 /48):每小時 200 次 —— /48 是電信、寬頻業者的共用位址池(手機、家用寬頻的 /64、/56 都從這裡切),
+--       一個 /48 背後可能是成千上萬個互不相干的用戶,所以只防灌爆;嚴格的額度只算成單(B 段的 ip48o)
+--     noip(拿不到 IP):全站共用一格,每小時 60 次、每天 300 次(拿得到 IP 時不加這條)。
 --       正常情況一定拿得到 IP(計畫 Task 57 Step 8-2 會驗);這條只是 IP 取不到時的保險 ——
 --       被觸發代表 IP 取得壞了(所有拿不到 IP 的請求共用這一格,正常買家也會被擋),要去查。
---   B 段:所有檢查都通過、準備建單時才扣,一次結帳不論幾家店都算 1;缺貨、價格變了、超過金額上限、配送不到、
---     未達最低金額等失敗都不吃這段
---     同一個 Email(去 +tag、gmail 去點,沿用 supplier_mail_email_key):每小時 3 次、每天 10 次
---     同一支電話:每天 10 次;全站:每天 500 次(DAILY_CAP)
---     IPv6 同一個 /48:每天 20 單(bucket 種類 ip48o,跟 A 段的 ip48 名稱不同;只有 IPv6 才加)——
---       A 段的 /48 放寬之後一定要有這條,不然用假訂單吃光全站 500 單會變便宜
---     B 段被擋時不建單、不動庫存;A 段已經扣的照算
+--   B 段只算成單:所有檢查都通過、準備建單時才扣,一次結帳不論幾家店都算 1;缺貨、價格變了、超過金額上限、配送不到、
+--     未達最低金額等失敗都不吃這段。B 段被擋時不建單、不動庫存;A 段已經扣的照算
+--     email(去 +tag、gmail 去點,沿用 supplier_mail_email_key):每小時 3 單、每天 10 單 —— 同一個買家
+--     phone:每天 10 單 —— 同一個買家換了 Email 也擋得到
+--     ipo(只有 IPv4):同一個 IPv4 每天 20 單;ip48o(只有 IPv6):同一個 /48 每天 20 單 —— 同一個網路的成單上限。
+--       A 段為了 CGNAT、共用 /48 放寬之後一定要有這兩條,不然用假訂單吃光全站 500 單會變便宜
+--     global:全站每天 500 單(DAILY_CAP)—— 總量的保險
+--   A 段的 bucket(ip / ip48 / noip)跟 B 段的(email / phone / ipo / ip48o / global)名稱不重疊。
 --   同一段裡任何一條超過就整段退回(被擋的那次不吃那一段的額度)。
 --   IP / Email / 電話只以「加鹽 sha256 前 16 hex」落地(鹽 = app_config.market_rate_salt,migration 產生,不印出來)
+--   量變大時怎麼調:另開一支 migration,用 CREATE OR REPLACE FUNCTION public.market_place_order 改 A 段、B 段的數字
+--     (計數表與 market_rate_take 不用動)。窗格是整點與台北日:數字改小時,目前窗格裡已經有的計數照算,
+--     下一個窗格起完全生效;要加新的一條,bucket 種類取新名字,不要跟另一段重疊。
 --
 -- 前端:src/lib/market/checkout.ts(結帳)、src/lib/market/lookup.ts(查單)。
 -- 還原:supabase/rollbacks/20261009130200_market_checkout.down.sql
@@ -328,9 +332,9 @@ BEGIN
     v_salt := COALESCE((SELECT c.value FROM public.app_config c WHERE c.key = 'market_rate_salt'), 'ifoodmap-market-rate-fallback');
     v_ip := public.market_client_ip();
     IF v_ip IS NOT NULL THEN
+      -- 同一個 IP(IPv4 完整位址、IPv6 /64)每小時 30 次:只防灌爆;CGNAT 後面很多人共用,不設每天(成單看 B 段的 ipo)
       v_rules := jsonb_build_array(
-        jsonb_build_object('bucket', public.market_rate_key('ip', v_ip, v_salt), 'window', '1h', 'limit', 5),
-        jsonb_build_object('bucket', public.market_rate_key('ip', v_ip, v_salt), 'window', 'day', 'limit', 20)
+        jsonb_build_object('bucket', public.market_rate_key('ip', v_ip, v_salt), 'window', '1h', 'limit', 30)
       );
       -- IPv6 另外彙總到 /48(market_client_ip 已經把 IPv6 正規化成 /64 的網段位址):每小時 200 次,只防灌爆。
       -- /48 是很多用戶共用的位址池,嚴格的額度只算成單(第 7 步 B 段的 ip48o,每天 20 單)
@@ -480,10 +484,15 @@ BEGIN
       jsonb_build_object('bucket', public.market_rate_key('phone', v_phone, v_salt), 'window', 'day', 'limit', 10),
       jsonb_build_object('bucket', 'global', 'window', 'day', 'limit', 500, 'code', 'DAILY_CAP')
     );
-    -- IPv6:同一個 /48 每天 20 單(bucket ip48o,跟 A 段的 ip48 名稱不同,維持「A 計數 → 商品 → B 計數」不重疊)
+    -- 同一個網路的成單上限,每天 20 單:IPv6 算 /48(ip48o)、IPv4 算整個位址(ipo);拿不到 IP 就不加。
+    -- 名稱跟 A 段(ip / ip48 / noip)不同,維持「A 計數 → 商品 → B 計數」不重疊
     IF v_ip48 IS NOT NULL THEN
       v_rules := v_rules || jsonb_build_array(
         jsonb_build_object('bucket', public.market_rate_key('ip48o', v_ip48, v_salt), 'window', 'day', 'limit', 20)
+      );
+    ELSIF v_ip IS NOT NULL THEN
+      v_rules := v_rules || jsonb_build_array(
+        jsonb_build_object('bucket', public.market_rate_key('ipo', v_ip, v_salt), 'window', 'day', 'limit', 20)
       );
     END IF;
     v_rate := public.market_rate_take(v_rules);
