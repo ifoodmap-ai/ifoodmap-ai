@@ -364,11 +364,13 @@
     .mc-flowcta:hover, .mc-flowcta:focus-visible { transform:none; }
   }
 
-  /* 首頁「食材分類」標題列的右側:副標維持原本靠右的位置,消費者食材市集的入口疊在副標正下方、一起靠右。
+  /* 首頁「食材分類」標題列的右側:副標維持原本的位置,消費者食材市集的入口疊在副標正下方、一起靠右。
      標題列(.mc-cathead)的 align-items:baseline 對齊的是這一欄第一個子元素(副標)的基線,所以副標的位置不變。
-     手機(<=768px)在 #m-compact 把這一欄拆掉(display:contents),副標與入口回到標題列的 flex 裡照原本的方式換行
-     (手機直拿時入口在標題下方另起一行)。 */
+     561–768px(手機橫拿、平板直拿)也走這一套;只有 <=560px 在 #m-compact 把這一欄拆掉(display:contents),
+     副標照原本的方式排、入口那一列(.mc-catmarketrow)佔滿一行,入口固定在標題下方另起一行。
+     .mc-catmarketrow 用 flex:入口的高度只看入口自己,不會被這一列的行高撐高。 */
   .mc-catside { display:flex; flex-direction:column; align-items:flex-end; gap:6px; }
+  .mc-catmarketrow { display:flex; }
   .contact-submit { border:0; min-height:52px; }
   .footer-grid { display:grid; grid-template-columns:minmax(250px,1.5fr) repeat(4,minmax(120px,1fr)); gap:32px; }
   .footer-group-title { font-size:14px; font-weight:700; color:#fff; margin-bottom:16px; }
@@ -981,7 +983,7 @@
           <h2 style="font-size:clamp(26px,3.4vw,38px)">{{ L.home.categoriesTitle }}</h2>
           <div class="mc-catside">
             <p class="mc-catsub" style="font-size:14px;color:#4B5A52;font-weight:300">{{ L.home.categoriesSub }}</p>
-            <a href="{{ marketUrl }}" class="mc-catmarket" style="font-size:14.5px;font-weight:700;color:#0E6B40;text-decoration:underline;text-underline-offset:3px">{{ L.home.marketCta }}</a>
+            <div class="mc-catmarketrow"><a href="{{ marketUrl }}" class="mc-catmarket" style="font-size:14.5px;font-weight:700;color:#0E6B40;text-decoration:underline;text-underline-offset:3px">{{ L.home.marketCta }}</a></div>
           </div>
         </div>
         <div class="mc-catgrid" style="margin-top:34px;display:grid;grid-template-columns:repeat(auto-fill,minmax(168px,1fr));gap:0;border-top:1px solid #E1E7E3;border-left:1px solid #E1E7E3;border-radius:12px;overflow:hidden">
@@ -3133,8 +3135,7 @@ class Component extends DCLogic {
   /* 「食材分類」：12 格 x（96px 圖框 + 一行字）= 2.5 螢幕，整頁最糟的一塊。
      改 3 欄 + 圖框 96 -> 54px。整格 ~100px 高，仍遠大於 44px 觸控下限。 */
   .mc-cathead    { gap: 6px !important; }
-  /* 桌機把副標與市集入口疊成靠右的一欄(.mc-catside);手機拆掉這一欄,兩個照原本的方式在標題列裡換行 */
-  .mc-catside    { display: contents !important; }
+  /* 副標與市集入口那一欄(.mc-catside)在 561–768px 跟桌機一樣靠右直排,只有 <=560px 才拆開(規則在 #m-compact 最後的 560px 斷點) */
   .mc-catsub     { line-height: 1.5 !important; }
   .mc-catgrid    { grid-template-columns: repeat(3, minmax(0, 1fr)) !important; margin-top: 16px !important; gap: 0 !important; }
   .mc-catcell    { text-align: center !important; }
@@ -3183,6 +3184,15 @@ class Component extends DCLogic {
   .about-value-card { padding: 18px !important; }
   .contact-role-grid { margin-bottom: 20px !important; }
   .ifm-news-hero { gap: 18px !important; }
+  }
+
+  /* 「食材分類」標題列,手機直拿(<=560px):副標與市集入口那一欄拆掉(display:contents),副標照原本的方式
+     跟標題排在一起或換行;入口那一列佔滿一行,入口固定在標題下方另起一行、靠左。
+     不能只靠「三個擠不下就會換行」:中文約 559px 起標題、副標、入口三個就擠得進同一行,副標會被夾到中間。
+     561px 以上見主要 <style> 的 .mc-catside(副標維持原位,入口疊在副標正下方、一起靠右)。 */
+  @media (max-width: 560px) {
+    .mc-catside      { display: contents !important; }
+    .mc-catmarketrow { flex-basis: 100% !important; }
   }
 </style>
 <style id="pf">

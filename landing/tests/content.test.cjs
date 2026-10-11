@@ -335,21 +335,30 @@ test('home links to the consumer food market on the product site (/market)', () 
   assert.equal(dict('en').home.marketCta, 'Buying for home? Visit the Food Market →');
 });
 
-test('market entry sits right under the categories subtitle on wide screens, on its own line on phones', () => {
-  // 寬螢幕:副標維持原本靠右,入口疊在副標正下方、一起靠右;手機維持在標題下方另起一行。
-  // 副標與入口包在 .mc-catside 裡,版面寫在 <style>,不寫行內(support.js 會把行內的多欄 grid 改掉)。
+test('market entry sits right under the categories subtitle above 560px, on its own line on phones', () => {
+  // >560px(含 561–768 的手機橫拿 / 平板直拿):副標跟正式站一樣的位置,入口疊在副標正下方、一起靠右。
+  // ≤560px(手機直拿):副標照舊,入口在標題下方另起一行 —— 用 .mc-catmarketrow 佔滿一行來換行,
+  // 不靠「三個剛好擠不下」(中文約 559px 起三個就擠得進同一行,副標會被夾到中間)。
+  // 版面寫在 <style>,不寫行內(support.js 會把行內的多欄 grid 改掉)。
   assert.match(
     home,
-    /<div class="mc-cathead"[^>]*>\s*<h2[^>]*>食材分類<\/h2>\s*<div class="mc-catside">\s*<p class="mc-catsub"[^>]*>從產地、工廠、大盤到小盤商<\/p>\s*<a href="\{\{ marketUrl \}\}" class="mc-catmarket"[^>]*>個人也能買：逛食材市集 →<\/a>\s*<\/div>\s*<\/div>/,
+    /<div class="mc-cathead"[^>]*>\s*<h2[^>]*>食材分類<\/h2>\s*<div class="mc-catside">\s*<p class="mc-catsub"[^>]*>從產地、工廠、大盤到小盤商<\/p>\s*<div class="mc-catmarketrow">\s*<a href="\{\{ marketUrl \}\}" class="mc-catmarket"[^>]*>個人也能買：逛食材市集 →<\/a>\s*<\/div>\s*<\/div>\s*<\/div>/,
   );
-  // 寬螢幕(主要 <style>):直排、靠右,副標在上
+  // >560px(主要 <style>):直排、靠右,副標在上;入口那一列是 flex,高度跟入口本身一樣(不吃外層的行高)
   const mainStyle = source.slice(source.indexOf('<x-dc>'), source.indexOf('</x-dc>'));
   assert.match(mainStyle, /\.mc-catside\s*\{[^}]*display:\s*flex;[^}]*flex-direction:\s*column;[^}]*align-items:\s*flex-end;/);
+  assert.match(mainStyle, /\.mc-catmarketrow\s*\{[^}]*display:\s*flex;/);
   assert.doesNotMatch(mainStyle, /\.mc-catside[^{]*\{[^}]*display:\s*contents/);
-  // 手機(m-compact,≤768px):拆掉外框,副標與入口回到標題列的 flex 裡換行
+  // ≤560px(m-compact 裡獨立的 560 斷點):拆掉外框回到標題列的 flex,入口那一列佔滿整行
   const compactStart = source.indexOf('<style id="m-compact">');
   const compact = source.slice(compactStart, source.indexOf('</style>', compactStart));
-  assert.match(compact, /\.mc-catside\s*\{\s*display:\s*contents\s*!important;\s*\}/);
+  const at560 = compact.indexOf('@media (max-width: 560px)');
+  assert.ok(at560 > 0, 'm-compact 少了 560px 的斷點');
+  const phone = compact.slice(at560);
+  assert.match(phone, /\.mc-catside\s*\{\s*display:\s*contents\s*!important;\s*\}/);
+  assert.match(phone, /\.mc-catmarketrow\s*\{\s*flex-basis:\s*100%\s*!important;\s*\}/);
+  // 561–768px 不拆(768 那一大段裡不能再有 .mc-catside 的規則)
+  assert.doesNotMatch(compact.slice(0, at560), /\.mc-catside\s*\{/);
 });
 
 test('market entry gets the same 3px keyboard focus ring as the other home links', () => {
