@@ -1,0 +1,396 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { describe, expect, it, vi } from "vitest";
+import { FakeDb, type FakeDbOptions, type Row } from "../../tests/fake-supabase.ts";
+import type { MailConfig, SendMail } from "../_shared/supplier-mail.ts";
+import { sha256Hex } from "../ai/crypto.ts";
+import { marketLiveFromEnv } from "./gate.ts";
+import { createMarketNotifyHandler, EVENT_COLUMNS, ITEM_COLUMNS, ORDER_COLUMNS } from "./handler.ts";
+
+const SECRET = "notify-secret";
+const TOKEN = `tok_${"x".repeat(39)}`; // 43 字元 base64url
+const HASH = await sha256Hex(TOKEN);
+const CHECKOUT = "a9500000-0000-4000-8000-000000000001";
+const ORDER_A = "a9600000-0000-4000-8000-0000000000a1";
+const ORDER_B = "a9600000-0000-4000-8000-0000000000b1";
+const SUP_A = "a9200000-0000-4000-8000-00000000000a";
+const SUP_B = "a9200000-0000-4000-8000-00000000000b";
+const EV = (n: number) => `a9700000-0000-4000-8000-${String(n).padStart(12, "0")}`;
+
+const CONFIG: MailConfig = {
+  resendKey: "re_test",
+  applicantFrom: "iFoodmap 食材地圖 <noreply@gathertaiwan.com>",
+  ownerFrom: "iFoodmap 表單通知 <noreply@gathertaiwan.com>",
+  ownerTo: ["ifoodmaptw@gmail.com"],
+  replyTo: "ifoodmaptw@gmail.com",
+  siteUrl: "https://app.ifoodmap.ai",
+  adminSiteUrl: "https://ifoodmap-admin.vercel.app",
+};
+
+const order = (over: Row): Row => ({
+  checkout_id: CHECKOUT,
+  status: "pending",
+  buyer_name: "王小明",
+  buyer_email: "buyer@example.com",
+  ship_city: "臺北市",
+  ship_address: "測試路 1 號",
+  buyer_note: null,
+  payment_method: "cod",
+  lookup_token_hash: HASH,
+  ...over,
+});
+
+const tables = (): Record<string, Row[]> => ({
+  suppliers: [
+    { id: SUP_A, name: "市集測試 A 店", contact_email: "store-a@example.com" },
+    { id: SUP_B, name: "市集測試 B 店", contact_email: null },
+  ],
+  market_stores: [
+    { supplier_id: SUP_A, ship_days: 2 },
+    { supplier_id: SUP_B, ship_days: 3 },
+  ],
+  market_store_transfer: [{ supplier_id: SUP_B, transfer_info: "郵局(700) 帳號 0001234-5678901" }],
+  market_orders: [
+    order({ id: ORDER_A, supplier_id: SUP_A, subtotal: 650, shipping_fee: 120, total: 770 }),
+    order({ id: ORDER_B, supplier_id: SUP_B, subtotal: 400, shipping_fee: 60, total: 460, payment_method: "transfer" }),
+  ],
+  market_order_items: [
+    { order_id: ORDER_A, product_name: "有機高麗菜", spec: "1 顆", qty: 2, unit_price: 100, line_total: 200 },
+    { order_id: ORDER_A, product_name: "牛肉片", spec: "300g/盒", qty: 1, unit_price: 450, line_total: 450 },
+    { order_id: ORDER_B, product_name: "挪威鮭魚", spec: "200g/片", qty: 2, unit_price: 200, line_total: 400 },
+  ],
+  market_order_events: [
+    { id: EV(1), order_id: ORDER_A, from_status: null, to_status: "pending", actor_role: "consumer", note: null, payload: {} },
+    { id: EV(2), order_id: ORDER_A, from_status: "pending", to_status: "confirmed", actor_role: "supplier", note: null, payload: {} },
+    { id: EV(3), order_id: ORDER_B, from_status: "pending", to_status: "confirmed", actor_role: "supplier", note: null, payload: {} },
+    { id: EV(4), order_id: ORDER_B, from_status: "confirmed", to_status: "awaiting_payment", actor_role: "system", note: null, payload: {} },
+    { id: EV(5), order_id: ORDER_A, from_status: "pending", to_status: "cancelled", actor_role: "admin", note: "疑似假單", payload: {} },
+    { id: EV(6), order_id: ORDER_A, from_status: "confirmed", to_status: "shipped", actor_role: "supplier", note: null, payload: { carrier: "黑貓宅急便", tracking_no: "9001" } },
+    { id: EV(7), order_id: ORDER_A, from_status: "shipped", to_status: "completed", actor_role: "supplier", note: null, payload: {} },
+    { id: EV(8), order_id: ORDER_B, from_status: null, to_status: "pending", actor_role: "consumer", note: null, payload: {} },
+  ],
+  notifications: [],
+});
+
+const setup = (opts: { live?: boolean; secret?: string; fail?: FakeDbOptions["fail"]; send?: SendMail } = {}) => {
+  const db = new FakeDb({ tables: tables(), fail: opts.fail });
+  const send = vi.fn(opts.send ?? (async () => ({ ok: true, id: "re_1", error: null })));
+  const log = vi.fn();
+  const handler = createMarketNotifyHandler({
+    db,
+    send,
+    config: CONFIG,
+    secret: opts.secret ?? SECRET,
+    isLive: () => opts.live ?? false,
+    log,
+  });
+  const call = async (body: unknown, auth = `Bearer ${SECRET}`, method = "POST") => {
+    const res = await handler(
+      new Request("https://x.supabase.co/functions/v1/market-notify", {
+        method,
+        headers: { authorization: auth, "content-type": "application/json" },
+        body: method === "POST" ? JSON.stringify(body) : undefined,
+      }),
+    );
+    const text = await res.text();
+    return { status: res.status, text, body: text ? JSON.parse(text) : null };
+  };
+  return { db, send, log, call };
+};
+
+describe("market-notify:驗證", () => {
+  it("沒設密鑰 503;密鑰不對 401;不是 POST 405;都不寄信", async () => {
+    expect((await setup({ secret: "" }).call({ kind: "event", event_id: EV(1) })).status).toBe(503);
+    const s = setup();
+    expect((await s.call({ kind: "event", event_id: EV(1) }, "Bearer wrong")).status).toBe(401);
+    expect((await s.call(null, `Bearer ${SECRET}`, "GET")).status).toBe(405);
+    expect(s.send).not.toHaveBeenCalled();
+  });
+
+  it("kind 不對、id 格式不對 400", async () => {
+    const s = setup();
+    expect((await s.call({ kind: "nope" })).status).toBe(400);
+    expect((await s.call({ kind: "event", event_id: "1" })).status).toBe(400);
+    expect((await s.call({ kind: "placed", checkout_id: CHECKOUT, token: "short" })).status).toBe(400);
+  });
+});
+
+describe("market-notify:下單確認", () => {
+  it("閘門關閉:只寄一封到測試信箱,列出兩家店與查詢連結;回應與紀錄都沒有 token", async () => {
+    const s = setup();
+    const r = await s.call({ kind: "placed", checkout_id: CHECKOUT, token: TOKEN });
+    expect(r.status).toBe(200);
+    expect(r.body.data).toMatchObject({ live: false, sent: 1, total: 1, orders: 2 });
+    expect(s.send).toHaveBeenCalledTimes(1);
+    const msg = s.send.mock.calls[0][0];
+    expect(msg.to).toEqual(["ifoodmaptw@gmail.com"]);
+    expect(msg.subject).toBe("[測試轉寄] 訂單已送出(共 2 家店)— iFoodmap 食材市集");
+    expect(msg.html).toContain("buyer@example.com");
+    expect(msg.html).toContain(`https://app.ifoodmap.ai/market/orders/${TOKEN}`);
+    expect(msg.html).toContain("市集測試 A 店");
+    expect(msg.html).toContain("市集測試 B 店");
+    expect(msg.replyTo).toBe("ifoodmaptw@gmail.com");
+    expect(r.text).not.toContain(TOKEN);
+    expect(JSON.stringify(s.db.tables.notifications)).not.toContain(TOKEN);
+    expect(s.db.tables.notifications).toHaveLength(1);
+    expect(s.db.tables.notifications[0]).toMatchObject({ recipient: "ifoodmaptw@gmail.com", channel: "email", status: "sent" });
+  });
+
+  it("閘門開放:寄給消費者本人", async () => {
+    const s = setup({ live: true });
+    await s.call({ kind: "placed", checkout_id: CHECKOUT, token: TOKEN });
+    expect(s.send.mock.calls[0][0].to).toEqual(["buyer@example.com"]);
+    expect(s.send.mock.calls[0][0].subject).toBe("訂單已送出(共 2 家店)— iFoodmap 食材市集");
+  });
+
+  it("token 跟訂單上的雜湊對不上 403,不寄", async () => {
+    const s = setup();
+    const r = await s.call({ kind: "placed", checkout_id: CHECKOUT, token: `tok_${"y".repeat(39)}` });
+    expect(r.status).toBe(403);
+    expect(s.send).not.toHaveBeenCalled();
+  });
+
+  it("找不到這次結帳 404", async () => {
+    const s = setup();
+    expect((await s.call({ kind: "placed", checkout_id: "a9500000-0000-4000-8000-000000000099", token: TOKEN })).status).toBe(404);
+  });
+});
+
+describe("market-notify:狀態紀錄", () => {
+  it("新訂單 → 供應商(閘門開放時寄到店家信箱,附後台連結)", async () => {
+    const s = setup({ live: true });
+    const r = await s.call({ kind: "event", event_id: EV(1) });
+    expect(r.body.data).toMatchObject({ kinds: ["supplier_new"], sent: 1 });
+    const msg = s.send.mock.calls[0][0];
+    expect(msg.to).toEqual(["store-a@example.com"]);
+    expect(msg.html).toContain('href="https://app.ifoodmap.ai/supplier/market/orders"');
+  });
+
+  it("貨到付款接單 → 消費者;回信給店家", async () => {
+    const s = setup({ live: true });
+    await s.call({ kind: "event", event_id: EV(2) });
+    const msg = s.send.mock.calls[0][0];
+    expect(msg.to).toEqual(["buyer@example.com"]);
+    expect(msg.subject).toContain("市集測試 A 店 已接單");
+    expect(msg.replyTo).toBe("store-a@example.com");
+  });
+
+  it("轉帳訂單:confirmed 不寄,緊接著的 awaiting_payment 寄匯款資訊", async () => {
+    const s = setup({ live: true });
+    expect((await s.call({ kind: "event", event_id: EV(3) })).body.data).toMatchObject({ skipped: true });
+    await s.call({ kind: "event", event_id: EV(4) });
+    expect(s.send).toHaveBeenCalledTimes(1);
+    expect(s.send.mock.calls[0][0].html).toContain("郵局(700) 帳號 0001234-5678901");
+    // B 店沒有聯絡信箱 → 回信退回平台信箱
+    expect(s.send.mock.calls[0][0].replyTo).toBe("ifoodmaptw@gmail.com");
+  });
+
+  it("平台取消 → 消費者與供應商各一封;閘門關閉時兩封都寄測試信箱", async () => {
+    const s = setup();
+    const r = await s.call({ kind: "event", event_id: EV(5) });
+    expect(r.body.data).toMatchObject({ kinds: ["consumer_cancelled", "supplier_cancelled_by_platform"], sent: 2 });
+    expect(s.send.mock.calls.map((c) => c[0].to[0])).toEqual(["ifoodmaptw@gmail.com", "ifoodmaptw@gmail.com"]);
+    expect(s.send.mock.calls[1][0].html).toContain("store-a@example.com");
+    expect(s.send.mock.calls[1][0].html).toContain("疑似假單");
+  });
+
+  it("出貨信帶物流單號;完成不寄", async () => {
+    const s = setup({ live: true });
+    await s.call({ kind: "event", event_id: EV(6) });
+    expect(s.send.mock.calls[0][0].html).toContain("黑貓宅急便,單號 9001");
+    expect((await s.call({ kind: "event", event_id: EV(7) })).body.data).toMatchObject({ skipped: true });
+    expect(s.send).toHaveBeenCalledTimes(1);
+  });
+
+  it("供應商沒有聯絡信箱:跳過並記錯誤,仍回 200", async () => {
+    const s = setup({ live: true });
+    const r = await s.call({ kind: "event", event_id: EV(8) });
+    expect(r.status).toBe(200);
+    expect(r.body.data).toMatchObject({ sent: 0, skipped: ["supplier_new"] });
+    expect(s.log).toHaveBeenCalledWith("error", expect.objectContaining({ kind: "supplier_new" }));
+  });
+
+  it("寄信失敗:紀錄標 failed、記錯誤", async () => {
+    const s = setup({ live: true, send: async () => ({ ok: false, id: null, error: "Resend 500" }) });
+    const r = await s.call({ kind: "event", event_id: EV(2) });
+    expect(r.body.data).toMatchObject({ sent: 0, total: 1 });
+    expect(s.db.tables.notifications[0]).toMatchObject({ status: "failed", sent_at: null });
+    expect(s.log).toHaveBeenCalledWith("error", expect.objectContaining({ step: "send", error: "Resend 500" }));
+  });
+
+  it("讀資料庫失敗 500(不洩漏細節)", async () => {
+    const s = setup({ fail: (table) => (table === "market_orders" ? { message: "boom" } : undefined) });
+    const r = await s.call({ kind: "event", event_id: EV(1) });
+    expect(r.status).toBe(500);
+    expect(r.text).not.toContain("boom");
+    expect(s.log).toHaveBeenCalledWith("error", expect.objectContaining({ error: "boom" }));
+  });
+});
+
+describe("讀取的欄位都存在於 migration", () => {
+  const sql = readFileSync(resolve(__dirname, "../../migrations/20261009130000_market_orders.sql"), "utf8");
+  const tableBlock = (name: string) => {
+    const start = sql.indexOf(`CREATE TABLE IF NOT EXISTS public.${name} (`);
+    expect(start, name).toBeGreaterThan(-1);
+    return sql.slice(start, sql.indexOf("\n);", start));
+  };
+  it.each([
+    ["market_orders", ORDER_COLUMNS],
+    ["market_order_items", ITEM_COLUMNS],
+    ["market_order_events", EVENT_COLUMNS],
+  ])("%s", (table, columns) => {
+    const block = tableBlock(table);
+    for (const col of columns.split(",").map((c) => c.trim())) {
+      expect(block, `${table}.${col}`).toMatch(new RegExp(`\\n\\s+${col}\\s`));
+    }
+  });
+});
+
+// ---------------------------------------------------------------------
+// 派工追加(2026-10-11):閘門與 token 走完整條路徑
+// ---------------------------------------------------------------------
+
+/** 跟 index.ts 一樣:每次請求用 marketLiveFromEnv 讀「環境變數」(這裡是測試中途可以改值的物件) */
+const setupEnv = (env: Record<string, string | undefined>) => {
+  const db = new FakeDb({ tables: tables() });
+  const send = vi.fn<SendMail>(async () => ({ ok: true, id: "re_1", error: null }));
+  const handler = createMarketNotifyHandler({
+    db,
+    send,
+    config: CONFIG,
+    secret: SECRET,
+    isLive: () => marketLiveFromEnv((key) => env[key]),
+    log: vi.fn(),
+  });
+  const call = async (body: unknown) => {
+    const res = await handler(
+      new Request("https://x.supabase.co/functions/v1/market-notify", {
+        method: "POST",
+        headers: { authorization: `Bearer ${SECRET}`, "content-type": "application/json" },
+        body: JSON.stringify(body),
+      }),
+    );
+    const text = await res.text();
+    return { status: res.status, text, body: text ? JSON.parse(text) : null };
+  };
+  return { db, send, call };
+};
+
+describe("market-notify:MARKET_NOTIFY_LIVE 不是剛好字串 true,就不會寄給真實的消費者或供應商", () => {
+  const NOT_LIVE: (string | undefined)[] = [undefined, "", "TRUE", "True", "1", " true", "true ", "\ttrue", "true\n", "yes", "false"];
+  const REAL = ["buyer@example.com", "store-a@example.com"];
+
+  it("每一種值:下單確認、新訂單、接單、平台取消全部轉寄 ifoodmaptw@gmail.com,主旨加 [測試轉寄]、回信也是平台信箱", async () => {
+    for (const v of NOT_LIVE) {
+      const label = `MARKET_NOTIFY_LIVE=${JSON.stringify(v)}`;
+      // 餐廳訂單的 NOTIFY_LIVE 開了也一樣:零售只看 MARKET_NOTIFY_LIVE
+      const s = setupEnv({ MARKET_NOTIFY_LIVE: v, NOTIFY_LIVE: "true" });
+      expect((await s.call({ kind: "placed", checkout_id: CHECKOUT, token: TOKEN })).body.data, label).toMatchObject({ live: false, sent: 1 });
+      // 新訂單(→ 供應商)、貨到付款接單(→ 消費者)、平台取消(→ 消費者 + 供應商)
+      for (const id of [EV(1), EV(2), EV(5)]) {
+        expect((await s.call({ kind: "event", event_id: id })).body.data, `${label} ${id}`).toMatchObject({ live: false });
+      }
+      const msgs = s.send.mock.calls.map((c) => c[0]);
+      expect(msgs, label).toHaveLength(5);
+      for (const m of msgs) {
+        expect(m.to, label).toEqual(["ifoodmaptw@gmail.com"]);
+        expect(m.subject.startsWith("[測試轉寄] "), `${label} ${m.subject}`).toBe(true);
+        expect(m.replyTo, label).toBe("ifoodmaptw@gmail.com");
+        expect(m.text.startsWith("[測試轉寄] 原本的收件人:"), label).toBe(true);
+        expect(m.html, label).toContain("MARKET_NOTIFY_LIVE 未開啟");
+      }
+      expect(msgs.flatMap((m) => m.to).filter((to) => REAL.includes(to)), label).toEqual([]);
+      // 原收件人只列在轉寄說明裡
+      expect(msgs[0].html, label).toContain("原本的收件人(消費者):buyer@example.com");
+      expect(msgs[1].html, label).toContain("原本的收件人(供應商):store-a@example.com");
+      expect(s.db.tables.notifications.map((n) => n.recipient), label).toEqual(Array(5).fill("ifoodmaptw@gmail.com"));
+    }
+  });
+
+  it("對照組:剛好字串 true 才寄給本人(同一套流程)", async () => {
+    const s = setupEnv({ MARKET_NOTIFY_LIVE: "true" });
+    await s.call({ kind: "placed", checkout_id: CHECKOUT, token: TOKEN });
+    await s.call({ kind: "event", event_id: EV(1) });
+    expect(s.send.mock.calls.map((c) => c[0].to)).toEqual([["buyer@example.com"], ["store-a@example.com"]]);
+    expect(s.send.mock.calls.every((c) => !c[0].subject.includes("[測試轉寄]"))).toBe(true);
+  });
+
+  it("每次請求都重讀(不快取):改成 true 才寄本人,改回空字串下一封立刻回到轉寄", async () => {
+    const env: Record<string, string | undefined> = {};
+    const s = setupEnv(env);
+    await s.call({ kind: "event", event_id: EV(2) });
+    env.MARKET_NOTIFY_LIVE = "true";
+    await s.call({ kind: "event", event_id: EV(2) });
+    env.MARKET_NOTIFY_LIVE = "";
+    await s.call({ kind: "event", event_id: EV(2) });
+    expect(s.send.mock.calls.map((c) => c[0].to[0])).toEqual(["ifoodmaptw@gmail.com", "buyer@example.com", "ifoodmaptw@gmail.com"]);
+  });
+
+  it("index.ts(Deno 入口,vitest 跑不到)的閘門只接 marketLiveFromEnv、每次請求讀 Deno.env", () => {
+    const src = readFileSync(resolve(__dirname, "index.ts"), "utf8");
+    expect(src).toContain("isLive: () => marketLiveFromEnv((k) => Deno.env.get(k)),");
+    expect(src.match(/\bisLive\s*:/g)).toHaveLength(1);
+  });
+});
+
+describe("market-notify:token 只出現在寄出的確認信,回應、log、資料庫都沒有", () => {
+  const WRONG = `tok_${"y".repeat(39)}`;
+  /** 回應內文、每一筆 log、每一次資料庫讀寫(條件與內容;會進 PostgREST 網址與 log)、資料表內容 */
+  const leaks = (s: ReturnType<typeof setup>, r: { text: string }, token: string) => ({
+    response: r.text.includes(token),
+    log: JSON.stringify(s.log.mock.calls).includes(token),
+    dbCalls: JSON.stringify(s.db.calls).includes(token),
+    dbRows: JSON.stringify(s.db.tables).includes(token),
+  });
+  const NONE = { response: false, log: false, dbCalls: false, dbRows: false };
+  const link = `https://app.ifoodmap.ai/market/orders/${TOKEN}`;
+
+  it("閘門關閉 / 開放:token 只在信裡的連結(html 與純文字)", async () => {
+    for (const live of [false, true]) {
+      const s = setup({ live });
+      const r = await s.call({ kind: "placed", checkout_id: CHECKOUT, token: TOKEN });
+      expect(r.status).toBe(200);
+      const msg = s.send.mock.calls[0][0];
+      expect(msg.html).toContain(`href="${link}"`);
+      expect(msg.text).toContain(link);
+      expect(msg.subject).not.toContain(TOKEN);
+      expect(leaks(s, r, TOKEN), `live=${live}`).toEqual(NONE);
+    }
+  });
+
+  it("token 對不上(403):不寄,記一筆 log 但不含 token", async () => {
+    const s = setup();
+    const r = await s.call({ kind: "placed", checkout_id: CHECKOUT, token: WRONG });
+    expect(r.status).toBe(403);
+    expect(s.send).not.toHaveBeenCalled();
+    expect(s.log).toHaveBeenCalledWith("error", expect.objectContaining({ error: "token mismatch" }));
+    expect(leaks(s, r, WRONG)).toEqual(NONE);
+  });
+
+  it("寄信失敗、外部回來的錯誤訊息夾帶信件內容:log 裡的 token 遮成 ***", async () => {
+    const s = setup({ send: async () => ({ ok: false, id: null, error: `Resend 422: invalid html near ${link}` }) });
+    const r = await s.call({ kind: "placed", checkout_id: CHECKOUT, token: TOKEN });
+    expect(r.body.data).toMatchObject({ sent: 0, total: 1 });
+    expect(s.db.tables.notifications[0]).toMatchObject({ status: "failed" });
+    expect(s.log).toHaveBeenCalledWith(
+      "error",
+      expect.objectContaining({ step: "send", error: "Resend 422: invalid html near https://app.ifoodmap.ai/market/orders/***" }),
+    );
+    expect(leaks(s, r, TOKEN)).toEqual(NONE);
+  });
+
+  it("讀資料庫失敗(500)、買家 Email 不能寄:都不含 token", async () => {
+    const failed = setup({ fail: (table) => (table === "market_order_items" ? { message: "boom" } : undefined) });
+    const r1 = await failed.call({ kind: "placed", checkout_id: CHECKOUT, token: TOKEN });
+    expect(r1.status).toBe(500);
+    expect(failed.log).toHaveBeenCalledWith("error", expect.objectContaining({ step: "placed", error: "boom" }));
+    expect(leaks(failed, r1, TOKEN)).toEqual(NONE);
+
+    const noEmail = setup();
+    for (const o of noEmail.db.tables.market_orders) o.buyer_email = "王小明<buyer@example.com>";
+    const r2 = await noEmail.call({ kind: "placed", checkout_id: CHECKOUT, token: TOKEN });
+    expect(r2.body.data).toMatchObject({ skipped: true });
+    expect(noEmail.send).not.toHaveBeenCalled();
+    expect(leaks(noEmail, r2, TOKEN)).toEqual(NONE);
+  });
+});

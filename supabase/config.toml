@@ -25,3 +25,7 @@ verify_jwt = true
 # 餐廳老闆從後台呼叫(新增成員)
 [functions.invite-restaurant-member]
 verify_jwt = true
+
+# 零售市集訂單通知:DB(pg_net)呼叫,靠 NOTIFY_SECRET 共享密鑰驗證(跟 notify 同一把)
+[functions.market-notify]
+verify_jwt = false
