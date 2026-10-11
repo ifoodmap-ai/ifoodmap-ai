@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { FakeDb, type FakeDbOptions, type Row } from "../../tests/fake-supabase.ts";
 import type { MailConfig, SendMail } from "../_shared/supplier-mail.ts";
+import { formatOrderNo } from "../../../src/lib/order-number.ts";
 import { sha256Hex } from "../ai/crypto.ts";
 import { marketLiveFromEnv } from "./gate.ts";
 import { createMarketNotifyHandler, EVENT_COLUMNS, ITEM_COLUMNS, ORDER_COLUMNS } from "./handler.ts";
@@ -216,6 +217,37 @@ describe("market-notify:狀態紀錄", () => {
     expect(r.body.data).toMatchObject({ sent: 0, total: 1 });
     expect(s.db.tables.notifications[0]).toMatchObject({ status: "failed", sent_at: null });
     expect(s.log).toHaveBeenCalledWith("error", expect.objectContaining({ step: "send", error: "Resend 500" }));
+  });
+
+  // 審查追加:資料庫的 subtotal / shipping_fee / total / line_total 各自對到信裡對的標籤(數字都不一樣,對錯欄位一定看得出來)
+  it("金額:小計、運費、總額、每一列小計都對到資料庫的欄位(待匯款與下單確認,html 與 text)", async () => {
+    const s = setup({ live: true });
+    Object.assign(s.db.tables.market_orders.find((o) => o.id === ORDER_B)!, { subtotal: 1234, shipping_fee: 150, total: 1384 });
+    s.db.tables.market_order_items = [
+      ...s.db.tables.market_order_items.filter((i) => i.order_id !== ORDER_B),
+      { order_id: ORDER_B, product_name: "挪威鮭魚", spec: "200g/片", qty: 3, unit_price: 205, line_total: 615 },
+      { order_id: ORDER_B, product_name: "白蝦仁", spec: "300g/盒", qty: 1, unit_price: 619, line_total: 619 },
+    ];
+    await s.call({ kind: "event", event_id: EV(4) }); // 待匯款
+    await s.call({ kind: "placed", checkout_id: CHECKOUT, token: TOKEN });
+    const [awaiting, placed] = s.send.mock.calls.map((c) => c[0]);
+    expect(awaiting.subject).toBe(`請匯款 NT$ 1,384 — 零售訂單 ${formatOrderNo(ORDER_B)}`);
+    expect(awaiting.html).toContain("請依下列資訊匯款 NT$ 1,384,");
+    expect(awaiting.text).toContain("請匯款 NT$ 1,384:");
+    const reEsc = (v: string) => v.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const rows: [string, string][] = [
+      ["挪威鮭魚(200g/片)× 3", "NT$ 615"],
+      ["白蝦仁(300g/盒)× 1", "NT$ 619"],
+      ["小計", "NT$ 1,234"],
+      ["運費", "NT$ 150"],
+      ["總額", "NT$ 1,384"],
+    ];
+    for (const m of [awaiting, placed]) {
+      for (const [label, value] of rows) expect(m.html, label).toMatch(new RegExp(`${reEsc(label)}</td><td[^>]*>${reEsc(value)}</td>`));
+      for (const line of ["- 挪威鮭魚(200g/片)× 3:NT$ 615", "- 白蝦仁(300g/盒)× 1:NT$ 619", "小計:NT$ 1,234", "運費:NT$ 150", "總額:NT$ 1,384"]) {
+        expect(m.text.split("\n"), line).toContain(line);
+      }
+    }
   });
 
   it("讀資料庫失敗 500(不洩漏細節)", async () => {

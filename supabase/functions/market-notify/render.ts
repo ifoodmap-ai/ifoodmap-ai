@@ -65,6 +65,7 @@ const itemsTable = (o: MailOrder) =>
         `<td style="padding:4px 0;border-bottom:1px solid #f1f5f9;text-align:right">${esc(twd(i.line_total))}</td></tr>`,
     )
     .join("") +
+  `<tr><td style="padding:4px 0;color:#64748b">小計</td><td style="padding:4px 0;text-align:right;color:#64748b">${esc(twd(o.subtotal))}</td></tr>` +
   `<tr><td style="padding:4px 0;color:#64748b">運費</td><td style="padding:4px 0;text-align:right;color:#64748b">${esc(
     o.shippingFee === 0 ? "免運" : twd(o.shippingFee),
   )}</td></tr>` +
@@ -72,7 +73,12 @@ const itemsTable = (o: MailOrder) =>
   `</table>`;
 
 const itemsText = (o: MailOrder) =>
-  [...o.items.map((i) => `- ${i.product_name}(${i.spec})× ${i.qty}:${twd(i.line_total)}`), `運費:${o.shippingFee === 0 ? "免運" : twd(o.shippingFee)}`, `總額:${twd(o.total)}`].join("\n");
+  [
+    ...o.items.map((i) => `- ${i.product_name}(${i.spec})× ${i.qty}:${twd(i.line_total)}`),
+    `小計:${twd(o.subtotal)}`,
+    `運費:${o.shippingFee === 0 ? "免運" : twd(o.shippingFee)}`,
+    `總額:${twd(o.total)}`,
+  ].join("\n");
 
 /** 下單確認(寄給消費者,含查詢連結) */
 export const placedMail = (opts: { buyerName: string; orders: MailOrder[]; lookupUrl: string }): Mail => {
