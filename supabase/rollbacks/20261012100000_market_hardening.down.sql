@@ -1,7 +1,8 @@
 -- =====================================================================
 -- 還原 20261012100000_market_hardening:
 --   market_client_ip、market_rate_take(20261009130200 的版本)與 market_guard_event(20261009130000 的版本)換回原樣
---   (逐字照抄;測試用 md5 比對線上套用前的定義),拆掉逾時自動取消 market_expire_orders 與排程 ifoodmap-market-expire-orders。
+--   (逐字照抄;測試用 md5 比對線上套用前的定義),拆掉逾時自動取消 market_expire_orders 與排程 ifoodmap-market-expire-orders,
+--   每天的清理排程 ifoodmap-market-rate-cleanup 的指令換回 130200 的原樣(逐字;測試比對排程指紋)。
 -- 已經被自動取消的訂單不會復原(狀態紀錄只能新增);還原之後沒有逾時取消,待接單、待匯款會一直留著。
 -- 還原之後 IP 又會退回 x-forwarded-for 第一段(偽造得了)、被擋的請求又是同步 commit。
 -- 🔴 先把前端退回不顯示自動取消期限的版本(Vercel Instant Rollback),通知信也要退回不寫期限的版本,再跑這支。
@@ -12,6 +13,19 @@ SET LOCAL lock_timeout = '3s';
 -- 先停排程,再拆它呼叫的函式
 SELECT cron.unschedule(jobid) FROM cron.job WHERE jobname = 'ifoodmap-market-expire-orders';
 DROP FUNCTION IF EXISTS public.market_expire_orders();
+
+-- 每天的清理排程:指令換回 20261009130200 的原樣(逐字照抄;不再清 cron.job_run_details)
+DO $do$
+DECLARE
+  v_jobid bigint;
+BEGIN
+  SELECT j.jobid INTO v_jobid FROM cron.job j WHERE j.jobname = 'ifoodmap-market-rate-cleanup';
+  IF v_jobid IS NOT NULL THEN
+    PERFORM cron.alter_job(v_jobid, command := $cron$DELETE FROM public.market_rate_counters WHERE window_start < now() - interval '2 days';
+DELETE FROM public.market_rate_blocks_daily WHERE day < (now() AT TIME ZONE 'Asia/Taipei')::date - 90$cron$);
+  END IF;
+END
+$do$;
 
 -- 以下三支照抄原檔(函式內容一個字都不能改,測試比對 md5)
 CREATE OR REPLACE FUNCTION public.market_client_ip()

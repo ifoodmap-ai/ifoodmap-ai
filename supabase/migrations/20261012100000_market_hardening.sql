@@ -27,6 +27,18 @@
 --    auto_expire 只有系統的取消能帶、值只能是 pending / awaiting_payment 而且要等於取消前的狀態,其他事件帶了就擋下(22023);
 --    其餘照舊。身分照舊交給 guard:pg_cron 沒有 JWT → system,轉移表本來就允許 system 做這兩種取消。
 --    並發:每張單先 FOR UPDATE SKIP LOCKED,供應商、管理員正在操作的單直接跳過,下一輪再來;乾跑是單一連線,測不到。
+--    每次最多看 50 張候選、成功取消 5 張就停(數字與理由見函式裡的常數);沒有任何狀態紀錄的單不當候選(guard 一定擋,
+--    排在前面只會一直失敗、卡住後面的單)。函式設 lock_timeout = 5s:補庫存遇到被長時間鎖住的商品列時,那一張照
+--    EXCEPTION 跳過、下一輪再處理,不會一直等、也不會一直鎖著已經處理過的訂單與商品。
+-- 4. pg_cron 執行紀錄的清理:自動取消每 10 分鐘一次,cron.job_run_details 每天多 144 列。沿用每天的清理排程
+--    ifoodmap-market-rate-cleanup(cron.alter_job 換指令,時間不變),多刪 jobname 開頭是 ifoodmap-market- 的工作超過
+--    14 天的執行紀錄;別的工作的紀錄不碰。
+--
+-- 營運注意:
+--   - market_hardening.test.sql 會在乾跑交易裡對線上資料執行取消(先把線上本來就該取消的單清掉),還會暫時換掉 guard。
+--     交易最後一定 ROLLBACK、換掉的 guard 只有那個交易看得到,但跑的那幾秒會鎖住被取消的訂單與商品。開放後要跑,只能在離峰時段。
+--   - 轉帳單的競態是刻意接受的:買家快到期限才匯款(例如期限前一小時)、店家過了自動取消的期限才按「已收款」,這時單已經被
+--     系統取消(已取消不能再改),只能人工退款。這點會告知業主。
 --
 -- 還原:supabase/rollbacks/20261012100000_market_hardening.down.sql(三支函式恢復成線上原樣、拆掉新函式與排程)
 -- 測試:supabase/tests/database/market_hardening.test.sql、market_hardening_rollback.test.sql
@@ -294,8 +306,9 @@ BEGIN
 END;
 $$;
 
--- 待接單從下單起、待匯款從進入待匯款起,超過時數的單由系統取消。每次最多 200 張,依下單時間(created_at)、id 排序;
--- 回傳這次取消了幾張。每張單包在自己的子交易:一張失敗只記 WARNING、跳過,不讓整批失敗(下一輪會再試)。
+-- 待接單從下單起、待匯款從進入待匯款起,超過時數的單由系統取消。依下單時間(created_at)、id 排序,每次最多看 50 張候選、
+-- 成功取消 5 張就停;回傳這次取消了幾張。每張單包在自己的子交易:一張失敗只記 WARNING、跳過,不讓整批失敗(下一輪會再試)。
+-- 沒有任何狀態紀錄的單不當候選。lock_timeout 5 秒:等不到鎖(例如被長時間鎖住的商品列)的那一張照 EXCEPTION 跳過。
 -- 並發:每張單先 FOR UPDATE SKIP LOCKED —— 供應商 / 管理員正在操作的單(guard 鎖著訂單列)直接跳過、不互等,
 -- 下一輪(10 分鐘後)再來;拿到鎖之後重讀一次狀態與時間(候選清單查完到上鎖之間,可能剛好被接單、取消)。
 -- 乾跑是單一連線,並發測不到,靠 SKIP LOCKED 與上鎖後重讀。
@@ -305,11 +318,16 @@ RETURNS integer
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = ''
+SET lock_timeout = '5s'
 AS $$
 DECLARE
   -- @market-auto-cancel-hours 72
   c_hours  CONSTANT integer := 72;
-  c_batch  CONSTANT integer := 200;
+  -- 每次最多取消 5 張:每張取消都會寄通知信,Resend 預設每秒只收 2 個請求,一次排出大量信件大多會被限速而失敗,
+  -- 而且失敗不會重送。每 10 分鐘 5 張 = 一小時 30 張,對現在的量綽綽有餘;量變大時先看寄信的限速再調
+  c_per_run CONSTANT integer := 5;
+  -- 每次最多看 50 張候選、逐張嘗試:前面幾張一直取消失敗(例如鎖不到)時,後面真正逾時的單照樣輪得到
+  c_scan   CONSTANT integer := 50;
   v_cutoff timestamptz := now() - make_interval(hours => c_hours);
   v_id     uuid;
   v_status text;
@@ -320,6 +338,8 @@ BEGIN
     SELECT c.id FROM (
       SELECT o.id, o.created_at FROM public.market_orders o
        WHERE o.status = 'pending' AND o.created_at < v_cutoff
+         -- 至少要有一筆狀態紀錄:沒有紀錄的單 guard 一定擋(第一筆只能是待接單),排在前面只會一直失敗、卡住後面的單
+         AND EXISTS (SELECT 1 FROM public.market_order_events e WHERE e.order_id = o.id)
       UNION ALL
       SELECT o.id, o.created_at FROM public.market_orders o
        WHERE o.status = 'awaiting_payment'
@@ -327,8 +347,9 @@ BEGIN
                WHERE e.order_id = o.id AND e.to_status = 'awaiting_payment') < v_cutoff
     ) c
      ORDER BY c.created_at, c.id
-     LIMIT c_batch
+     LIMIT c_scan
   LOOP
+    EXIT WHEN v_done >= c_per_run;  -- 成功 c_per_run 張就停,剩下的下一輪
     BEGIN
       PERFORM 1 FROM public.market_orders o WHERE o.id = v_id FOR UPDATE SKIP LOCKED;
       IF NOT FOUND THEN
@@ -374,5 +395,27 @@ SELECT cron.schedule(
   '*/10 * * * *',
   $cron$SELECT public.market_expire_orders()$cron$
 );
+
+-- ---------------------------------------------------------------------
+-- 4. pg_cron 執行紀錄的清理
+-- ---------------------------------------------------------------------
+-- 自動取消每 10 分鐘一次,cron.job_run_details 每天多 144 列。沿用每天的清理排程 ifoodmap-market-rate-cleanup
+-- (20261009130200 建的;時間不變、只換指令):原本的兩句照舊,多刪我們自己(jobname 開頭 ifoodmap-market-)的工作
+-- 超過 14 天的執行紀錄,別的工作的紀錄不碰。還原檔把指令換回 130200 的原樣(逐字)
+DO $do$
+DECLARE
+  v_jobid bigint;
+BEGIN
+  SELECT j.jobid INTO v_jobid FROM cron.job j WHERE j.jobname = 'ifoodmap-market-rate-cleanup';
+  IF v_jobid IS NULL THEN
+    RAISE EXCEPTION '找不到排程 ifoodmap-market-rate-cleanup(應該由 20261009130200 建好)';
+  END IF;
+  PERFORM cron.alter_job(v_jobid, command := $cron$DELETE FROM public.market_rate_counters WHERE window_start < now() - interval '2 days';
+DELETE FROM public.market_rate_blocks_daily WHERE day < (now() AT TIME ZONE 'Asia/Taipei')::date - 90;
+DELETE FROM cron.job_run_details
+ WHERE jobid IN (SELECT j.jobid FROM cron.job j WHERE j.jobname LIKE 'ifoodmap-market-%')
+   AND COALESCE(end_time, start_time) < now() - interval '14 days'$cron$);
+END
+$do$;
 
 NOTIFY pgrst, 'reload schema';

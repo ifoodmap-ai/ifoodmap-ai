@@ -205,11 +205,11 @@ SELECT set_config('synchronous_commit', (SELECT v #>> '{}' FROM _ctx WHERE k = '
 -- ---------------------------------------------------------------------
 -- 3. 逾時自動取消(market_expire_orders)
 -- ---------------------------------------------------------------------
-SELECT pg_temp.expect('market_expire_orders:沒有參數、回 integer、SECURITY DEFINER、search_path 固定',
+SELECT pg_temp.expect('market_expire_orders:沒有參數、回 integer、SECURITY DEFINER、search_path 固定、lock_timeout 5 秒(等不到鎖的那張跳過)',
   (SELECT pg_get_function_identity_arguments(p.oid) || '|' || pg_get_function_result(p.oid) || '|' || p.prosecdef::text || '|' ||
           array_to_string(p.proconfig, ',')
      FROM pg_proc p WHERE p.oid = 'public.market_expire_orders()'::regprocedure),
-  '|integer|true|search_path=""');
+  '|integer|true|search_path="",lock_timeout=5s');
 SELECT pg_temp.expect('anon、登入者(連平台管理員)都不能執行;PUBLIC 也收回了',
   concat_ws('|',
     pg_temp.as_exec('anon', pg_temp.anon(), 'SELECT public.market_expire_orders()'),
@@ -292,6 +292,15 @@ SELECT pg_temp.ev('a9600000-0000-4000-8000-000000000006', 'awaiting_payment', 'p
 SELECT pg_temp.ev('a9600000-0000-4000-8000-000000000007', NULL, 'pending', 'consumer', interval '500 hours');
 SELECT pg_temp.ev('a9600000-0000-4000-8000-000000000007', 'pending', 'confirmed', 'supplier', interval '499 hours');
 SELECT pg_temp.ev('a9600000-0000-4000-8000-000000000007', 'confirmed', 'shipped', 'supplier', interval '498 hours', '{"carrier":"黑貓宅急便"}');
+-- 49 張「取消不了」的單(…0000000050xx):有紀錄,但那筆紀錄的時間是 timestamptz 的最大值,真的 guard 算「上一筆 + 1 微秒」
+-- 會溢位,每次取消都失敗。下單時間是 72 小時又 n 秒前(n = 1…49):逾時了,但比上面各張新,排在它們後面
+SELECT pg_temp.mk(('a9600000-0000-4000-8000-' || lpad(to_hex(20480 + n), 12, '0'))::uuid,
+                  'a9200000-0000-4000-8000-00000000000a', 'cod', interval '72 hours' + n * interval '1 second')
+  FROM generate_series(1, 49) AS n;
+INSERT INTO public.market_order_events (order_id, from_status, to_status, actor_role, created_at)
+SELECT ('a9600000-0000-4000-8000-' || lpad(to_hex(20480 + n), 12, '0'))::uuid, NULL, 'pending', 'consumer',
+       '294276-12-31 23:59:59.999999+00'::timestamptz
+  FROM generate_series(1, 49) AS n;
 
 DO $$ BEGIN EXECUTE (SELECT v #>> '{}' FROM _ctx WHERE k = 'guard_def'); END $$;
 SELECT pg_temp.expect('fixture 建好了(各張單的狀態;轉帳單的待匯款時間:1 小時前、73 小時前、499 小時前),guard 換回原本的定義(逐字相同)',
@@ -340,7 +349,7 @@ SELECT pg_temp.expect('已接單(貨到付款)、已收款(499 小時前進過�
     WHERE e.to_status = 'cancelled' AND e.order_id IN ('a9600000-0000-4000-8000-000000000002', 'a9600000-0000-4000-8000-000000000003',
           'a9600000-0000-4000-8000-000000000005', 'a9600000-0000-4000-8000-000000000006', 'a9600000-0000-4000-8000-000000000007')),
   'confirmed,paid,shipped|0');
-SELECT pg_temp.expect('一張失敗不讓整批失敗:沒有任何紀錄的壞資料取消不了(guard 擋下),記 WARNING 跳過,照樣是 pending',
+SELECT pg_temp.expect('沒有任何狀態紀錄的單不當候選(guard 一定擋,排在前面只會卡住後面的單),照樣是 pending',
   (SELECT status FROM public.market_orders WHERE id = 'a9600000-0000-4000-8000-000000000008'), 'pending');
 INSERT INTO _ctx SELECT 'ev1', to_jsonb((SELECT count(*) FROM public.market_order_events));
 INSERT INTO _ctx VALUES ('run2', to_jsonb(public.market_expire_orders()));
@@ -349,23 +358,54 @@ SELECT pg_temp.expect('再跑一次回 0(冪等),也沒有多寫任何紀錄',
   ((SELECT count(*) FROM public.market_order_events) - (SELECT (v #>> '{}')::bigint FROM _ctx WHERE k = 'ev1')),
   '0|0');
 
--- 一次最多 200 張:205 張「80 小時又 n 秒前」的待接單(n 越大越舊),第一筆紀錄照常由真的 guard 寫
+-- 每次最多取消 5 張(通知信的寄送速率):7 張「80 小時又 n 秒前」的待接單(n 越大越舊),第一筆紀錄由真的 guard 寫
 SELECT pg_temp.mk(('a9600000-0000-4000-8000-' || lpad(to_hex(4096 + n), 12, '0'))::uuid,
                   'a9200000-0000-4000-8000-00000000000a', 'cod', interval '80 hours' + n * interval '1 second')
-  FROM generate_series(1, 205) AS n;
+  FROM generate_series(1, 7) AS n;
 INSERT INTO public.market_order_events (order_id, from_status, to_status)
-SELECT ('a9600000-0000-4000-8000-' || lpad(to_hex(4096 + n), 12, '0'))::uuid, NULL, 'pending' FROM generate_series(1, 205) AS n;
-INSERT INTO _ctx VALUES ('bulk1', to_jsonb(public.market_expire_orders()));
-SELECT pg_temp.expect('一次最多 200 張:205 張逾時的待接單第一次只取消 200 張,先取消最舊的(依下單時間;剩下最晚下單的 5 張)',
-  (SELECT v #>> '{}' FROM _ctx WHERE k = 'bulk1') || '|' ||
-  (SELECT string_agg(n::text, ',' ORDER BY n) FROM generate_series(1, 205) AS n
+SELECT ('a9600000-0000-4000-8000-' || lpad(to_hex(4096 + n), 12, '0'))::uuid, NULL, 'pending' FROM generate_series(1, 7) AS n;
+INSERT INTO _ctx VALUES ('cap1', to_jsonb(public.market_expire_orders()));
+SELECT pg_temp.expect('每次最多取消 5 張:7 張逾時的待接單第一次只取消最舊的 5 張(剩下最晚下單的 2 張)',
+  (SELECT v #>> '{}' FROM _ctx WHERE k = 'cap1') || '|' ||
+  (SELECT string_agg(n::text, ',' ORDER BY n) FROM generate_series(1, 7) AS n
      JOIN public.market_orders o ON o.id = ('a9600000-0000-4000-8000-' || lpad(to_hex(4096 + n), 12, '0'))::uuid
     WHERE o.status = 'pending'),
-  '200|1,2,3,4,5');
-INSERT INTO _ctx VALUES ('bulk2', to_jsonb(public.market_expire_orders()));
-INSERT INTO _ctx VALUES ('bulk3', to_jsonb(public.market_expire_orders()));
-SELECT pg_temp.expect('……第二次取消剩下的 5 張(壞資料那張照樣失敗、不算),第三次 0',
-  (SELECT v #>> '{}' FROM _ctx WHERE k = 'bulk2') || '|' || (SELECT v #>> '{}' FROM _ctx WHERE k = 'bulk3'), '5|0');
+  '5|1,2');
+INSERT INTO _ctx VALUES ('cap2', to_jsonb(public.market_expire_orders()));
+INSERT INTO _ctx VALUES ('cap3', to_jsonb(public.market_expire_orders()));
+SELECT pg_temp.expect('……第二次取消剩下的 2 張(排在後面那 49 張取消不了的照樣失敗、不算),第三次 0',
+  (SELECT v #>> '{}' FROM _ctx WHERE k = 'cap2') || '|' || (SELECT v #>> '{}' FROM _ctx WHERE k = 'cap3'), '2|0');
+
+-- 飢餓(審查 E4):60 張沒有任何紀錄的舊單(500 小時又 n 秒前)排在最前面,後面一張真的逾時的單照樣被取消
+SELECT pg_temp.mk(('a9600000-0000-4000-8000-' || lpad(to_hex(8192 + n), 12, '0'))::uuid,
+                  'a9200000-0000-4000-8000-00000000000a', 'cod', interval '500 hours' + n * interval '1 second')
+  FROM generate_series(1, 60) AS n;
+SELECT pg_temp.mk('a9600000-0000-4000-8000-00000000000b', 'a9200000-0000-4000-8000-00000000000a', 'cod', interval '75 hours');
+INSERT INTO public.market_order_events (order_id, from_status, to_status) VALUES ('a9600000-0000-4000-8000-00000000000b', NULL, 'pending');
+INSERT INTO _ctx VALUES ('starve', to_jsonb(public.market_expire_orders()));
+SELECT pg_temp.expect('飢餓(審查 E4):前面有 60 張沒有任何紀錄的舊單時,後面那張逾時 75 小時的單照樣被取消',
+  (SELECT v #>> '{}' FROM _ctx WHERE k = 'starve') || '|' ||
+  (SELECT status FROM public.market_orders WHERE id = 'a9600000-0000-4000-8000-00000000000b'),
+  '1|cancelled');
+
+-- 每次最多看 50 張候選:那 49 張取消不了的單排在前面,第 50 張(…0c,72 小時又 0.6 秒)照樣取消、第 51 張(…0d)等下一輪
+SELECT pg_temp.mk('a9600000-0000-4000-8000-00000000000c', 'a9200000-0000-4000-8000-00000000000a', 'cod', interval '72 hours 600 milliseconds');
+SELECT pg_temp.mk('a9600000-0000-4000-8000-00000000000d', 'a9200000-0000-4000-8000-00000000000a', 'cod', interval '72 hours 300 milliseconds');
+INSERT INTO public.market_order_events (order_id, from_status, to_status) VALUES
+  ('a9600000-0000-4000-8000-00000000000c', NULL, 'pending'), ('a9600000-0000-4000-8000-00000000000d', NULL, 'pending');
+INSERT INTO _ctx VALUES ('scan1', to_jsonb(public.market_expire_orders()));
+SELECT pg_temp.expect('每次最多看 50 張候選、一張失敗不讓整批失敗:前面 49 張取消不了(每張都失敗、只記 WARNING),第 50 張照樣取消,第 51 張等下一輪',
+  concat_ws('|', (SELECT v #>> '{}' FROM _ctx WHERE k = 'scan1'),
+    (SELECT status FROM public.market_orders WHERE id = 'a9600000-0000-4000-8000-00000000000c'),
+    (SELECT status FROM public.market_orders WHERE id = 'a9600000-0000-4000-8000-00000000000d'),
+    (SELECT count(*) FROM public.market_orders WHERE id::text LIKE 'a9600000-0000-4000-8000-0000000050%' AND status = 'pending')),
+  '1|cancelled|pending|49');
+INSERT INTO _ctx VALUES ('scan2', to_jsonb(public.market_expire_orders()));
+INSERT INTO _ctx VALUES ('scan3', to_jsonb(public.market_expire_orders()));
+SELECT pg_temp.expect('……下一輪取消第 51 張,再下一輪 0(那 49 張照樣失敗)',
+  concat_ws('|', (SELECT v #>> '{}' FROM _ctx WHERE k = 'scan2'), (SELECT v #>> '{}' FROM _ctx WHERE k = 'scan3'),
+    (SELECT status FROM public.market_orders WHERE id = 'a9600000-0000-4000-8000-00000000000d')),
+  '1|0|cancelled');
 
 -- auto_expire 只能用在系統的取消:兩張新的待接單(真的 guard 寫第一筆紀錄)
 SELECT pg_temp.mk('a9600000-0000-4000-8000-000000000009', 'a9200000-0000-4000-8000-00000000000a', 'cod', interval '1 hour');
@@ -406,3 +446,26 @@ SELECT pg_temp.expect('一般的取消(供應商,payload 帶別的鍵)照舊:寫
   (SELECT e.payload::text || '|' || e.actor_role FROM public.market_order_events e
     WHERE e.order_id = 'a9600000-0000-4000-8000-00000000000a' AND e.to_status = 'cancelled'),
   'OK|{}|supplier');
+
+-- ---------------------------------------------------------------------
+-- 4. pg_cron 執行紀錄的清理(沿用每天的 ifoodmap-market-rate-cleanup)
+-- ---------------------------------------------------------------------
+SELECT pg_temp.expect('每天的清理排程 ifoodmap-market-rate-cleanup:時間不變,指令多了清 cron.job_run_details(只限 ifoodmap-market- 的工作、14 天)',
+  (SELECT concat_ws('|', schedule,
+            (command LIKE '%DELETE FROM public.market_rate_counters%' AND command LIKE '%DELETE FROM public.market_rate_blocks_daily%'
+             AND command LIKE '%DELETE FROM cron.job_run_details%' AND command LIKE '%ifoodmap-market-%' AND command LIKE '%14 days%')::text)
+     FROM cron.job WHERE jobname = 'ifoodmap-market-rate-cleanup'),
+  '50 19 * * *|true');
+-- 放幾筆假的執行紀錄(runid 用負數,不動 cron.runid_seq),在交易裡實際跑一次清理指令
+INSERT INTO cron.job_run_details (jobid, runid, job_pid, database, username, command, status, return_message, start_time, end_time)
+SELECT j.jobid, v.runid, 0, current_database(), 'postgres', 'test', 'succeeded', 'test', now() - v.age - interval '1 second', now() - v.age
+  FROM (VALUES ('ifoodmap-market-expire-orders', -990001::bigint, interval '15 days'),
+               ('ifoodmap-market-expire-orders', -990002::bigint, interval '13 days'),
+               ('ifoodmap-market-rate-cleanup',  -990003::bigint, interval '15 days'),
+               ('ifoodmap-ai-guard-cleanup',     -990004::bigint, interval '15 days')) AS v(jobname, runid, age)
+  JOIN cron.job j ON j.jobname = v.jobname;
+DO $$ BEGIN EXECUTE (SELECT command FROM cron.job WHERE jobname = 'ifoodmap-market-rate-cleanup'); END $$;
+SELECT pg_temp.expect('……清理指令實際跑一次:我們的工作超過 14 天的紀錄刪掉、13 天的留著;別的工作(ifoodmap-ai-guard-cleanup)的紀錄不碰',
+  (SELECT string_agg((-v.runid)::text || '=' || (SELECT count(*) FROM cron.job_run_details d WHERE d.runid = v.runid)::text, ',' ORDER BY -v.runid)
+     FROM (VALUES (-990001::bigint), (-990002::bigint), (-990003::bigint), (-990004::bigint)) AS v(runid)),
+  '990001=0,990002=1,990003=0,990004=1');
