@@ -2,12 +2,14 @@
 // 第二期(Q1-A):訂單分區的收單/報價/出貨合成一個訂單頁(頁面自己用 ?stage= 狀態分頁),
 // 版面不再畫訂單分區的分頁列;舊網址轉址到 /supplier/orders?stage=…(轉址寫法與 App.tsx 相同)。
 // 這裡驗證:①側欄剛好 6 項(2026-10 加「零售市集」) ②分頁依路由標出 active ③舊路由全部還能開、
-// 落在正確的分區與分頁 ④定價助手從選單/分頁收起來但路由仍可直接開 ⑤鍵盤與 aria。
+// 落在正確的分區與分頁 ④定價助手從選單/分頁收起來但路由仍可直接開 ⑤鍵盤與 aria
+// ⑥手機抽屜收起時不在 Tab 順序與無障礙樹裡,收起後焦點回到選單鈕。
 //
 // 子頁面全部換成空殼標題(這裡只驗版面殼,不驗個別頁面內容);
 // 跟其他 Layout 測試一樣 mock 掉 supabase 與 PortalSwitcher,不打任何正式服務。
 
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import SupplierLayout from "./SupplierLayout";
@@ -58,6 +60,22 @@ const renderLayout = (path: string) =>
     </MemoryRouter>,
   );
 
+/** 手機頂欄的選單鈕;名字跟著抽屜開關變 */
+const menuButton = (name: "開啟選單" | "關閉選單") =>
+  within(screen.getByRole("banner")).getByRole("button", { name });
+
+/** 從頁面開頭(焦點在 body)一路按 Tab 直到繞回 body,依序回傳拿到焦點的元素 */
+const tabThroughPage = async (user: ReturnType<typeof userEvent.setup>) => {
+  (document.activeElement as HTMLElement | null)?.blur();
+  const visited: Element[] = [];
+  for (let i = 0; i < 100; i++) {
+    await user.tab();
+    if (document.activeElement === document.body) return visited;
+    visited.push(document.activeElement as Element);
+  }
+  throw new Error("按了 100 次 Tab 還沒繞回頁面開頭");
+};
+
 let fetchGuard: ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
@@ -80,8 +98,10 @@ describe("SupplierLayout — 側欄剛好 6 個分區", () => {
     expect(links.map((l) => l.textContent)).toEqual(["總覽", "訂單", "商機", "商品與價格", "客戶與評價", "零售市集"]);
   });
 
-  it("手機抽屜也是同樣 6 個分區連結", () => {
+  it("手機抽屜打開後也是同樣 6 個分區連結", async () => {
+    const user = userEvent.setup();
     renderLayout("/supplier");
+    await user.click(menuButton("開啟選單"));
     const mobileNav = screen.getByTestId("supplier-sidebar-mobile");
     const links = within(mobileNav).getAllByRole("link");
     expect(links).toHaveLength(6);
@@ -194,5 +214,83 @@ describe("SupplierLayout — 分頁列的鍵盤操作與 aria(整合驗證,細�
       expect(tab).toHaveAttribute("aria-controls", "supplier-main-panel");
     });
     expect(document.getElementById("supplier-main-panel")).toBeInTheDocument();
+  });
+});
+
+describe("SupplierLayout — 手機抽屜:收起時不在 Tab 順序與無障礙樹裡,收起後焦點回到選單鈕", () => {
+  it("抽屜收起時,從頁面開頭一路按 Tab 都不會停在抽屜裡;讀屏也讀不到抽屜的連結", async () => {
+    const user = userEvent.setup();
+    renderLayout("/supplier");
+    const drawer = screen.getByTestId("supplier-sidebar-mobile");
+    expect(menuButton("開啟選單")).toHaveAttribute("aria-expanded", "false");
+
+    const visited = await tabThroughPage(user);
+    // 抽屜在 DOM 裡排在選單鈕前面:走得到選單鈕,才代表真的走過抽屜所在的位置
+    expect(visited).toContain(menuButton("開啟選單"));
+    expect(visited.filter((el) => drawer.contains(el))).toEqual([]);
+
+    // 連結還留在 DOM 裡(滑出動畫要用),只是藏起來:無障礙樹裡沒有、畫面上看不到
+    expect(within(drawer).queryAllByRole("link")).toEqual([]);
+    const hiddenLinks = within(drawer).getAllByRole("link", { hidden: true });
+    expect(hiddenLinks).toHaveLength(6);
+    hiddenLinks.forEach((link) => expect(link).not.toBeVisible());
+  });
+
+  it("抽屜打開後,6 個分區連結和登出都按 Tab 走得到、讀屏讀得到", async () => {
+    const user = userEvent.setup();
+    renderLayout("/supplier");
+    await user.click(menuButton("開啟選單"));
+    expect(menuButton("關閉選單")).toHaveAttribute("aria-expanded", "true");
+
+    const drawer = screen.getByTestId("supplier-sidebar-mobile");
+    const links = within(drawer).getAllByRole("link");
+    expect(links).toHaveLength(6);
+    links.forEach((link) => expect(link).toBeVisible());
+
+    const visited = await tabThroughPage(user);
+    expect(visited.filter((el) => drawer.contains(el)).map((el) => el.textContent)).toEqual([
+      "總覽", "訂單", "商機", "商品與價格", "客戶與評價", "零售市集", "登出",
+    ]);
+  });
+
+  it("用鍵盤在抽屜裡選分區:換頁、抽屜收起,焦點回到選單鈕,不會留在藏起來的抽屜裡", async () => {
+    const user = userEvent.setup();
+    renderLayout("/supplier");
+    await user.click(menuButton("開啟選單"));
+
+    const ordersLink = within(screen.getByTestId("supplier-sidebar-mobile")).getByRole("link", { name: "訂單" });
+    ordersLink.focus();
+    expect(ordersLink).toHaveFocus();
+    await user.keyboard("{Enter}");
+
+    expect(await screen.findByRole("heading", { name: "訂單頁" })).toBeInTheDocument();
+    expect(menuButton("開啟選單")).toHaveAttribute("aria-expanded", "false");
+    expect(menuButton("開啟選單")).toHaveFocus();
+    expect(within(screen.getByTestId("supplier-sidebar-mobile")).queryAllByRole("link")).toEqual([]);
+  });
+
+  it("點遮罩收起:焦點從抽屜回到選單鈕", async () => {
+    const user = userEvent.setup();
+    renderLayout("/supplier");
+    await user.click(menuButton("開啟選單"));
+    const firstLink = within(screen.getByTestId("supplier-sidebar-mobile")).getByRole("link", { name: "總覽" });
+    firstLink.focus();
+    expect(firstLink).toHaveFocus();
+
+    await user.click(screen.getByTestId("supplier-drawer-overlay"));
+    expect(screen.queryByTestId("supplier-drawer-overlay")).toBeNull();
+    expect(menuButton("開啟選單")).toHaveFocus();
+  });
+
+  it("用選單鈕收起:焦點留在選單鈕上", async () => {
+    const user = userEvent.setup();
+    renderLayout("/supplier");
+    menuButton("開啟選單").focus();
+    await user.keyboard("{Enter}");
+    expect(menuButton("關閉選單")).toHaveFocus();
+
+    await user.keyboard("{Enter}");
+    expect(menuButton("開啟選單")).toHaveFocus();
+    expect(within(screen.getByTestId("supplier-sidebar-mobile")).queryAllByRole("link")).toEqual([]);
   });
 });
