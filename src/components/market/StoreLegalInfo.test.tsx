@@ -1,7 +1,12 @@
 // StoreLegalInfo:店家的法定資訊(店家頁、訂單查詢頁共用)。必填的五項沒有值就寫「未提供」(看得出缺),選填的兩項有填才顯示;
 // 電話是 tel:、客服 Email 是 mailto:。
 import { cleanup, render, screen, within } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+// StoreLegalInfo → MarketLayout → useCart → cart → catalog 會載入 Supabase client;不 mock 的話,乾淨副本(沒有 .env)載入就失敗,
+// 有 .env 時 client 的自動更新 token 在 jsdom 裡丟未處理的錯誤,vitest 結束時 exit 1。
+vi.mock("@/integrations/supabase/client", () => ({ supabase: {} }));
+
 import StoreLegalInfo from "./StoreLegalInfo";
 
 afterEach(cleanup);
