@@ -18221,3 +18221,47 @@ gate / render / handler / index 與 `config.toml` 先照計畫的程式碼區塊
 - 先紅:新增的 10 項在修改前全紅(2 封的情境 9000 > 7000、502 之後的 409 沒標、沒有逾時 signal、內文卡住 5 秒測試逾時),原本的 143 項照樣綠。
 - 全套:`0dcd358` 的乾淨副本(`git archive`)連跑兩次 **117 檔 / 1904 項**全過;tsc strict 兩份設定 0 error,eslint 沒有輸出。
 - 部署後的實測照舊:一次結帳 3 家店,通知紀錄要有 4 筆 sent。
+
+### 2026-10-12:法規補強 20261012110000_market_compliance(commit `e7d341c`,分支 `market`)
+
+依 2026-10-12 的法規查證(M3、M6、M7、S6)與業主的決定,新增一支 migration,跟 20261012100000 同一次部署。先寫測試、看到失敗才改。**以 repo 為準。**
+
+1. **七日解除權逐項標示**:
+   - `market_products.withdrawal_exempt boolean NOT NULL DEFAULT false`:false = 適用,true = 不適用七日鑑賞期。
+   - 供應商改了 → 已核准的商品回待審:`market_products_guard` 的內容欄位清單多這一欄,其餘跟 120000 一字不差。管理員改不用重審。anon 讀得到(商品表本來就整表 SELECT 給 anon,照舊由 RLS 只留公開的商品)。
+   - `market_order_items.withdrawal_exempt` 由 BEFORE INSERT trigger `market_order_items_snapshot` 一律從商品帶入:外部送來的值不算,找不到商品就當成適用;沒有改 `market_place_order`。明細對 API 角色照舊不能改、不能刪。
+2. **店家法定資訊**:
+   - `market_stores` 加 `legal_name`(1–100 字)、`representative`(1–50 字)、`business_address`(5–200 字)、`service_email`(`market_email_ok`,≤ 254 字)、`food_registration_no`(選填,≤ 40 字)、`liability_insurance`(選填,≤ 100 字)。欄位名稱照規格,沒有改名。
+   - CHECK:`market_stores_disclosure_lengths`、`market_stores_service_email`。去頭尾空白、看不到字當成沒填由 guard 做(`market_trim` / `market_visible`)。
+   - 開放零售多一個條件:四項必填都有,而且 `suppliers.phone` 看得到字。
+     - `market_store_is_open` 加上這一條(公開頁面、下單都靠它)。
+     - `market_stores_guard` 在三種情況擋(22023,HINT **`store_disclosure_missing`**,放在最後檢查):供應商建店(建好就是開放)、開放中的店被供應商改到缺欄位、管理員建成啟用或把停用的店重新啟用。管理員停用、停用中的店供應商怎麼改,一律不擋。
+   - anon 只讀得到已開放的店(RLS 照舊)。
+   - 🔴 **`market_email_ok` 開給 `authenticated`**(規格沒寫,但非做不可):供應商是直接寫店家表(upsert),PostgreSQL 執行 CHECK 時會檢查「目前使用者」對 CHECK 裡的函式有沒有 EXECUTE。130000 把它收回了 API 角色,不開的話供應商存店家一律 42501(突變實測:9 項紅)。
+     - `market_tw_cities` 當初沒收回,同一個原因。`market_email_ok` 只是正規式、不讀資料,anon 與 `market_phone_ok` 照舊收回。
+     - `market_orders.test.sql` 第 5-2 項(「電話、Email 檢查函式不開給 API 角色」)照新設計改寫成 `false|true`,項數不變。
+3. **查單 RPC**:`market_get_orders` 的店家物件加 `legal_name`、`representative`、`business_address`、`service_email`、`food_registration_no`(產品責任險不給),明細加 `withdrawal_exempt`;其餘跟 130200 一字不差,仍然不給 `contact_email`。
+4. **自動取消的原因**(改 20261012100000 原檔):待匯款那條改成「超過 72 小時店家未確認收到款項,系統自動取消」(72 照舊從常數組);待接單那條不變。`market_hardening.test.sql` 跟著改,先紅 1 項。
+5. **既有測試的 fixture**:店家沒填齊就不能開放零售,所以 `market_catalog`(11 句建店、5 家供應商)、`market_checkout`、`market_hardening`、`market_orders`、`market_notify` 的建店都補上四項法定資訊、供應商都補上電話。這幾支從此要帶 100000 + 110000 跑(檔頭已改)。disclosure 的檢查放在 guard 最後,原本測「替別家建店」「沒有轉帳資訊」的項目錯誤碼不變。
+6. **還原檔**:四支函式照抄 120000 / 130200(生成時比對過原檔與線上 `prosrc` 的 md5 一致),拆掉 trigger、函式、欄位、兩個 CHECK,收回 `market_email_ok` 給 `authenticated`。`market_compliance_rollback.test.sql` 4 項:四支函式的 md5、五支函式的權限、三張表的欄位、constraint 與 trigger 都跟線上套用前相同;不帶還原檔時 4 項全紅。
+
+**測試** `market_compliance.test.sql` 23 項:
+- 欄位與 CHECK:長度上下限、Email 格式、去頭尾空白與看不到字。
+- 改標示回待審、管理員改不用重審、anon 讀得到。
+- 明細存下單當時的值、商品改了明細不變、偽造的值無效、明細改不掉刪不掉。
+- 沒填齊建不了店、缺電話也不行、開放中清掉必填擋、電話被清掉時公開頁面看不到也不能下單、管理員重新啟用缺欄位擋、anon 只讀得到開放的店。
+- 查單的新欄位、沒有 `contact_email`。
+- `market_email_ok` 開給 authenticated、快照函式不開給 API 角色。
+- 突變 7 處全殺:拿掉 `market_email_ok` 的授權、標示不算內容、快照保留偽造的 true、guard 不檢查、`market_store_is_open` 不檢查、guard 只在建店檢查、查單沒有新欄位。
+
+**數字**(`e7d341c`;乾跑帶 100000 + 110000,已套用的都不帶;每支之後殘留五個 0):`market_hardening` 41、`market_compliance` **23**、`market_orders` 67、`market_notify` 9、`market_checkout` 93、`market_hardening_rollback` 4(兩支 migration、反序兩支還原)、`market_compliance_rollback` **4**、`market_catalog` 112。
+
+**vitest**:`e7d341c` 的乾淨副本 118 檔 / 1926 項全過,但 1 檔載入失敗:`src/components/market/StoreLegalInfo.test.tsx`(`9f17b52`)。
+- 這支沒有 mock `@/integrations/supabase/client`:乾淨副本沒有環境變數,import 時就 `supabaseUrl is required`;在主工作目錄(有 `.env.local`)2 項過,但真的 client 的自動刷新丟出 unhandled rejection,vitest 照樣 exit 1。
+- 要補 `vi.mock("@/integrations/supabase/client", () => ({ supabase: {} }))`,前端的人改。跟這次的 SQL 無關。
+
+**沒有處理**:
+- 結帳沒有比對 `withdrawal_exempt`(像 `PRICE_CHANGED`)。買家看頁面之後商品才被改成不適用並重新核准,明細會記成不適用,但買家沒看到;要靠購物車、結帳頁、確認信顯示當下的值(前端與通知信在做)。要擋的話得改 `market_place_order`。
+- `suppliers.phone` 只檢查看得到字,沒有格式。
+- 這支的乾跑會 ALTER 三張已上線的表,那幾秒鎖住第 1 階段的店家、商品與明細表(交易最後 ROLLBACK)。
+- 套用時前端要一起上:供應商存店家沒有新欄位就會被 `store_disclosure_missing` 擋。
