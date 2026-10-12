@@ -37,6 +37,7 @@ import { LIMITS, PAYMENT_METHODS, TW_CITIES, type PaymentMethod, type TwCity } f
 import { formatTwd } from "@/lib/market/format";
 import { TERMS_VERSION } from "@/lib/market/legal";
 import { cartStore, useCart } from "@/lib/market/useCart";
+import { isWithdrawalExempt, WITHDRAWAL_EXEMPT_LABEL, WITHDRAWAL_TERMS_PATH } from "@/lib/market/withdrawal";
 import MarketLoadError from "./MarketLoadError";
 import MarketOffline from "./MarketOffline";
 
@@ -44,6 +45,8 @@ import MarketOffline from "./MarketOffline";
 const INPUT = `min-h-11 w-full scroll-mt-20 rounded-md border border-slate-300 bg-white px-3 text-base ${MARKET_FOCUS_RING}`;
 const FIELD_ORDER: Array<keyof BuyerForm> = ["name", "phone", "email", "city", "address", "note"];
 const REFETCH_CODES = ["PRICE_CHANGED", "OUT_OF_STOCK", "PRODUCT_UNAVAILABLE", "NOT_DELIVERABLE", "BELOW_MINIMUM", "PAYMENT_NOT_ACCEPTED"];
+// 勾選文字(法規查證報告 S7):同意的是服務條款;隱私權政策是告知,寫「已閱讀」
+const AGREE_LABEL = "我同意服務條款,並已閱讀隱私權政策";
 
 const FieldError = ({ id, message }: { id: string; message?: string }) =>
   message ? (
@@ -282,6 +285,8 @@ export default function MarketCheckoutPage() {
 
         {ready.map((g) => {
           const chosen = paymentOf(g);
+          // 七日解除權逐項標示(消保法 §19 Ⅱ、準則 §2):送出前在每家店的摘要再講一次哪幾項不適用
+          const exempt = g.lines.filter((l) => isWithdrawalExempt(l.product)).map((l) => l.product.name);
           return (
             <section key={g.supplierId} aria-labelledby={`checkout-store-${g.supplierId}`} className="rounded-xl border border-slate-200 bg-white p-4">
               <h2 id={`checkout-store-${g.supplierId}`} className="text-lg font-semibold text-slate-900">
@@ -305,6 +310,11 @@ export default function MarketCheckoutPage() {
                   <span>{formatTwd(g.total)}</span>
                 </li>
               </ul>
+              {exempt.length > 0 ? (
+                <p className="mt-2 rounded-md border border-amber-300 bg-amber-50 px-2 py-1 text-xs text-amber-900">
+                  {WITHDRAWAL_EXEMPT_LABEL}的商品:{exempt.join("、")}
+                </p>
+              ) : null}
               <fieldset className="mt-3">
                 <legend className="text-sm font-medium text-slate-900">付款方式</legend>
                 <div className="mt-1 flex flex-wrap gap-x-4">
@@ -333,8 +343,13 @@ export default function MarketCheckoutPage() {
             <span className="font-semibold text-slate-900">應付總額({ready.length} 家店)</span>
             <span className="shrink-0 font-bold text-emerald-800">{formatTwd(grandTotal)}</span>
           </p>
+          {/* 法規查證報告 5.2 的 A 版:標示跟條款第六條引用的「不適用七日鑑賞期」同一個字(withdrawal.ts) */}
           <p className="text-xs text-slate-600">
-            款項直接付給各店家,發票由店家開立。生鮮、冷藏冷凍等易腐食品不適用 7 日解除權(詳見服務條款第五條)。
+            款項直接付給各店家,發票或收據由店家開立。標示「{WITHDRAWAL_EXEMPT_LABEL}」的商品(多為生鮮易腐食品)不能無理由退貨;其他商品收到後 7 天內可以退貨,詳見
+            <Link to={WITHDRAWAL_TERMS_PATH} target="_blank" rel="noopener" className={`text-emerald-800 underline ${MARKET_FOCUS_RING}`}>
+              服務條款第六條
+            </Link>
+            (另開新分頁)。
           </p>
           <div>
             <div className="flex items-start gap-2">
@@ -348,7 +363,7 @@ export default function MarketCheckoutPage() {
                 className="mt-1 h-5 w-5 shrink-0 scroll-mt-20 accent-emerald-700"
               />
               <label htmlFor="checkout-agree" className="text-sm">
-                我已閱讀並同意服務條款與隱私權政策
+                {AGREE_LABEL}
               </label>
             </div>
             <p className="ml-7 text-sm">
@@ -361,7 +376,7 @@ export default function MarketCheckoutPage() {
               </Link>
               (另開新分頁)
             </p>
-            <FieldError id="checkout-agree-error" message={agreeError && !agreed ? "請先勾選同意服務條款與隱私權政策" : undefined} />
+            <FieldError id="checkout-agree-error" message={agreeError && !agreed ? `請先勾選「${AGREE_LABEL}」` : undefined} />
           </div>
           {submitError ? (
             <div role="alert" className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800">
@@ -375,7 +390,7 @@ export default function MarketCheckoutPage() {
           ) : null}
           {/* 72 小時自動取消(資料庫排程,autoCancel.ts):按下去之前就講清楚 */}
           <p className="text-xs text-slate-600">
-            送出後,店家會在 {MARKET_AUTO_CANCEL_HOURS} 小時內確認訂單;超過時間沒有接單,訂單會自動取消。
+            送出後,店家要在 {MARKET_AUTO_CANCEL_HOURS} 小時內接單;超過時間沒有接單,訂單會自動取消。選擇銀行轉帳的,店家接單後 {MARKET_AUTO_CANCEL_HOURS} 小時內要完成匯款。
           </p>
           <button
             type="submit"

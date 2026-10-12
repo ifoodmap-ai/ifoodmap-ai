@@ -79,7 +79,7 @@ describe("MarketCheckoutPage", () => {
     expect(name).toHaveFocus();
     expect(screen.getByLabelText("電話")).toHaveAccessibleDescription("請填寫手機或市話,例如 0912345678 或 02-2345-6789");
     expect(screen.getByLabelText("收件縣市")).toHaveAccessibleDescription("請選擇收件縣市");
-    expect(screen.getByText("請先勾選同意服務條款與隱私權政策")).toBeInTheDocument();
+    expect(screen.getByText("請先勾選「我同意服務條款,並已閱讀隱私權政策」")).toBeInTheDocument();
     expect(placeOrder).not.toHaveBeenCalled();
   });
 
@@ -87,7 +87,7 @@ describe("MarketCheckoutPage", () => {
     renderCheckout();
     await fill();
     await userEvent.click(screen.getByRole("button", { name: /送出訂單/ }));
-    expect(screen.getByRole("checkbox", { name: "我已閱讀並同意服務條款與隱私權政策" })).toHaveFocus();
+    expect(screen.getByRole("checkbox", { name: "我同意服務條款,並已閱讀隱私權政策" })).toHaveFocus();
     expect(placeOrder).not.toHaveBeenCalled();
   });
 
@@ -113,7 +113,7 @@ describe("MarketCheckoutPage", () => {
     const a = within(screen.getByRole("region", { name: "市集測試 A 店" }));
     await userEvent.click(a.getByRole("radio", { name: "銀行轉帳" }));
     expect(a.getByText("店家接單後,訂單查詢頁會顯示匯款帳號,也會寄信通知你。")).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("checkbox", { name: "我已閱讀並同意服務條款與隱私權政策" }));
+    await userEvent.click(screen.getByRole("checkbox", { name: "我同意服務條款,並已閱讀隱私權政策" }));
     await userEvent.click(screen.getByRole("button", { name: "送出訂單(NT$ 1,030)" }));
     expect(placeOrder).toHaveBeenCalledWith({
       buyer: { name: "王小明", phone: "0912345678", email: "buyer@example.com", city: "臺北市", address: "測試路 1 號 2 樓" },
@@ -135,7 +135,7 @@ describe("MarketCheckoutPage", () => {
     vi.mocked(placeOrder).mockResolvedValue({ ok: true, token: TOKEN, checkout_id: "c1", orders: [] });
     renderCheckout();
     await fill("新北市");
-    await userEvent.click(screen.getByRole("checkbox", { name: "我已閱讀並同意服務條款與隱私權政策" }));
+    await userEvent.click(screen.getByRole("checkbox", { name: "我同意服務條款,並已閱讀隱私權政策" }));
     await userEvent.click(screen.getByRole("button", { name: "送出訂單(NT$ 770)" }));
     await waitFor(() => expect(screen.getByTestId("location")).toHaveTextContent(`/market/orders/${TOKEN}`));
     expect(cartStore.get()).toEqual([{ productId: SALMON.id, qty: 1 }]);
@@ -145,7 +145,7 @@ describe("MarketCheckoutPage", () => {
     vi.mocked(placeOrder).mockResolvedValue({ ok: false, code: "PRICE_CHANGED", stores: [{ supplier_id: SUPPLIER_A }] });
     renderCheckout();
     await fill();
-    await userEvent.click(screen.getByRole("checkbox", { name: "我已閱讀並同意服務條款與隱私權政策" }));
+    await userEvent.click(screen.getByRole("checkbox", { name: "我同意服務條款,並已閱讀隱私權政策" }));
     const calls = vi.mocked(fetchProductsByIds).mock.calls.length;
     await userEvent.click(screen.getByRole("button", { name: /送出訂單/ }));
     expect(await screen.findByRole("alert")).toHaveTextContent("價格或運費剛剛有變動");
@@ -166,7 +166,7 @@ describe("MarketCheckoutPage:錯誤對照、離線與載入失敗、下架商品
   afterEach(() => onlineManager.setOnline(true));
 
   const agreeAndSubmit = async () => {
-    await userEvent.click(screen.getByRole("checkbox", { name: "我已閱讀並同意服務條款與隱私權政策" }));
+    await userEvent.click(screen.getByRole("checkbox", { name: "我同意服務條款,並已閱讀隱私權政策" }));
     await userEvent.click(screen.getByRole("button", { name: /送出訂單/ }));
   };
 
@@ -307,7 +307,7 @@ describe("MarketCheckoutPage:錯誤對照、離線與載入失敗、下架商品
 describe("MarketCheckoutPage:查詢 token(重送不會重複下單)", () => {
   const TOKEN_RE = /^[A-Za-z0-9_-]{43}$/;
   const sentTokens = () => vi.mocked(placeOrder).mock.calls.map((c) => c[0].token);
-  const agree = () => userEvent.click(screen.getByRole("checkbox", { name: "我已閱讀並同意服務條款與隱私權政策" }));
+  const agree = () => userEvent.click(screen.getByRole("checkbox", { name: "我同意服務條款,並已閱讀隱私權政策" }));
   const submit = () => userEvent.click(screen.getByRole("button", { name: /送出訂單/ }));
   // 伺服器把收到的 token 原樣回傳(成功);送出當下 token 一定已經存好
   const stored: Array<string | null> = [];
@@ -467,10 +467,40 @@ describe("MarketCheckoutPage:查詢 token(重送不會重複下單)", () => {
 });
 
 describe("MarketCheckoutPage:72 小時自動取消的說明", () => {
-  it("送出鈕正上方說明:送出後店家會在 72 小時內確認,超過時間沒接單會自動取消", async () => {
+  it("送出鈕正上方說明:店家要在 72 小時內接單、銀行轉帳要在接單後 72 小時內匯款,逾時自動取消(法規查證報告 5.2)", async () => {
     renderCheckout();
     const button = await screen.findByRole("button", { name: /送出訂單/ });
-    const note = screen.getByText("送出後,店家會在 72 小時內確認訂單;超過時間沒有接單,訂單會自動取消。");
+    const note = screen.getByText("送出後,店家要在 72 小時內接單;超過時間沒有接單,訂單會自動取消。選擇銀行轉帳的,店家接單後 72 小時內要完成匯款。");
     expect(button.previousElementSibling).toBe(note);
+  });
+});
+
+describe("MarketCheckoutPage:七日鑑賞期(法規查證報告 5.2 的 A 版、S7)", () => {
+  it("說明改成逐項標示的版本:發票或收據由店家開立、標示不適用的商品不能無理由退貨、其他收到後 7 天內可以退貨,連到第六條(另開分頁)", async () => {
+    renderCheckout();
+    const note = (await screen.findByText(/款項直接付給各店家/)).closest("p") as HTMLElement;
+    expect(note).toHaveTextContent(
+      "款項直接付給各店家,發票或收據由店家開立。標示「不適用七日鑑賞期」的商品(多為生鮮易腐食品)不能無理由退貨;其他商品收到後 7 天內可以退貨,詳見服務條款第六條(另開新分頁)。",
+    );
+    const link = within(note).getByRole("link", { name: "服務條款第六條" });
+    expect(link).toHaveAttribute("href", "/market/terms#withdrawal");
+    expect(link).toHaveAttribute("target", "_blank");
+    expect(screen.queryByText(/冷藏冷凍等易腐食品不適用/)).toBeNull();
+  });
+
+  it("每家店的摘要列出不適用七日鑑賞期的商品;全部適用的店不列", async () => {
+    vi.mocked(fetchProductsByIds).mockResolvedValue([{ ...CABBAGE, withdrawal_exempt: true }, { ...BEEF, withdrawal_exempt: true }, SALMON]);
+    renderCheckout();
+    await fill();
+    const a = within(screen.getByRole("region", { name: "市集測試 A 店" }));
+    expect(a.getByText("不適用七日鑑賞期的商品:有機高麗菜、牛肉片")).toBeInTheDocument();
+    const b = within(screen.getByRole("region", { name: "市集測試 B 店" }));
+    expect(b.queryByText(/不適用七日鑑賞期/)).toBeNull();
+  });
+
+  it("同意勾選:同意服務條款、閱讀隱私權政策(分開講)", async () => {
+    renderCheckout();
+    expect(await screen.findByRole("checkbox", { name: "我同意服務條款,並已閱讀隱私權政策" })).toBeInTheDocument();
+    expect(screen.queryByText("我已閱讀並同意服務條款與隱私權政策")).toBeNull();
   });
 });
