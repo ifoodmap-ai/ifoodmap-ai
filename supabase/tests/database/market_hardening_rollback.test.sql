@@ -1,5 +1,6 @@
 -- 20261012100000 的還原檔能跑、跑完跟套用前的線上一模一樣
--- (runner:--with-migration 20261012100000_market_hardening.sql --with-rollback 20261012100000_market_hardening.down.sql,本檔在兩者之後執行;
+-- (runner:--with-migration 20261012100000_market_hardening.sql --with-migration 20261012110000_market_compliance.sql
+--  --with-rollback 20261012110000_market_compliance.down.sql --with-rollback 20261012100000_market_hardening.down.sql(反序還原),本檔最後執行;
 --  已經套用的 120000 / 120100 / 130000 / 130100 / 130200 不要再帶)
 -- 期待值 = 線上套用 hardening 之前(= 130000 / 130200 的版本)的 md5(pg_get_functiondef)、權限、排程指紋,
 -- 2026-10-12 用唯讀端點取得;hardening 套用之後這支照樣成立(還原檔換回來的就是這個版本)。

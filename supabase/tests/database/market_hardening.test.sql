@@ -1,8 +1,10 @@
 -- =====================================================================
 -- migration 20261012100000_market_hardening 的資料庫層測試:IP 退路、被擋的請求非同步 commit、逾時自動取消。
 --   … dry supabase/tests/database/market_hardening.test.sql \
---     --with-migration supabase/migrations/20261012100000_market_hardening.sql
---   (120000 / 120100 / 130000 / 130100 / 130200 已套用正式庫,不要再帶;這支套用之後拿掉 --with-migration 再跑一次)
+--     --with-migration supabase/migrations/20261012100000_market_hardening.sql \
+--     --with-migration supabase/migrations/20261012110000_market_compliance.sql
+--   (120000 / 120100 / 130000 / 130100 / 130200 已套用正式庫,不要再帶;兩支套用之後拿掉 --with-migration 再跑一次;
+--    fixture 的店家帶了 110000 的法定資訊欄位,所以 110000 也要帶)
 -- 下單開關、通知網址只在這個交易裡改;fixture 用的 guard 只在這個交易裡換掉又換回來;全部跟著 ROLLBACK 消失。
 -- 時數:73 / 71 小時 = 自動取消時數的前後各一小時(時數只定義在 migration 的常數);時數改了,這裡跟著改。
 -- 並發(兩個連線同時操作同一張單)乾跑是單一連線測不到:market_expire_orders 靠 FOR UPDATE SKIP LOCKED 跳過別人鎖住的單。
@@ -15,17 +17,17 @@ INSERT INTO auth.users (id, instance_id, aud, role, email, encrypted_password, r
    'store-b@market-test.invalid', '', '{"provider":"email","providers":["email"]}', '{}', now(), now()),
   ('a9100000-0000-4000-8000-000000000003', '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated',
    'admin@market-test.invalid', '', '{"provider":"email","providers":["email"],"role":"admin"}', '{}', now(), now());
-INSERT INTO public.suppliers (id, name, contact_email) VALUES
-  ('a9200000-0000-4000-8000-00000000000a', '市集測試 A 店', 'store-a@market-test.invalid'),
-  ('a9200000-0000-4000-8000-00000000000b', '市集測試 B 店', 'store-b@market-test.invalid');
+INSERT INTO public.suppliers (id, name, contact_email, phone) VALUES
+  ('a9200000-0000-4000-8000-00000000000a', '市集測試 A 店', 'store-a@market-test.invalid', '02-2345-6789'),
+  ('a9200000-0000-4000-8000-00000000000b', '市集測試 B 店', 'store-b@market-test.invalid', '02-2345-6789');
 INSERT INTO public.supplier_accounts (user_id, supplier_id) VALUES
   ('a9100000-0000-4000-8000-000000000001', 'a9200000-0000-4000-8000-00000000000a'),
   ('a9100000-0000-4000-8000-000000000002', 'a9200000-0000-4000-8000-00000000000b');
 INSERT INTO public.market_store_transfer (supplier_id, transfer_info) VALUES
   ('a9200000-0000-4000-8000-00000000000b', '郵局(700) 帳號 0001234-5678901 戶名 市集測試 B');
-INSERT INTO public.market_stores (supplier_id, delivery_cities, shipping_fee, free_shipping_threshold, min_order_amount, payment_methods) VALUES
-  ('a9200000-0000-4000-8000-00000000000a', ARRAY['臺北市', '新北市'], 120, 1000, 300, ARRAY['cod']),
-  ('a9200000-0000-4000-8000-00000000000b', ARRAY['臺北市'], 60, NULL, 0, ARRAY['cod', 'transfer']);
+INSERT INTO public.market_stores (supplier_id, delivery_cities, shipping_fee, free_shipping_threshold, min_order_amount, payment_methods, legal_name, representative, business_address, service_email) VALUES
+  ('a9200000-0000-4000-8000-00000000000a', ARRAY['臺北市', '新北市'], 120, 1000, 300, ARRAY['cod'], '市集測試商行', '測試負責人', '臺北市測試路 1 號', 'service@market-test.invalid'),
+  ('a9200000-0000-4000-8000-00000000000b', ARRAY['臺北市'], 60, NULL, 0, ARRAY['cod', 'transfer'], '市集測試商行', '測試負責人', '臺北市測試路 1 號', 'service@market-test.invalid');
 SELECT pg_temp.exec_with_claims(pg_temp.jwt('a9100000-0000-4000-8000-000000000003', true), $q$
   INSERT INTO public.market_products (id, supplier_id, name, category, spec, price, stock, temperature, review_status, is_listed) VALUES
     ('a9300000-0000-4000-8000-0000000000a1', 'a9200000-0000-4000-8000-00000000000a', '有機高麗菜', 'vegetable', '1 顆', 100, 10, 'chilled', 'approved', true),
@@ -337,7 +339,7 @@ SELECT pg_temp.expect('進入待匯款 73 小時:取消;system、從 awaiting_pa
   (SELECT concat_ws('|', o.status, e.actor_role, e.from_status, e.note, e.payload::text)
      FROM public.market_orders o JOIN public.market_order_events e ON e.order_id = o.id AND e.to_status = 'cancelled'
     WHERE o.id = 'a9600000-0000-4000-8000-000000000004'),
-  'cancelled|system|awaiting_payment|超過 72 小時沒有完成匯款,系統自動取消|{"auto_expire": "awaiting_payment"}');
+  'cancelled|system|awaiting_payment|超過 72 小時店家未確認收到款項,系統自動取消|{"auto_expire": "awaiting_payment"}');
 SELECT pg_temp.expect('待接單 71 小時:不動', (SELECT status FROM public.market_orders WHERE id = 'a9600000-0000-4000-8000-000000000002'), 'pending');
 SELECT pg_temp.expect('轉帳單下單 100 小時前、1 小時前才進待匯款:不動(看進入待匯款的時間,不是下單時間)',
   (SELECT status FROM public.market_orders WHERE id = 'a9600000-0000-4000-8000-000000000003'), 'awaiting_payment');

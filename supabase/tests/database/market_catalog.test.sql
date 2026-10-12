@@ -1,8 +1,10 @@
 -- =====================================================================
 -- migration 20261009120000_market_catalog 的資料庫層測試
--- 執行(還沒套用時要帶 --with-migration;套用之後拿掉再跑一次):
+-- 執行(120000 / 120100 / 130000–130200 已套用正式庫,不要再帶):
+-- 🔴 20261012110000 起店家要填齊法定資訊、供應商要有電話才開放零售:fixture 的店家都帶了這些欄位,所以要帶 100000 + 110000(兩支同一次部署):
 --   SUPABASE_ACCESS_TOKEN=… node scripts/supabase-sql.mjs dry supabase/tests/database/market_catalog.test.sql \
---     --with-migration supabase/migrations/20261009120000_market_catalog.sql
+--     --with-migration supabase/migrations/20261012100000_market_hardening.sql \
+--     --with-migration supabase/migrations/20261012110000_market_compliance.sql
 -- 本檔不含 BEGIN / ROLLBACK(runner 會包起來);fixture 慣例見 _market_helpers.sql。
 -- =====================================================================
 
@@ -19,11 +21,11 @@ INSERT INTO auth.users (id, instance_id, aud, role, email, encrypted_password, r
   ('a9100000-0000-4000-8000-000000000005', '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated',
    'store-d@market-test.invalid', '', '{"provider":"email","providers":["email"]}', '{}', now(), now());
 
-INSERT INTO public.suppliers (id, name, contact_email, is_active) VALUES
-  ('a9200000-0000-4000-8000-00000000000a', '市集測試 A 店', 'store-a@market-test.invalid', true),
-  ('a9200000-0000-4000-8000-00000000000b', '市集測試 B 店', 'store-b@market-test.invalid', true),
-  ('a9200000-0000-4000-8000-00000000000c', '市集測試 C 店(供應商停用中)', 'store-c@market-test.invalid', false),
-  ('a9200000-0000-4000-8000-00000000000d', '市集測試 D 店(還沒建零售店家)', 'store-d@market-test.invalid', true);
+INSERT INTO public.suppliers (id, name, contact_email, is_active, phone) VALUES
+  ('a9200000-0000-4000-8000-00000000000a', '市集測試 A 店', 'store-a@market-test.invalid', true, '02-2345-6789'),
+  ('a9200000-0000-4000-8000-00000000000b', '市集測試 B 店', 'store-b@market-test.invalid', true, '02-2345-6789'),
+  ('a9200000-0000-4000-8000-00000000000c', '市集測試 C 店(供應商停用中)', 'store-c@market-test.invalid', false, '02-2345-6789'),
+  ('a9200000-0000-4000-8000-00000000000d', '市集測試 D 店(還沒建零售店家)', 'store-d@market-test.invalid', true, '02-2345-6789');
 
 INSERT INTO public.supplier_accounts (user_id, supplier_id) VALUES
   ('a9100000-0000-4000-8000-000000000001', 'a9200000-0000-4000-8000-00000000000a'),
@@ -57,8 +59,8 @@ SELECT pg_temp.expect('market_store_is_open 開給 anon(公開讀取的 RLS 要�
 -- ---------------------------------------------------------------------
 SELECT pg_temp.expect('A 建自己的店家(自己填 is_enabled=false)',
   pg_temp.as_exec('authenticated', pg_temp.ua(), $q$
-    INSERT INTO public.market_stores (supplier_id, delivery_cities, shipping_fee, free_shipping_threshold, min_order_amount, ship_days, payment_methods, is_enabled)
-    VALUES ('a9200000-0000-4000-8000-00000000000a', ARRAY['新北市', '臺北市', '臺北市'], 120, 1000, 300, 2, ARRAY['cod'], false)$q$),
+    INSERT INTO public.market_stores (supplier_id, delivery_cities, shipping_fee, free_shipping_threshold, min_order_amount, ship_days, payment_methods, is_enabled, legal_name, representative, business_address, service_email)
+    VALUES ('a9200000-0000-4000-8000-00000000000a', ARRAY['新北市', '臺北市', '臺北市'], 120, 1000, 300, 2, ARRAY['cod'], false, '市集測試商行', '測試負責人', '臺北市測試路 1 號', 'service@market-test.invalid')$q$),
   'OK');
 SELECT pg_temp.expect('供應商不能自己停用:建店時被改回 true',
   (SELECT is_enabled::text FROM public.market_stores WHERE supplier_id = 'a9200000-0000-4000-8000-00000000000a'), 'true');
@@ -67,12 +69,12 @@ SELECT pg_temp.expect('配送縣市去重複、照官方順序存',
   '臺北市,新北市');
 SELECT pg_temp.expect('A 不能幫 B 建店家',
   pg_temp.as_exec('authenticated', pg_temp.ua(), $q$
-    INSERT INTO public.market_stores (supplier_id, delivery_cities) VALUES ('a9200000-0000-4000-8000-00000000000b', ARRAY['臺北市'])$q$),
+    INSERT INTO public.market_stores (supplier_id, delivery_cities, legal_name, representative, business_address, service_email) VALUES ('a9200000-0000-4000-8000-00000000000b', ARRAY['臺北市'], '市集測試商行', '測試負責人', '臺北市測試路 1 號', 'service@market-test.invalid')$q$),
   'ERR 42501');
 SELECT pg_temp.expect('B 建自己的店家',
   pg_temp.as_exec('authenticated', pg_temp.ub(), $q$
-    INSERT INTO public.market_stores (supplier_id, delivery_cities, shipping_fee, min_order_amount, ship_days, payment_methods)
-    VALUES ('a9200000-0000-4000-8000-00000000000b', ARRAY['臺北市'], 60, 0, 1, ARRAY['cod'])$q$),
+    INSERT INTO public.market_stores (supplier_id, delivery_cities, shipping_fee, min_order_amount, ship_days, payment_methods, legal_name, representative, business_address, service_email)
+    VALUES ('a9200000-0000-4000-8000-00000000000b', ARRAY['臺北市'], 60, 0, 1, ARRAY['cod'], '市集測試商行', '測試負責人', '臺北市測試路 1 號', 'service@market-test.invalid')$q$),
   'OK');
 SELECT pg_temp.expect('縣市要用官方寫法(「台北市」被擋)',
   pg_temp.as_exec('authenticated', pg_temp.ua(), $q$
@@ -341,7 +343,7 @@ SELECT pg_temp.expect('管理員恢復零售,原因清掉',
     SELECT v FROM u$q$),
   '∅');
 SELECT pg_temp.exec_with_claims(pg_temp.uadmin(), $q$
-  INSERT INTO public.market_stores (supplier_id, delivery_cities) VALUES ('a9200000-0000-4000-8000-00000000000c', ARRAY['臺北市'])$q$);
+  INSERT INTO public.market_stores (supplier_id, delivery_cities, legal_name, representative, business_address, service_email) VALUES ('a9200000-0000-4000-8000-00000000000c', ARRAY['臺北市'], '市集測試商行', '測試負責人', '臺北市測試路 1 號', 'service@market-test.invalid')$q$);
 SELECT pg_temp.exec_with_claims(pg_temp.uadmin(), $q$
   INSERT INTO public.market_products (id, supplier_id, name, category, spec, price, review_status)
   VALUES ('a9300000-0000-4000-8000-0000000000c1', 'a9200000-0000-4000-8000-00000000000c', '停用供應商的商品', 'fruit', '1 盒', 100, 'approved')$q$);
@@ -383,17 +385,17 @@ INSERT INTO public.market_store_transfer (supplier_id, transfer_info)
 VALUES ('a9200000-0000-4000-8000-00000000000d', '郵局(700) 帳號 0001234-5678901 戶名 市集測試 D');
 SELECT pg_temp.expect('替別家建店家並勾轉帳:別家有沒有轉帳資訊都回 42501(guard 先檢查擁有權)',
   pg_temp.as_exec('authenticated', pg_temp.ua(), $q$
-    INSERT INTO public.market_stores (supplier_id, delivery_cities, payment_methods)
-    VALUES ('a9200000-0000-4000-8000-00000000000b', ARRAY['臺北市'], ARRAY['cod', 'transfer'])$q$)
+    INSERT INTO public.market_stores (supplier_id, delivery_cities, payment_methods, legal_name, representative, business_address, service_email)
+    VALUES ('a9200000-0000-4000-8000-00000000000b', ARRAY['臺北市'], ARRAY['cod', 'transfer'], '市集測試商行', '測試負責人', '臺北市測試路 1 號', 'service@market-test.invalid')$q$)
   || '|' ||
   pg_temp.as_exec('authenticated', pg_temp.ua(), $q$
-    INSERT INTO public.market_stores (supplier_id, delivery_cities, payment_methods)
-    VALUES ('a9200000-0000-4000-8000-00000000000d', ARRAY['臺北市'], ARRAY['cod', 'transfer'])$q$),
+    INSERT INTO public.market_stores (supplier_id, delivery_cities, payment_methods, legal_name, representative, business_address, service_email)
+    VALUES ('a9200000-0000-4000-8000-00000000000d', ARRAY['臺北市'], ARRAY['cod', 'transfer'], '市集測試商行', '測試負責人', '臺北市測試路 1 號', 'service@market-test.invalid')$q$),
   'ERR 42501|ERR 42501');
 SELECT pg_temp.expect('D 建自己的店家(自己帶 created_at = 2099)',
   pg_temp.as_exec('authenticated', pg_temp.ud(), $q$
-    INSERT INTO public.market_stores (supplier_id, delivery_cities, created_at)
-    VALUES ('a9200000-0000-4000-8000-00000000000d', ARRAY['臺北市'], '2099-01-01 00:00+08')$q$),
+    INSERT INTO public.market_stores (supplier_id, delivery_cities, created_at, legal_name, representative, business_address, service_email)
+    VALUES ('a9200000-0000-4000-8000-00000000000d', ARRAY['臺北市'], '2099-01-01 00:00+08', '市集測試商行', '測試負責人', '臺北市測試路 1 號', 'service@market-test.invalid')$q$),
   'OK');
 SELECT pg_temp.expect('建店時自己帶的 created_at 被改成現在',
   (SELECT (created_at = now())::text FROM public.market_stores WHERE supplier_id = 'a9200000-0000-4000-8000-00000000000d'), 'true');
@@ -465,12 +467,12 @@ SELECT pg_temp.expect('photos 裡有 NULL 被擋',
 -- ---------------------------------------------------------------------
 SELECT pg_temp.expect('沒有 sub 的 authenticated JWT 替別家建店並勾轉帳:一樣回 42501(例外只看 auth.role())',
   pg_temp.as_exec('authenticated', '{"role":"authenticated"}', $q$
-    INSERT INTO public.market_stores (supplier_id, delivery_cities, payment_methods)
-    VALUES ('a9200000-0000-4000-8000-00000000000b', ARRAY['臺北市'], ARRAY['cod', 'transfer'])$q$)
+    INSERT INTO public.market_stores (supplier_id, delivery_cities, payment_methods, legal_name, representative, business_address, service_email)
+    VALUES ('a9200000-0000-4000-8000-00000000000b', ARRAY['臺北市'], ARRAY['cod', 'transfer'], '市集測試商行', '測試負責人', '臺北市測試路 1 號', 'service@market-test.invalid')$q$)
   || '|' ||
   pg_temp.as_exec('authenticated', '{"role":"authenticated"}', $q$
-    INSERT INTO public.market_stores (supplier_id, delivery_cities, payment_methods)
-    VALUES ('a9200000-0000-4000-8000-00000000000d', ARRAY['臺北市'], ARRAY['cod', 'transfer'])$q$),
+    INSERT INTO public.market_stores (supplier_id, delivery_cities, payment_methods, legal_name, representative, business_address, service_email)
+    VALUES ('a9200000-0000-4000-8000-00000000000d', ARRAY['臺北市'], ARRAY['cod', 'transfer'], '市集測試商行', '測試負責人', '臺北市測試路 1 號', 'service@market-test.invalid')$q$),
   'ERR 42501|ERR 42501');
 -- P9 只上傳縮圖、P10 只上傳主圖(資料庫擁有者身分直接寫 storage.objects;交易最後 ROLLBACK)
 SELECT pg_temp.exec_with_claims(pg_temp.ua(), $q$
@@ -672,22 +674,22 @@ SELECT pg_temp.expect('缺檔的錯誤訊息帶真正缺的那張(P10 只缺縮�
 INSERT INTO auth.users (id, instance_id, aud, role, email, encrypted_password, raw_app_meta_data, raw_user_meta_data, created_at, updated_at) VALUES
   ('a9100000-0000-4000-8000-000000000006', '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated',
    'store-e@market-test.invalid', '', '{"provider":"email","providers":["email"]}', '{}', now(), now());
-INSERT INTO public.suppliers (id, name, contact_email, is_active) VALUES
-  ('a9200000-0000-4000-8000-00000000000e', '市集測試 E 店', 'store-e@market-test.invalid', true);
+INSERT INTO public.suppliers (id, name, contact_email, is_active, phone) VALUES
+  ('a9200000-0000-4000-8000-00000000000e', '市集測試 E 店', 'store-e@market-test.invalid', true, '02-2345-6789');
 INSERT INTO public.supplier_accounts (user_id, supplier_id) VALUES
   ('a9100000-0000-4000-8000-000000000006', 'a9200000-0000-4000-8000-00000000000e');
 CREATE FUNCTION pg_temp.ue() RETURNS text LANGUAGE sql AS $f$ SELECT pg_temp.jwt('a9100000-0000-4000-8000-000000000006') $f$;
 SELECT pg_temp.expect('E 建店時勾轉帳、還沒有轉帳資訊 → 擋',
   pg_temp.as_exec('authenticated', pg_temp.ue(), $q$
-    INSERT INTO public.market_stores (supplier_id, delivery_cities, payment_methods)
-    VALUES ('a9200000-0000-4000-8000-00000000000e', ARRAY['臺北市'], ARRAY['cod', 'transfer'])$q$),
+    INSERT INTO public.market_stores (supplier_id, delivery_cities, payment_methods, legal_name, representative, business_address, service_email)
+    VALUES ('a9200000-0000-4000-8000-00000000000e', ARRAY['臺北市'], ARRAY['cod', 'transfer'], '市集測試商行', '測試負責人', '臺北市測試路 1 號', 'service@market-test.invalid')$q$),
   'ERR 22023:transfer_info_required');
 INSERT INTO public.market_store_transfer (supplier_id, transfer_info)
 VALUES ('a9200000-0000-4000-8000-00000000000e', '郵局(700) 帳號 0001234-5678901 戶名 市集測試 E');
 SELECT pg_temp.expect('E 填好轉帳資訊再建店(勾轉帳)',
   pg_temp.as_exec('authenticated', pg_temp.ue(), $q$
-    INSERT INTO public.market_stores (supplier_id, delivery_cities, payment_methods)
-    VALUES ('a9200000-0000-4000-8000-00000000000e', ARRAY['臺北市'], ARRAY['cod', 'transfer'])$q$),
+    INSERT INTO public.market_stores (supplier_id, delivery_cities, payment_methods, legal_name, representative, business_address, service_email)
+    VALUES ('a9200000-0000-4000-8000-00000000000e', ARRAY['臺北市'], ARRAY['cod', 'transfer'], '市集測試商行', '測試負責人', '臺北市測試路 1 號', 'service@market-test.invalid')$q$),
   'OK');
 SELECT pg_temp.expect('E 自己刪掉轉帳資訊(轉帳資訊表開放供應商刪)',
   pg_temp.as_val('authenticated', pg_temp.ue(), $q$

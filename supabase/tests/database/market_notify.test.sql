@@ -1,18 +1,19 @@
 -- =====================================================================
--- migration 20261009130100_market_notify 的資料庫層測試(第 1 階段的 120000 / 120100 已套用正式庫,不要再帶):
+-- migration 20261009130100_market_notify 的資料庫層測試(120000 / 120100 / 130000–130200 已套用正式庫,不要再帶)。
+-- 🔴 20261012110000 起店家要填齊法定資訊、供應商要有電話才開放零售:fixture 的店家都帶了這些欄位,所以要帶 100000 + 110000(兩支同一次部署):
 --   … dry supabase/tests/database/market_notify.test.sql \
---     --with-migration supabase/migrations/20261009130000_market_orders.sql \
---     --with-migration supabase/migrations/20261009130100_market_notify.sql
+--     --with-migration supabase/migrations/20261012100000_market_hardening.sql \
+--     --with-migration supabase/migrations/20261012110000_market_compliance.sql
 -- 通知網址在交易裡換成 http://127.0.0.1:9/market-test:排進 pg_net 佇列的請求跟著 ROLLBACK 消失,不會真的送出。
 -- =====================================================================
 INSERT INTO auth.users (id, instance_id, aud, role, email, encrypted_password, raw_app_meta_data, raw_user_meta_data, created_at, updated_at) VALUES
   ('a9100000-0000-4000-8000-000000000001', '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated',
    'store-a@market-test.invalid', '', '{"provider":"email","providers":["email"]}', '{}', now(), now());
-INSERT INTO public.suppliers (id, name, contact_email) VALUES
-  ('a9200000-0000-4000-8000-00000000000a', '市集測試 A 店', 'store-a@market-test.invalid');
+INSERT INTO public.suppliers (id, name, contact_email, phone) VALUES
+  ('a9200000-0000-4000-8000-00000000000a', '市集測試 A 店', 'store-a@market-test.invalid', '02-2345-6789');
 INSERT INTO public.supplier_accounts (user_id, supplier_id) VALUES
   ('a9100000-0000-4000-8000-000000000001', 'a9200000-0000-4000-8000-00000000000a');
-INSERT INTO public.market_stores (supplier_id, delivery_cities) VALUES ('a9200000-0000-4000-8000-00000000000a', ARRAY['臺北市']);
+INSERT INTO public.market_stores (supplier_id, delivery_cities, legal_name, representative, business_address, service_email) VALUES ('a9200000-0000-4000-8000-00000000000a', ARRAY['臺北市'], '市集測試商行', '測試負責人', '臺北市測試路 1 號', 'service@market-test.invalid');
 INSERT INTO public.market_orders (id, checkout_id, supplier_id, buyer_name, buyer_phone, buyer_email, ship_city, ship_address,
                                   subtotal, shipping_fee, total, payment_method, lookup_token_hash, request_fingerprint, terms_version)
 VALUES ('a9600000-0000-4000-8000-000000000001', 'a9700000-0000-4000-8000-000000000001', 'a9200000-0000-4000-8000-00000000000a',

@@ -1,8 +1,10 @@
 -- =====================================================================
 -- migration 20261009130200_market_checkout 的資料庫層測試(限流、下單 RPC、token 查單)。
--- 120000 / 120100 / 130000 / 130100 / 130200 都已套用正式庫,不要再帶;20261012100000_market_hardening 還沒套用時要帶:
+-- 120000 / 120100 / 130000 / 130100 / 130200 都已套用正式庫,不要再帶;20261012100000、20261012110000 還沒套用時要帶:
+-- 🔴 20261012110000 起店家要填齊法定資訊、供應商要有電話才開放零售:fixture 的店家都帶了這些欄位,所以要帶 100000 + 110000(兩支同一次部署):
 --   … dry supabase/tests/database/market_checkout.test.sql \
---     --with-migration supabase/migrations/20261012100000_market_hardening.sql
+--     --with-migration supabase/migrations/20261012100000_market_hardening.sql \
+--     --with-migration supabase/migrations/20261012110000_market_compliance.sql
 -- (hardening 之後 market_client_ip 不再退回 x-forwarded-for,第 1 節那一項跟著改;沒帶 hardening 時那一項會紅,屬預期)
 -- 通知網址換成 http://127.0.0.1:9/market-test;下單開關在交易裡切換;全部跟著 ROLLBACK 消失。
 -- 金額跟前端測試同一組:A 店運費 120、滿 1000 免運、最低 300;B 店運費 60、沒有免運、沒有最低金額。
@@ -14,17 +16,17 @@ INSERT INTO auth.users (id, instance_id, aud, role, email, encrypted_password, r
    'store-b@market-test.invalid', '', '{"provider":"email","providers":["email"]}', '{}', now(), now()),
   ('a9100000-0000-4000-8000-000000000003', '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated',
    'admin@market-test.invalid', '', '{"provider":"email","providers":["email"],"role":"admin"}', '{}', now(), now());
-INSERT INTO public.suppliers (id, name, contact_email) VALUES
-  ('a9200000-0000-4000-8000-00000000000a', '市集測試 A 店', 'store-a@market-test.invalid'),
-  ('a9200000-0000-4000-8000-00000000000b', '市集測試 B 店', 'store-b@market-test.invalid');
+INSERT INTO public.suppliers (id, name, contact_email, phone) VALUES
+  ('a9200000-0000-4000-8000-00000000000a', '市集測試 A 店', 'store-a@market-test.invalid', '02-2345-6789'),
+  ('a9200000-0000-4000-8000-00000000000b', '市集測試 B 店', 'store-b@market-test.invalid', '02-2345-6789');
 INSERT INTO public.supplier_accounts (user_id, supplier_id) VALUES
   ('a9100000-0000-4000-8000-000000000001', 'a9200000-0000-4000-8000-00000000000a'),
   ('a9100000-0000-4000-8000-000000000002', 'a9200000-0000-4000-8000-00000000000b');
 INSERT INTO public.market_store_transfer (supplier_id, transfer_info) VALUES
   ('a9200000-0000-4000-8000-00000000000b', '郵局(700) 帳號 0001234-5678901 戶名 市集測試 B');
-INSERT INTO public.market_stores (supplier_id, delivery_cities, shipping_fee, free_shipping_threshold, min_order_amount, payment_methods) VALUES
-  ('a9200000-0000-4000-8000-00000000000a', ARRAY['臺北市', '新北市'], 120, 1000, 300, ARRAY['cod']),
-  ('a9200000-0000-4000-8000-00000000000b', ARRAY['臺北市'], 60, NULL, 0, ARRAY['cod', 'transfer']);
+INSERT INTO public.market_stores (supplier_id, delivery_cities, shipping_fee, free_shipping_threshold, min_order_amount, payment_methods, legal_name, representative, business_address, service_email) VALUES
+  ('a9200000-0000-4000-8000-00000000000a', ARRAY['臺北市', '新北市'], 120, 1000, 300, ARRAY['cod'], '市集測試商行', '測試負責人', '臺北市測試路 1 號', 'service@market-test.invalid'),
+  ('a9200000-0000-4000-8000-00000000000b', ARRAY['臺北市'], 60, NULL, 0, ARRAY['cod', 'transfer'], '市集測試商行', '測試負責人', '臺北市測試路 1 號', 'service@market-test.invalid');
 SELECT pg_temp.exec_with_claims(pg_temp.jwt('a9100000-0000-4000-8000-000000000003', true), $q$
   INSERT INTO public.market_products (id, supplier_id, name, category, spec, price, stock, temperature, review_status, is_listed) VALUES
     ('a9300000-0000-4000-8000-0000000000a1', 'a9200000-0000-4000-8000-00000000000a', '有機高麗菜', 'vegetable', '1 顆', 100, 10, 'chilled', 'approved', true),

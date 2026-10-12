@@ -1,8 +1,10 @@
 -- =====================================================================
 -- migration 20261009130000_market_orders 的資料庫層測試(訂單表、RLS、狀態紀錄 guard / apply)
--- 執行(第 1 階段的 120000 / 120100 已套用正式庫,不要再帶;130000 還沒套用時要帶,套用之後拿掉 --with-migration 再跑一次):
+-- 執行(120000 / 120100 / 130000–130200 已套用正式庫,不要再帶):
+-- 🔴 20261012110000 起店家要填齊法定資訊、供應商要有電話才開放零售:fixture 的店家都帶了這些欄位,所以要帶 100000 + 110000(兩支同一次部署):
 --   … dry supabase/tests/database/market_orders.test.sql \
---     --with-migration supabase/migrations/20261009130000_market_orders.sql
+--     --with-migration supabase/migrations/20261012100000_market_hardening.sql \
+--     --with-migration supabase/migrations/20261012110000_market_compliance.sql
 -- 訂單 fixture 直接用資料庫擁有者身分建(正式流程只能經 market_place_order,那支在 market_checkout.test.sql 測)。
 -- =====================================================================
 INSERT INTO auth.users (id, instance_id, aud, role, email, encrypted_password, raw_app_meta_data, raw_user_meta_data, created_at, updated_at) VALUES
@@ -14,17 +16,17 @@ INSERT INTO auth.users (id, instance_id, aud, role, email, encrypted_password, r
    'admin@market-test.invalid', '', '{"provider":"email","providers":["email"],"role":"admin"}', '{}', now(), now()),
   ('a9100000-0000-4000-8000-000000000004', '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated',
    'shopper@market-test.invalid', '', '{"provider":"email","providers":["email"]}', '{}', now(), now());
-INSERT INTO public.suppliers (id, name, contact_email) VALUES
-  ('a9200000-0000-4000-8000-00000000000a', '市集測試 A 店', 'store-a@market-test.invalid'),
-  ('a9200000-0000-4000-8000-00000000000b', '市集測試 B 店', 'store-b@market-test.invalid');
+INSERT INTO public.suppliers (id, name, contact_email, phone) VALUES
+  ('a9200000-0000-4000-8000-00000000000a', '市集測試 A 店', 'store-a@market-test.invalid', '02-2345-6789'),
+  ('a9200000-0000-4000-8000-00000000000b', '市集測試 B 店', 'store-b@market-test.invalid', '02-2345-6789');
 INSERT INTO public.supplier_accounts (user_id, supplier_id) VALUES
   ('a9100000-0000-4000-8000-000000000001', 'a9200000-0000-4000-8000-00000000000a'),
   ('a9100000-0000-4000-8000-000000000002', 'a9200000-0000-4000-8000-00000000000b');
 INSERT INTO public.market_store_transfer (supplier_id, transfer_info) VALUES
   ('a9200000-0000-4000-8000-00000000000a', '台灣銀行(004) 帳號 0123-456-789 戶名 市集測試');
-INSERT INTO public.market_stores (supplier_id, delivery_cities, shipping_fee, free_shipping_threshold, min_order_amount, payment_methods) VALUES
-  ('a9200000-0000-4000-8000-00000000000a', ARRAY['臺北市', '新北市'], 120, 1000, 300, ARRAY['cod', 'transfer']),
-  ('a9200000-0000-4000-8000-00000000000b', ARRAY['臺北市'], 60, NULL, 0, ARRAY['cod']);
+INSERT INTO public.market_stores (supplier_id, delivery_cities, shipping_fee, free_shipping_threshold, min_order_amount, payment_methods, legal_name, representative, business_address, service_email) VALUES
+  ('a9200000-0000-4000-8000-00000000000a', ARRAY['臺北市', '新北市'], 120, 1000, 300, ARRAY['cod', 'transfer'], '市集測試商行', '測試負責人', '臺北市測試路 1 號', 'service@market-test.invalid'),
+  ('a9200000-0000-4000-8000-00000000000b', ARRAY['臺北市'], 60, NULL, 0, ARRAY['cod'], '市集測試商行', '測試負責人', '臺北市測試路 1 號', 'service@market-test.invalid');
 SELECT pg_temp.exec_with_claims(pg_temp.jwt('a9100000-0000-4000-8000-000000000003', true), $q$
   INSERT INTO public.market_products (id, supplier_id, name, category, spec, price, stock, review_status)
   VALUES ('a9300000-0000-4000-8000-0000000000a1', 'a9200000-0000-4000-8000-00000000000a', '有機高麗菜', 'vegetable', '1 顆', 100, 8, 'approved')$q$);
@@ -397,13 +399,16 @@ SELECT pg_temp.expect('system 自己帶的時間也不算(資料庫擁有者帶 
                                                WHERE x.order_id = 'a9600000-0000-4000-8000-000000000009' AND x.to_status = 'paid'))::text
       FROM e$q$),
   'system|true');
--- 5-2 market_phone_ok / market_email_ok 收回 API 角色的執行權(只有 CHECK 與 SECURITY DEFINER 的下單 RPC 用得到)
-SELECT pg_temp.expect('電話、Email 檢查函式不開給 API 角色',
-  (has_function_privilege('anon', 'public.market_phone_ok(text)', 'EXECUTE')
-   OR has_function_privilege('anon', 'public.market_email_ok(text)', 'EXECUTE')
-   OR has_function_privilege('authenticated', 'public.market_phone_ok(text)', 'EXECUTE')
-   OR has_function_privilege('authenticated', 'public.market_email_ok(text)', 'EXECUTE'))::text,
-  'false');
+-- 5-2 market_phone_ok / market_email_ok 收回 API 角色的執行權(只有 CHECK 與 SECURITY DEFINER 的下單 RPC 用得到)。
+--     20261012110000 起 authenticated 可以執行 market_email_ok:店家表 service_email 的 CHECK 用到它,而供應商是直接寫
+--     店家表(CHECK 裡的函式要有執行權)。它只是正規式、不讀任何資料;anon 與 market_phone_ok 照舊收回
+SELECT pg_temp.expect('電話檢查函式不開給 API 角色、Email 檢查函式不開給 anon(authenticated 可以:店家表的 CHECK 要用)',
+  concat_ws('|',
+    (has_function_privilege('anon', 'public.market_phone_ok(text)', 'EXECUTE')
+     OR has_function_privilege('authenticated', 'public.market_phone_ok(text)', 'EXECUTE')
+     OR has_function_privilege('anon', 'public.market_email_ok(text)', 'EXECUTE'))::text,
+    has_function_privilege('authenticated', 'public.market_email_ok(text)', 'EXECUTE')::text),
+  'false|true');
 -- 5-3 出貨的物流、單號:market_visible 判斷有沒有填、market_trim 去頭尾(跟拒單原因一致;只填全形空白要擋)
 SELECT pg_temp.mk_order('a9600000-0000-4000-8000-000000000011', 'a9200000-0000-4000-8000-00000000000a', 'cod');
 SELECT pg_temp.as_exec('authenticated', pg_temp.ua(), $q$

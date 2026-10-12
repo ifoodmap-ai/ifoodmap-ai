@@ -373,7 +373,8 @@ BEGIN
       VALUES (v_id, v_status, 'cancelled',
               CASE v_status
                 WHEN 'pending' THEN format('店家超過 %s 小時沒有接單,系統自動取消', c_hours)
-                ELSE format('超過 %s 小時沒有完成匯款,系統自動取消', c_hours)
+                -- 系統判斷的是「店家有沒有按已收款」,不是「買家有沒有匯款」(法規查證 S6)
+                ELSE format('超過 %s 小時店家未確認收到款項,系統自動取消', c_hours)
               END,
               jsonb_build_object('auto_expire', v_status));
       v_done := v_done + 1;
