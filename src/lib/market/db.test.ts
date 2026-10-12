@@ -27,6 +27,12 @@ describe("unwrap / marketRpc", () => {
 });
 
 describe("friendlyDbError", () => {
+  it("店家法定資訊沒填齊(store_disclosure_missing)→ 中文,講清楚要填哪些", () => {
+    expect(friendlyDbError(new MarketDbError({ message: "x", code: "22023", hint: "store_disclosure_missing" }))).toBe(
+      "開放零售前要填齊店家法定資訊:登記名稱、負責人、營業所地址、客服 Email,以及供應商資料的電話",
+    );
+  });
+
   it("認得的 hint 翻成中文", () => {
     expect(friendlyDbError(new MarketDbError({ message: "x", hint: "review_status_forbidden" }))).toBe(
       "商品要經過管理員審核才能上架",

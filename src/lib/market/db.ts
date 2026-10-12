@@ -80,6 +80,8 @@ const HINT_MESSAGES: Record<string, string> = {
   not_order_party: "這張訂單不是你家的",
   one_event_per_order: "請一步一步操作",
   photos_not_uploaded: "這個商品還有照片沒有上傳完成,無法核准",
+  // migration 20261012110000_market_compliance:開放中(或剛建立)的店家缺法定資訊、供應商資料沒有電話
+  store_disclosure_missing: "開放零售前要填齊店家法定資訊:登記名稱、負責人、營業所地址、客服 Email,以及供應商資料的電話",
 };
 
 /** fetch 本身失敗(斷網、連不到伺服器)時各瀏覽器的訊息:Chrome / Safari / Firefox / React Native、Node */
