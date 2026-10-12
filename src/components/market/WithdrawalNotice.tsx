@@ -1,6 +1,6 @@
 // 七日鑑賞期的標示(withdrawal.ts 的文字):
 // - WithdrawalExemptBadge:小標籤「不適用七日鑑賞期」(購物車、結帳、訂單明細的每一列)
-// - ProductWithdrawalNotice:商品頁價格與規格旁邊的完整標示 —— 不適用:標籤 + 原因;適用:「收到後 7 天內可退貨」;都附服務條款第六條的連結
+// - ProductWithdrawalNotice:商品頁價格與規格旁邊的完整標示 —— 不適用:標籤 + 原因;適用:「收到隔天起 7 天內可退貨」;都附服務條款第六條的連結
 import { Link } from "react-router-dom";
 import { WITHDRAWAL_EXEMPT_LABEL, WITHDRAWAL_EXEMPT_REASON, WITHDRAWAL_OK_LABEL, WITHDRAWAL_TERMS_PATH } from "@/lib/market/withdrawal";
 import { MARKET_FOCUS_RING } from "./MarketLayout";

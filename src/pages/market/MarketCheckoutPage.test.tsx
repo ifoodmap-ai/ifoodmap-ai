@@ -476,11 +476,11 @@ describe("MarketCheckoutPage:72 小時自動取消的說明", () => {
 });
 
 describe("MarketCheckoutPage:七日鑑賞期(法規查證報告 5.2 的 A 版、S7)", () => {
-  it("說明改成逐項標示的版本:發票或收據由店家開立、標示不適用的商品不能無理由退貨、其他收到後 7 天內可以退貨,連到第六條(另開分頁)", async () => {
+  it("說明改成逐項標示的版本:發票或收據由店家開立、標示不適用的商品不能無理由退貨、其他收到隔天起 7 天內可以退貨,連到第六條(另開分頁)", async () => {
     renderCheckout();
     const note = (await screen.findByText(/款項直接付給各店家/)).closest("p") as HTMLElement;
     expect(note).toHaveTextContent(
-      "款項直接付給各店家,發票或收據由店家開立。標示「不適用七日鑑賞期」的商品(多為生鮮易腐食品)不能無理由退貨;其他商品收到後 7 天內可以退貨,詳見服務條款第六條(另開新分頁)。",
+      "款項直接付給各店家,發票或收據由店家開立。標示「不適用七日鑑賞期」的商品(多為生鮮易腐食品)不能無理由退貨;其他商品收到隔天起 7 天內可以退貨,詳見服務條款第六條(另開新分頁)。",
     );
     const link = within(note).getByRole("link", { name: "服務條款第六條" });
     expect(link).toHaveAttribute("href", "/market/terms#withdrawal");

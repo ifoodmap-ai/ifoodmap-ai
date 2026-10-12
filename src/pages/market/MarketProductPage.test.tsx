@@ -219,19 +219,19 @@ describe("MarketProductPage:七日鑑賞期標示(法規查證 M3 的 A 方案)"
     renderAt(CABBAGE.id);
     await screen.findByRole("heading", { level: 1, name: "有機高麗菜" });
     expect(within(notice()).getByText("不適用七日鑑賞期")).toBeInTheDocument();
-    expect(notice()).toHaveTextContent("這項商品易腐敗或保存期限較短,依法不能無理由退貨;商品有瑕疵時,仍可以向店家要求處理。");
+    expect(notice()).toHaveTextContent("這項商品易腐敗、保存期限較短或到貨時已接近到期,依法不能無理由退貨;商品有瑕疵時,仍可以向店家要求處理。");
     expect(within(notice()).getByRole("link", { name: "詳見服務條款第六條" })).toHaveAttribute("href", "/market/terms#withdrawal");
-    expect(screen.queryByText("收到後 7 天內可退貨")).toBeNull();
+    expect(screen.queryByText("收到隔天起 7 天內可退貨")).toBeNull();
     // 位置:緊接在價格、規格那一區(價格之後、加入購物車之前)
     expect(before(screen.getByText("NT$ 100"), notice())).toBe(true);
     expect(before(notice(), screen.getByRole("button", { name: "加入購物車" }))).toBe(true);
   });
 
-  it("適用的商品(預設、沒有這個欄位的舊資料):標「收到後 7 天內可退貨」,一樣連到第六條", async () => {
+  it("適用的商品(預設、沒有這個欄位的舊資料):標「收到隔天起 7 天內可退貨」,一樣連到第六條", async () => {
     vi.mocked(fetchMarketProduct).mockResolvedValue(BEEF_DEFAULT);
     renderAt(BEEF_DEFAULT.id);
     await screen.findByRole("heading", { level: 1, name: "牛肉片" });
-    expect(within(notice()).getByText("收到後 7 天內可退貨")).toBeInTheDocument();
+    expect(within(notice()).getByText("收到隔天起 7 天內可退貨")).toBeInTheDocument();
     expect(within(notice()).getByRole("link", { name: "詳見服務條款第六條" })).toHaveAttribute("href", "/market/terms#withdrawal");
     expect(screen.queryByText("不適用七日鑑賞期")).toBeNull();
   });

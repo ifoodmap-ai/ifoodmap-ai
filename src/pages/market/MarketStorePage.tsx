@@ -22,7 +22,7 @@ import MarketNotFound from "./MarketNotFound";
 import MarketOffline from "./MarketOffline";
 
 /** 店家沒寫退換貨說明時(報告 5.2 的 A 版;標示文字跟商品頁、服務條款第六條一樣) */
-const DEFAULT_RETURN_POLICY = `請直接聯絡店家。商品頁標示「${WITHDRAWAL_EXEMPT_LABEL}」的商品(例如生鮮易腐食品)不能無理由退貨,其他商品收到後 7 天內可以退貨;商品有瑕疵時都可以向店家要求處理。`;
+const DEFAULT_RETURN_POLICY = `請直接聯絡店家。商品頁標示「${WITHDRAWAL_EXEMPT_LABEL}」的商品(例如生鮮易腐食品)不能無理由退貨,其他商品收到隔天起 7 天內可以退貨;商品有瑕疵時都可以向店家要求處理。`;
 
 export default function MarketStorePage() {
   const { supplierId = "" } = useParams();

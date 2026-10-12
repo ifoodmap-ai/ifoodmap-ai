@@ -176,7 +176,7 @@ describe("MarketStorePage:店家的法定資訊與退貨說明(法規查證 M2�
     renderAt(STORE_A.supplier_id);
     expect(
       await screen.findByText(
-        "請直接聯絡店家。商品頁標示「不適用七日鑑賞期」的商品(例如生鮮易腐食品)不能無理由退貨,其他商品收到後 7 天內可以退貨;商品有瑕疵時都可以向店家要求處理。",
+        "請直接聯絡店家。商品頁標示「不適用七日鑑賞期」的商品(例如生鮮易腐食品)不能無理由退貨,其他商品收到隔天起 7 天內可以退貨;商品有瑕疵時都可以向店家要求處理。",
       ),
     ).toBeInTheDocument();
     expect(screen.queryByText(/生鮮食品依法不適用七天鑑賞期/)).toBeNull();

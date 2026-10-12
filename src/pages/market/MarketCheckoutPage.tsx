@@ -345,7 +345,7 @@ export default function MarketCheckoutPage() {
           </p>
           {/* 法規查證報告 5.2 的 A 版:標示跟條款第六條引用的「不適用七日鑑賞期」同一個字(withdrawal.ts) */}
           <p className="text-xs text-slate-600">
-            款項直接付給各店家,發票或收據由店家開立。標示「{WITHDRAWAL_EXEMPT_LABEL}」的商品(多為生鮮易腐食品)不能無理由退貨;其他商品收到後 7 天內可以退貨,詳見
+            款項直接付給各店家,發票或收據由店家開立。標示「{WITHDRAWAL_EXEMPT_LABEL}」的商品(多為生鮮易腐食品)不能無理由退貨;其他商品收到隔天起 7 天內可以退貨,詳見
             <Link to={WITHDRAWAL_TERMS_PATH} target="_blank" rel="noopener" className={`text-emerald-800 underline ${MARKET_FOCUS_RING}`}>
               服務條款第六條
             </Link>
