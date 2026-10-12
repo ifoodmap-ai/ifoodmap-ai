@@ -17,6 +17,9 @@
 --      - market_store_is_open 加上這一條(公開頁面的 RLS、下單都靠它),沒填齊的店公開頁面看不到、也不能下單。
 --      - market_stores_guard 在供應商建店(建好就是開放)、開放中的店被供應商改到缺欄位、管理員建成啟用或重新啟用時擋:
 --        22023,HINT store_disclosure_missing(放在最後檢查,其他錯誤優先)。管理員停用一律不擋。
+--        被管理員停用的店:供應商純 UPDATE 不檢查;但店家設定頁用 upsert,INSERT 那一步的 guard 會先把 is_enabled 設成 true
+--        再檢查,所以停用中的店送來的那一列缺法定欄位,一樣回 store_disclosure_missing(接受現狀:店家不會因此被重新打開,
+--        前端的表單本來就要求填齊)。
 --      - anon 只讀得到已開放的店(RLS 照舊);這些是法定要公開的資訊。
 --    CHECK 用到 market_email_ok:供應商直接寫店家表,CHECK 裡的函式要有 EXECUTE 權限,所以 market_email_ok 開給 authenticated
 --    (只是正規式,不讀任何資料;anon 照舊沒有)。
@@ -323,7 +326,10 @@ BEGIN
 
   -- 開放零售要有店家法定資訊(消保法 §18、網路交易應記載事項第 1 點;20261012110000):登記名稱、負責人、營業所地址、
   -- 客服 Email,加上供應商資料的電話(suppliers.phone)。放在最後檢查(其他錯誤優先)。
-  --   供應商:建店(建好就是開放)、或開放中的店改到缺欄位 → 擋;被管理員停用的店怎麼改都不檢查。
+  --   供應商:建店(建好就是開放)、或開放中的店改到缺欄位 → 擋。被管理員停用的店,純 UPDATE 不檢查;
+  --     但店家設定頁用的是 upsert(INSERT … ON CONFLICT DO UPDATE):INSERT 那一步的 BEFORE INSERT 會先跑這支
+  --     (上面已經把 is_enabled 設成 true),所以停用中的店送來的那一列缺法定欄位,一樣回 store_disclosure_missing。
+  --     店家不會因此被重新打開(衝突之後走 UPDATE,is_enabled 照舊保留),前端的表單本來就要求填齊 —— 接受現狀。
   --   管理員:只在建成啟用、或把停用的店重新啟用時檢查;停用、改停用原因一律不擋。
   -- market_store_is_open 也檢查同一組條件:電話是在供應商資料改的(這支管不到),沒填齊的店公開頁面看不到、也不能下單。
   IF NEW.is_enabled
