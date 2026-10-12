@@ -18465,3 +18465,98 @@ gate / render / handler / index 與 `config.toml` 先照計畫的程式碼區塊
   - tsc **72**、eslint **10**。
   - 兩種 build 都 exit 0。
 - 畫面實測:條款、隱私權、商品頁不適用 / 適用、結帳頁、店家頁 × 390 / 360 / 1280,共 18 組全過。新句子都在畫面上,沒有「收到後 7 天」;所有請求只到本機,console 沒有錯誤。
+
+### 2026-10-12:法規補強 —— 供應商後台與管理後台(七日鑑賞期逐項標示、店家法定資訊、審核檢查清單)(commit `2a4872c`、`1b58d73`、`80bd993`、`a7ff031`、`64b220f`、`8a9c866`、`52d3b65`、`8371ef0`、`8562f3c`、`5fa4989`、`5dfa0b4`、`77ffb22`,分支 `market`)
+
+依法規查證報告(scratchpad `market-legal-review/REPORT.md` 的 M3、M6、M8、S3、S4、P15、P16)與業主的決定:
+- ①七日解除權逐項標示:每個商品由店家勾選「不適用七日鑑賞期」,預設適用,管理員審核時確認。
+- ②店家法定資訊做成必填,沒填齊不能開放零售。
+- ③食品資訊先請店家寫進商品說明,審核時把關。
+
+消費者頁面與條款由另一位前端負責(`src/pages/market/`、`legal.ts` 沒有動);資料庫欄位由 migration `20261012110000_market_compliance` 加(另一位 agent)。每一項都先寫測試、看到失敗才實作;migration 進來之前用測試資料寫,進來之後加上對照 migration 的測試。**以 repo 為準。** 沒有乾跑、沒有查正式庫。
+
+**A. 做了什麼**
+
+1. **商品的七日鑑賞期標示**(`2a4872c`、`1b58d73`):
+   - `types.ts` 的 `MarketProductRow.withdrawal_exempt`(true = 不適用)。
+   - `productForm.ts` 的表單 `withdrawalExempt`:新商品 false、從資料列帶入、新增與修改都送 `withdrawal_exempt`。已核准商品的重審提醒加「七日鑑賞期的標示」(migration 的 guard 把它列進「改了就回待審」)。
+   - 商品視窗加勾選框「此商品不適用七日鑑賞期」,說明照業主的字句,另一行「變更後商品會重新送審。」(都接在 `aria-describedby`)。
+2. **商品說明的提示**(`1b58d73`):列出食品應記載的資訊(成分、淨重或容量、食品添加物、製造或國內負責廠商的名稱電話地址、原產地、到貨時離有效日期至少幾天、食品業者登錄字號),提醒不能寫「恕不退換」「退貨運費自付」「圖片僅供參考」與醫療效能宣稱;附一段範例 placeholder。說明不改成必填(業主決定由審核把關)。
+3. **店家設定的法定資訊**(`80bd993`、`a7ff031`、`52d3b65`、`5fa4989`、`5dfa0b4`):
+   - `store.ts` 的表單多六個欄位。驗證跟 migration 一樣:登記名稱 1–100、負責人 1–50、營業所地址 5–200、客服 Email 照 `market_email_ok`(`checkout.ts` 的 `EMAIL_PATTERN`,254 字內)、登錄字號 ≤ 40、產品責任險 ≤ 100;字數照碼位算(同 `char_length`,補充平面的罕用字算 1 字)。看不到字(全形空白、零寬字元)算沒填,錯誤排在最前面。
+   - 去頭尾用 `marketTrim`(`MARKET_TRIM_CHARS` 跟 `market_trim` 同一組字元,連零寬字元、WORD JOINER、BOM、U+0085 都去):長度與 Email 先去頭尾再檢查,payload 存去掉之後的值,留白送 null。
+   - `STORE_OWNER_COLUMNS` 多六欄(不帶 `contact_email`)。`fetchOwnStore` 另外讀供應商資料的電話(`suppliers.phone`;讀錯就丟,不當成沒有電話)。`missingDisclosures` 依序列出還缺的項目(四項加上店家電話),`disclosureValuesOf` 從資料列只取那四欄。
+   - 上限放在 `store.ts` 的 `DISCLOSURE_LIMITS`,沒有加進 `constants.ts` 的 `LIMITS`(那份逐鍵對照 120000 / 130000)。
+   - 店家設定頁:法定資訊一區放最上面(`maxLength` 照資料庫、客服 Email `type=email`)。店家電話唯讀,說明要請 iFoodmap 改 —— 供應商後台沒有改電話的地方,管理員在「會員 › 供應商」改。
+   - 沒填齊時,最上面列「開放零售前還缺這些資料」與「還缺:…」,說明「沒填齊之前消費者看不到你的店:新店家存不進去,已開放的店也不能改設定」(`market_store_is_open` 也檢查同一組條件)。表單填好、資料庫裡還缺時,改顯示「法定資訊還沒儲存」:按「儲存店家設定」之後才會生效,存好才消失。
+   - 資料庫回 `store_disclosure_missing` 時,照畫面上的值列出缺的項目(缺電話就說明找 iFoodmap);畫面上看起來都填了,才用資料庫那句。
+   - 退換貨說明的例句改成「例:商品有瑕疵或與訂購內容不符,請拍照聯絡我們,我們會盡快處理換貨或退款。」(拿掉「24 小時內」)。提示不能寫限制消費者權益的字句,不適用七日鑑賞期要在商品上逐項勾。
+   - `db.ts` 的 hint 對照多 `store_disclosure_missing`(供應商存檔、管理員重新啟用都會用到)。
+4. **管理員商品審核**(`64b220f`、`8562f3c`):
+   - 查看視窗最上面醒目標示「適用七日鑑賞期(消費者收到隔天起 7 天內可以退貨)」或「不適用七日鑑賞期(店家勾選:消費者不能無理由退貨)」。欄位表多一列,清單上不適用的商品有徽章。
+   - 待審商品有「審核檢查清單(每一項都確認才能核准)」:商品說明裡有食品資訊、不是酒類(包括料理米酒、料理酒)、沒有違法字句;標示不適用的再加「確實屬於易腐或短效商品(保存期限少於 7 天左右,或到貨時已接近到期)」。
+   - 頁首的「不收」補上料理米酒、料理酒。
+5. **管理員零售店家**(`64b220f`、`52d3b65`、`5fa4989`、`5dfa0b4`):
+   - 每家店列出登記名稱、負責人、電話、營業所地址、客服 Email、食品業者登錄字號、產品責任險(必填沒填寫「—」、選填寫「未填」;只有零寬字元也算沒填)。
+   - 缺必填的項目(含供應商電話)標「法定資訊沒填齊(缺:…),消費者看不到這家店、也不能開放零售」;恢復時資料庫擋下顯示中文。
+   - 缺項目只讀四欄與電話(`disclosureValuesOf`);查詢帶 `suppliers.phone`,有測試釘住。
+6. **供應商商品清單的狀態跟著新的開店條件**(`8371ef0`):原本 `useSupplierMarketProducts` 的 `storeOpen` 註明「同 `market_store_is_open`」,卻只看停用。migration 之後,法定資訊或電話沒填齊的店消費者也看不到,商品卻照樣寫「已上架」。
+   - 改成讀店家四欄與 `suppliers.phone`,多回 `storeClosedReason`(停用優先,其次 `disclosure`;沒讀到的欄位不算缺)。
+   - `statusText` 依原因寫「已核准・店家停用中(消費者看不到)」或「已核准・店家資料沒填齊(消費者看不到)」。商品目錄的批發分頁與零售分頁都帶原因。
+7. **對照 migration**(`8a9c866`、`5fa4989`、`5dfa0b4`、`77ffb22`):比對前先拿掉 SQL 註解、空白壓成一格(註解掉的條件不算數),整個條件一起比。
+   - `market_stores_disclosure_lengths` 每一個 BETWEEN 等於 `DISCLOSURE_LIMITS`(各剛好一處);客服 Email 的 CHECK 用 `market_email_ok`(130000 的 254 字)。
+   - guard 六欄都用 `market_visible` / `market_trim`。開放零售的整個 IF(店家開著時供應商存檔一律檢查,管理員只在建成啟用或重新啟用時檢查;四項加 `NOT EXISTS` 看得到字的電話),後面緊接 `RAISE EXCEPTION … USING ERRCODE = '22023', HINT = 'store_disclosure_missing'`。只切 guard 那支函式。
+   - `market_store_is_open` 比整個函式本體(四項與看得到字的電話,後面不能多條件);`market_trim` 的字元組跟 `MARKET_TRIM_CHARS` 一字不差。
+   - 商品欄位預設 false;商品 guard 的 `v_content` 含 `withdrawal_exempt`,已核准的商品改了會回待審。
+8. **說法改成「收到隔天起 7 天內」**(`8562f3c`):法規查證員提醒「收到後 7 天內」會被讀成比法定期間少一天。
+   - 商品視窗的說明改成「沒勾的商品,消費者收到隔天起 7 天內可以退貨」;審核視窗的標示見第 4 項。標點用半形。
+   - 易腐的說法本來就有「到貨時已接近到期」(商品視窗「生鮮易腐、保存期限短(少於 7 天左右),或收到時已接近到期」、檢查清單那項),沒有要補的。
+9. **fresh-context 審查三輪**。第一輪審 `2a4872c` 到 `52d3b65` 共 7 個 commit,8 條驗收全過,沒有 Critical。
+   - Important 1 項:供應商商品狀態沒跟上新的開店條件 → `8371ef0`(第 6 項)。
+   - Minor 5 項都在 `5fa4989` 修:
+     - 對照測試從 guard 切到檔尾,連到 `market_store_is_open` 的同一段,guard 拿掉電話檢查也全綠 → 只切 guard,另外釘住 `market_store_is_open`。
+     - 電話「看不到字」只測全形空白(`trim()` 本來就去得掉)→ 改測零寬字元;另外釘住管理員查詢帶 `suppliers.phone`。
+     - 前端 `trim()` 比 `market_trim` 去得少:尾巴帶零寬空白的 Email 被誤擋;「臺北市」加零寬空白的地址前端放行,資料庫卻擋成通用的 23514 → `marketTrim`。
+     - `storeMissingDisclosures` 靠 `storeFormFromRow`,查詢改成明列欄位就會白屏 → `disclosureValuesOf`。
+     - 「還缺」區塊由還沒儲存的表單決定,打完最後一欄就消失 → 「法定資訊還沒儲存」。
+   - 第二輪審 `8371ef0`、`8562f3c`、`5fa4989`:Critical 0、Important 0、Minor 5(8 條裡 2 條字面不過:碼位的邊角、原本就有的 warning)→ `5dfa0b4`:
+     - 字數改照碼位:原本用 UTF-16 的 `.length`,3 個罕用字的地址前端放行、資料庫擋成通用的 23514;剛好 100 個罕用字的登記名稱前端反而擋下。
+     - 補測試:hook 四項各自沒填都算缺、釘住店家查詢的欄位(沒讀到的欄位不算缺,欄位被拿掉會靜默寫成已上架);六個欄位剛好上限、頭尾帶零寬字元都不算超過。
+     - 對照 migration 先拿掉註解、比整個條件(第 7 項)。
+     - 管理員零售店家的值只有零寬字元時顯示「—」,跟「缺:店家電話」一致。
+     - `SupplierMarketProductsPanel.tsx` 的 react-refresh warning(`export const statusText`)是原本就有的,沒動。
+   - 第三輪驗收 `5dfa0b4`:7 條全過,無 Critical / Important;Minor 3 項都是測試釘得不夠緊 → `77ffb22`:`market_store_is_open` 比整個函式本體、guard 連 `RAISE EXCEPTION` 與 22023 一起比、地址上限也照碼位算。
+
+**B. 自己決定的地方(派工沒寫明)**
+
+- **檢查清單打勾才能核准**:不擋的話清單只是裝飾。每次打開視窗從頭勾,照片沒載入完一樣不能核准。原本按「核准上架」的測試先把清單打勾。
+- **自動提醒**(`admin.ts` 的 `reviewWarnings`,派工沒有要求):品名、規格、說明裡有酒類字眼、限制退貨、「僅供參考」、醫療效能字句時,列在查看視窗。只是提醒,不擋核准。
+- 表單一律把四項當必填(管理員停用中的店,資料庫不檢查,前端照樣要求)。店家電話缺的時候前端不擋儲存(這頁改不了),交給資料庫擋,再照畫面上的值說明缺什麼。
+- 型別新欄位都是選填(`withdrawal_exempt?`、店家六欄 `?`):公開查詢不一定帶,`testFixtures.ts` 也不用改;沒有值時當成 false / 空白。店家設定頁的測試在檔案裡把 `STORE_A` 補上法定資訊,共用的 `testFixtures.ts` 沒有動。
+
+**C. 數字**
+
+- 測試(沒有新的測試檔,共 +51 項):
+  - `productForm.test.ts` 21 → **25**、`market-supplier-components.test.tsx` 28 → **31**、`store.test.ts` 26 → **44**、`db.test.ts` 15 → **16**、`SupplierMarketStorePage.test.tsx` 30 → **37**。
+  - `admin.test.ts` 20 → **25**、`AdminMarketPages.test.tsx` 43 → **50**、`useSupplierMarketProducts.test.ts` 5 → **10**、`SupplierCatalogPage.market.test.tsx` 15 → **16**。
+  - `5fa4989` 的 commit 訊息把 `store.test.ts` 寫成 38 → 41,實際是 38 → 42。
+- 突變驗證(乾淨副本改壞再跑)**49 處全紅**:
+  - 第一批 20 處:新商品預設不適用、payload 沒帶欄位、勾選框沒接表單、說明提示沒接 `aria-describedby`、負責人上限 49、Email 只看有沒有 @、看不到字當成有填、缺項目不看電話、電話讀錯當成沒有、例句改回 24 小時、hint 不列缺的項目、不顯示「還缺」區塊、檢查清單少易腐那項、酒類只認米酒、管理員缺項目不看電話、核准不看檢查清單、適用 / 不適用對調、清單不標不適用、零售店家不標缺的項目、hint 沒有中文。
+  - `8371ef0` 4 處:hook 不看法定資訊、目錄頁批發分頁沒帶原因、零售分頁沒帶原因、`statusText` 不分原因。
+  - `5fa4989` 7 處:guard 拿掉電話檢查、`market_store_is_open` 拿掉電話、管理員查詢沒帶電話、電話只看 `trim()` 非空、`marketTrim` 退回 `trim()`、管理員缺項目改回靠 `storeFormFromRow`、填好沒存不提示。
+  - `5dfa0b4`、`77ffb22` 18 處:四個欄位各自改回 `trim()`、地址上限改回 `.length`、hook 不看負責人 / 地址、查詢少電話 / 登記名稱;migration 的 guard 電話檢查用 `/* */` 註解、`NOT EXISTS` 改 `EXISTS`、管理員少重新啟用、`RAISE EXCEPTION` 改 `NOTICE`、ERRCODE 改 23514;`market_store_is_open` 電話用 `--` 註解、括號內多 OR、括號外多 `OR TRUE`;商品 guard 的 `withdrawal_exempt` 註解掉。另外字數照碼位與零寬字元顯示「—」先紅 2 項才改。
+- 全套(`77ffb22` 的乾淨副本,`git archive`):
+  - vitest 連跑兩次,**119 檔 / 2002 項**全過(含其他實作者同時 commit 的檔)。
+  - tsc **72**:錯誤集合跟動工前(`2a4872c` 的父 commit `777a859`)逐筆相同。改到的 `SupplierCatalogPage.tsx` 原本就有 6 個 supabase 型別 `never` 的錯誤,沒有新增。
+  - eslint **10** error、19 warning:改到的檔 0 error;warning 只有 `SupplierMarketProductsPanel.tsx` 原本就有的 1 個。
+  - 兩種 build 都 exit 0。前台站 bundle 有商品勾選框與「法定資訊還沒儲存」、沒有審核清單;管理員站有審核清單、沒有商品勾選框。
+- 畫面:不進 repo 的預覽頁(真的 `MarketProductDialog`、`SupplierLayout` + 店家設定、`AdminLayout` + 商品審核;Supabase 換成 repo 的 `createFakeSupabase` 假資料,擋掉外部網路),用 headless Chrome(自己的 user-data-dir,用完刪掉)在 390×844、1280×800 截圖。
+  - 商品視窗的勾選框與說明提示、審核視窗的標示與檢查清單(`8562f3c`);店家設定的「還缺」區塊、欄位錯誤、「法定資訊還沒儲存」(`5fa4989`)。之後的 commit 沒有改這幾個畫面。
+  - 沒有橫向捲動、外部請求 0、寫入 0。截圖在 scratchpad 的 `p3-compliance/shots/`(不進 repo)。
+
+**D. 沒有處理(記錄)**
+
+- 自動提醒是關鍵字比對:會誤報(例如「酒精」「白酒醋」)也會漏(照片上的字、同義詞),只是提醒。
+- 檢查清單打了哪幾項沒有存下來(報告 S15 建議保留審核紀錄)。
+- 管理員的「恢復零售」在缺法定資訊時沒有先停用,按了由資料庫擋、顯示中文。
+- 法定資訊的字數已改照碼位;輸入框的 `maxLength` 仍照 UTF-16 算,罕用字只能打到上限的一半(比資料庫嚴,不會被資料庫擋)。店家介紹、退換貨說明、轉帳資訊照舊用 `.length`。
