@@ -685,7 +685,10 @@ describe("AdminMarketStoresPage — 店家法定資訊(法規查證 M6)", () => 
     vi.mocked(setStoreEnabled).mockRejectedValue(new MarketDbError({ message: "x", code: "22023", hint: "store_disclosure_missing" }));
     render(<AdminMarketStoresPage />);
     const row = (await screen.findByText("市集測試 A 店")).closest("li") as HTMLElement;
-    expect(within(row).getByText("法定資訊沒填齊(缺:登記名稱、負責人、營業所地址、客服 Email、店家電話),不能開放零售")).toBeInTheDocument();
+    // market_store_is_open 也要求法定資訊:沒填齊的店消費者看不到、也不能下單
+    expect(
+      within(row).getByText("法定資訊沒填齊(缺:登記名稱、負責人、營業所地址、客服 Email、店家電話),消費者看不到這家店、也不能開放零售"),
+    ).toBeInTheDocument();
     await userEvent.click(within(row).getByRole("button", { name: "恢復 市集測試 A 店 的零售" }));
     await waitFor(() =>
       expect(toastError).toHaveBeenCalledWith("處理失敗", {

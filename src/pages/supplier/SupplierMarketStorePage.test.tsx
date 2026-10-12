@@ -543,6 +543,7 @@ describe("SupplierMarketStorePage — 店家法定資訊", () => {
     const missing = await screen.findByRole("region", { name: "開放零售前還缺這些資料" });
     expect(missing).toHaveTextContent("還缺:登記名稱、負責人、營業所地址、客服 Email、店家電話");
     expect(missing).toHaveTextContent("店家電話來自你的供應商資料,這頁改不了,請聯絡 iFoodmap(ifoodmaptw@gmail.com)補上");
+    expect(missing).toHaveTextContent("沒填齊之前消費者看不到你的店:新店家存不進去,已開放的店也不能改設定。");
     await userEvent.click(screen.getByRole("button", { name: "儲存店家設定" }));
     expect(saveStore).not.toHaveBeenCalled();
     expect(toastError).toHaveBeenCalledWith("有欄位需要修正", { description: "請填登記名稱(公司或商號登記的名稱)" });

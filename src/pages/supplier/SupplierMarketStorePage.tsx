@@ -230,7 +230,7 @@ export default function SupplierMarketStorePage() {
             開放零售前還缺這些資料
           </h2>
           <p className="mt-1 font-medium">還缺:{missing.join("、")}</p>
-          <p className="mt-1">消費者保護法規定網路銷售要揭露店家資料,消費者在店家頁看得到。沒填齊不能開放零售:新店家存不進去,已開放的店也不能改設定。</p>
+          <p className="mt-1">消費者保護法規定網路銷售要揭露店家資料,消費者在店家頁看得到。沒填齊之前消費者看不到你的店:新店家存不進去,已開放的店也不能改設定。</p>
           {missing.includes("店家電話") ? <p className="mt-1">{PHONE_HELP}。</p> : null}
         </section>
       ) : null}

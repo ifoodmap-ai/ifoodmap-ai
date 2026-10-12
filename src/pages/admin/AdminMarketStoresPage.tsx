@@ -121,7 +121,8 @@ const AdminMarketStoresPage = () => {
                     </p>
                   </div>
                   {missing.length > 0 ? (
-                    <p className="text-xs font-medium text-red-700">法定資訊沒填齊(缺:{missing.join('、')}),不能開放零售</p>
+                    // market_store_is_open 也要求法定資訊:沒填齊的店消費者看不到、也不能下單
+                    <p className="text-xs font-medium text-red-700">法定資訊沒填齊(缺:{missing.join('、')}),消費者看不到這家店、也不能開放零售</p>
                   ) : null}
                 </div>
                 <Badge variant="outline">{s.is_enabled ? '零售中' : '已停用'}</Badge>
