@@ -1229,8 +1229,8 @@ describe("讀取的欄位都存在於 migration", () => {
     }
   });
 
-  // 2026-10-12 業主決定(法規查證 M6、M7):下單確認信的法定資訊讀 migration 20261012110000 新增的欄位(資料庫的人在做)。
-  // 檔案還沒進 repo 時這項跳過;進來之後自動打開 —— 名稱對不上就紅
+  // 2026-10-12 業主決定(法規查證 M6、M7):下單確認信的法定資訊讀 migration 20261012110000 新增的欄位。
+  // 檔案已經 commit(e7d341c),這項不再跳過:檔案不見、或欄位名稱對不上都要紅
   const COMPLIANCE = "20261012110000_market_compliance.sql";
   const hasCompliance = existsSync(resolve(__dirname, `../../migrations/${COMPLIANCE}`));
   /** 拿掉 SQL 註解後,找出 ALTER TABLE <table> … ADD [COLUMN] [IF NOT EXISTS] <欄位> 新增的欄位 */
@@ -1260,7 +1260,8 @@ describe("讀取的欄位都存在於 migration", () => {
     expect(addedColumns(sample, "market_order_items")).toEqual(["withdrawal_exempt"]);
   });
 
-  it.skipIf(!hasCompliance)(`下單確認信的法定資訊欄位都在 ${COMPLIANCE}(檔案進 repo 前先跳過)`, () => {
+  it(`下單確認信的法定資訊欄位都在 ${COMPLIANCE}`, () => {
+    expect(hasCompliance, COMPLIANCE).toBe(true);
     const sql = migration(COMPLIANCE);
     for (const [table, columns] of [
       ["market_stores", STORE_LEGAL_COLUMNS],
