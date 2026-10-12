@@ -153,7 +153,7 @@ describe("MarketProductDialog — 七日鑑賞期與食品資訊(法規查證 M3
     expect(box).not.toBeChecked();
     const hint = document.getElementById(box.getAttribute("aria-describedby") ?? "");
     expect(hint).toHaveTextContent(
-      "生鮮易腐、保存期限短(少於 7 天左右),或收到時已接近到期。勾選後消費者不能無理由退貨;沒勾的商品,消費者收到後 7 天內可以退貨。",
+      "生鮮易腐、保存期限短(少於 7 天左右),或收到時已接近到期。勾選後消費者不能無理由退貨;沒勾的商品,消費者收到隔天起 7 天內可以退貨。",
     );
     expect(hint).toHaveTextContent("變更後商品會重新送審");
 

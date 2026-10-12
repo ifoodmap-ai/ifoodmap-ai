@@ -239,7 +239,7 @@ export default function MarketProductDialog({
               此商品不適用七日鑑賞期
             </label>
             <p id="mp-withdrawalExempt-hint" className="mt-1 text-sm text-slate-600">
-              生鮮易腐、保存期限短(少於 7 天左右),或收到時已接近到期。勾選後消費者不能無理由退貨;沒勾的商品,消費者收到後 7 天內可以退貨。
+              生鮮易腐、保存期限短(少於 7 天左右),或收到時已接近到期。勾選後消費者不能無理由退貨;沒勾的商品,消費者收到隔天起 7 天內可以退貨。
               <span className="mt-1 block font-medium text-amber-800">變更後商品會重新送審。</span>
             </p>
           </div>

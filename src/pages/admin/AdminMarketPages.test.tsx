@@ -588,7 +588,7 @@ describe("AdminMarketProductsPage — 七日鑑賞期標示與審核檢查清單
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     await userEvent.click(screen.getByRole("button", { name: "查看 有機高麗菜" }));
     dialog = await screen.findByRole("dialog");
-    expect(within(dialog).getByText("適用七日鑑賞期(消費者收到後 7 天內可以退貨)")).toBeInTheDocument();
+    expect(within(dialog).getByText("適用七日鑑賞期(消費者收到隔天起 7 天內可以退貨)")).toBeInTheDocument();
   });
 
   it("審核檢查清單:每一項都打勾才能核准;不適用七日鑑賞期的多一項「確實是易腐或短效商品」", async () => {
@@ -650,7 +650,7 @@ describe("AdminMarketProductsPage — 七日鑑賞期標示與審核檢查清單
     const dialog = await screen.findByRole("dialog");
     expect(within(dialog).queryByRole("list", { name: "自動偵測到要特別看的字句" })).toBeNull();
     expect(within(dialog).queryByRole("group", { name: "審核檢查清單(每一項都確認才能核准)" })).toBeNull();
-    expect(within(dialog).getByText("適用七日鑑賞期(消費者收到後 7 天內可以退貨)")).toBeInTheDocument();
+    expect(within(dialog).getByText("適用七日鑑賞期(消費者收到隔天起 7 天內可以退貨)")).toBeInTheDocument();
   });
 });
 

@@ -149,7 +149,7 @@ const ReviewDetail = ({ row, error, busy, onApprove, onReject }: ReviewDetailPro
             : 'rounded-md border border-emerald-300 bg-emerald-50 p-3 text-sm font-semibold text-emerald-900'
         }
       >
-        {exempt ? '不適用七日鑑賞期(店家勾選:消費者不能無理由退貨)' : '適用七日鑑賞期(消費者收到後 7 天內可以退貨)'}
+        {exempt ? '不適用七日鑑賞期(店家勾選:消費者不能無理由退貨)' : '適用七日鑑賞期(消費者收到隔天起 7 天內可以退貨)'}
       </p>
       <section aria-labelledby="market-review-photos" className="space-y-2">
         <h3 id="market-review-photos" className="text-sm font-medium text-slate-700">
