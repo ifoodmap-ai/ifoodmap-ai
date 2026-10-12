@@ -14,11 +14,13 @@ import MarketImage from "@/components/market/MarketImage";
 import { MARKET_FOCUS_RING, MARKET_PRIMARY_BUTTON, useMarketTitle } from "@/components/market/MarketLayout";
 import { MarketOfflineNotice, MarketStaleNotice } from "@/components/market/MarketNotices";
 import QtyStepper from "@/components/market/QtyStepper";
+import { WithdrawalExemptBadge } from "@/components/market/WithdrawalNotice";
 import { buildCart, cartProductsKey } from "@/lib/market/cart";
 import { fetchProductsByIds } from "@/lib/market/catalog";
 import { fetchCheckoutStatus } from "@/lib/market/checkout";
 import { citiesSummary, formatTwd, shippingSummary } from "@/lib/market/format";
 import { useCart } from "@/lib/market/useCart";
+import { isWithdrawalExempt } from "@/lib/market/withdrawal";
 
 export default function MarketCartPage() {
   useMarketTitle("購物車");
@@ -128,6 +130,7 @@ export default function MarketCartPage() {
                         <p className="text-xs text-slate-500">
                           {l.product.spec}・{formatTwd(l.product.price)}
                         </p>
+                        {isWithdrawalExempt(l.product) ? <WithdrawalExemptBadge /> : null}
                         {l.overStock ? (
                           <p className="text-sm text-red-700">{l.maxQty === 0 ? "已售完,請移除" : `庫存只剩 ${l.maxQty} 件`}</p>
                         ) : null}

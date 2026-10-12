@@ -101,6 +101,17 @@ describe("MarketCartPage", () => {
     expect(remove.parentElement).toHaveClass("ml-auto");
   });
 
+  it("不適用七日鑑賞期的商品在購物車的那一列也標出來(適用的不標)", async () => {
+    vi.mocked(fetchProductsByIds).mockResolvedValue([{ ...CABBAGE, withdrawal_exempt: true }, BEEF, SALMON]);
+    cartStore.add(CABBAGE.id, 3);
+    cartStore.add(BEEF.id, 1);
+    renderCart();
+    const a = within(await screen.findByRole("region", { name: "市集測試 A 店" }));
+    const [cabbage, beef] = a.getAllByRole("listitem");
+    expect(within(cabbage).getByText("不適用七日鑑賞期")).toBeInTheDocument();
+    expect(within(beef).queryByText("不適用七日鑑賞期")).toBeNull();
+  });
+
   it("下單還沒對外開放:提示可以先逛,前往結帳不能按", async () => {
     vi.mocked(fetchCheckoutStatus).mockResolvedValue({ open: false, can_order: false });
     cartStore.add(CABBAGE.id, 3);
