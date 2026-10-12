@@ -1,5 +1,5 @@
 // lookup.ts:token 格式不對不打資料庫;找不到回 null;找到回訂單;進度時間軸的排序。
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -78,7 +78,8 @@ describe("sortEvents(進度時間軸)", () => {
 
 describe("查單 RPC 的欄位(migration 20261012110000_market_compliance.sql 的 market_get_orders)", () => {
   const COMPLIANCE = resolve(__dirname, "../../../supabase/migrations/20261012110000_market_compliance.sql");
-  it.skipIf(!existsSync(COMPLIANCE))("店家物件多法定資訊五項(不給 contact_email、不給責任險),明細多 withdrawal_exempt", () => {
+  // migration 已經進 repo(e7d341c):一律跑,檔名改了或 RPC 的鍵改了都要紅
+  it("店家物件多法定資訊五項(不給 contact_email、不給責任險),明細多 withdrawal_exempt", () => {
     const sql = readFileSync(COMPLIANCE, "utf8");
     const fn = sql.slice(sql.indexOf("FUNCTION public.market_get_orders("));
     const store = fn.slice(fn.indexOf("'store', jsonb_build_object("), fn.indexOf("'items'"));

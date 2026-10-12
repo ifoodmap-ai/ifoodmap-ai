@@ -1,5 +1,5 @@
 // catalog.ts:公開查詢帶對篩選條件、再篩一次可見性;首頁篩選、精選店家。supabase 換成記錄查詢的假物件。
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -173,7 +173,8 @@ describe("公開欄位", () => {
     expect(`${STORE_PUBLIC_COLUMNS} ${PRODUCT_PUBLIC_COLUMNS}`).not.toMatch(/contact_email/);
   });
 
-  it.skipIf(!existsSync(COMPLIANCE))("新欄位的名稱跟 migration 20261012110000_market_compliance.sql 一樣", () => {
+  // migration 已經進 repo(e7d341c):一律跑,檔名改了或欄位改名都要紅
+  it("新欄位的名稱跟 migration 20261012110000_market_compliance.sql 一樣", () => {
     const sql = readFileSync(COMPLIANCE, "utf8");
     for (const name of [...STORE_LEGAL, "withdrawal_exempt"]) expect(sql, name).toMatch(new RegExp(`\\b${name}\\b`));
   });
