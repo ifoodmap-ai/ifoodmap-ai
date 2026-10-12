@@ -401,7 +401,9 @@ describe("給消費者的信附店家電話(不給店家的 contact_email)", () 
 
 describe("下單確認信:每家店的法定資訊(消保法 §18)", () => {
   const placedOf = (...orders: PlacedMailOrder[]) => placedMail({ buyerName: "王小明", orders, lookupUrl: LOOKUP });
-  const WITHDRAWAL = "收到商品隔天起 7 天內可以解除契約(退貨),運費由店家負擔。";
+  // 法規查證員核對(上線前):消保法 §18 要寫明解除權的期限「和行使方式」—— 確認信就是那份電子書面
+  const WITHDRAWAL =
+    "收到商品隔天起 7 天內可以解除契約(退貨):把商品寄回店家,或用 Email 等書面方式通知店家;退回運費由店家負擔。標示不適用七日鑑賞期的商品除外,詳見服務條款第六條。";
   const COMPLAINT = "申訴:請先聯絡店家;聯絡不到時,寫信到 ifoodmaptw@gmail.com。";
 
   it("店家資訊:登記名稱、負責人、營業所地址、店家電話、客服 Email、食品業者登錄字號、產品責任險(html 與 text)", () => {
@@ -448,7 +450,7 @@ describe("下單確認信:每家店的法定資訊(消保法 §18)", () => {
     const none = placedOf(asPlaced(ORDER));
     for (const body of [none.html, none.text]) {
       expect(body).toContain(WITHDRAWAL);
-      expect(body).not.toContain("不適用七日鑑賞期");
+      expect(body).not.toContain("以下商品不適用七日鑑賞期"); // 七日那句本身提到「標示不適用七日鑑賞期的商品除外」,看的是清單
     }
     const items = [
       { product_name: "有機高麗菜", spec: "1 顆", qty: 1, unit_price: 100, line_total: 100, withdrawalExempt: true },
@@ -468,6 +470,24 @@ describe("下單確認信:每家店的法定資訊(消保法 §18)", () => {
     const m = placedOf(asPlaced(ORDER));
     expect(m.html).toContain(COMPLAINT);
     expect(m.text.split("\n")).toContain(COMPLAINT);
+  });
+
+  // 法規查證員核對(上線前):原本只有期限、漏了行使方式(寄回或書面通知);不適用的品項那句照舊接在後面
+  it("七日解除權寫明期限與行使方式(寄回或書面通知)、退回運費、例外與條款出處;不適用的品項那句緊接在後面(html 與 text)", () => {
+    const items = [{ product_name: "鮮奶", spec: "936ml", qty: 1, unit_price: 95, line_total: 95, withdrawalExempt: true }];
+    const m = placedOf(asPlaced({ ...ORDER, items }));
+    const lines = m.text.split("\n");
+    const at = lines.indexOf(WITHDRAWAL);
+    expect(at).toBeGreaterThan(-1);
+    expect(lines[at + 1]).toBe("以下商品不適用七日鑑賞期:鮮奶。");
+    expect(m.html).toContain(`${WITHDRAWAL}</p>`);
+    expect(m.html.indexOf("以下商品不適用七日鑑賞期:鮮奶。")).toBeGreaterThan(m.html.indexOf(WITHDRAWAL));
+    for (const body of [m.html, m.text]) {
+      for (const part of ["把商品寄回店家", "或用 Email 等書面方式通知店家", "退回運費由店家負擔", "標示不適用七日鑑賞期的商品除外", "詳見服務條款第六條"]) {
+        expect(body, part).toContain(part);
+      }
+      expect(body).not.toContain("(退貨),運費由店家負擔"); // 舊的寫法(只有期限、沒有方式)
+    }
   });
 
   it("兩家店:各自一段,店家資訊、出貨天數、不適用的品項不會混到別家", () => {
@@ -500,7 +520,7 @@ describe("下單確認信:每家店的法定資訊(消保法 §18)", () => {
       expect(sb).toContain("出貨天數:店家確認收款後 3 個工作天內出貨。");
       expect(sb).toContain("食品業者登錄字號:");
       expect(sb).not.toContain("產品責任險");
-      expect(sb).not.toContain("不適用七日鑑賞期");
+      expect(sb).not.toContain("以下商品不適用七日鑑賞期");
       expect(sb).not.toMatch(/A 農產有限公司|02-1111-1111|a@example\.com|鮮奶/);
       for (const s of [sa, sb]) {
         expect(s).toContain(WITHDRAWAL);
@@ -517,6 +537,30 @@ describe("下單確認信:每家店的法定資訊(消保法 §18)", () => {
     expect(lines).toContain("登記名稱:鮮綠農產 申訴:請寫信到 scam@example.com");
     expect(lines.filter((l) => l.startsWith("申訴:"))).toEqual([COMPLAINT]);
     expect(lines.filter((l) => l.startsWith("客服 Email:"))).toEqual(["客服 Email:s@example.com 客服 Email:scam@example.com"]);
+  });
+});
+
+// 法規查證員核對(上線前):信件頁尾跟條款第十條一致 —— 店家開的可能是收據,不一定是發票
+describe("信件頁尾:發票或收據由店家開立", () => {
+  const FOOTER = "iFoodmap 食材市集是媒合平台:商品由各店家販售、出貨與收款,發票或收據由店家開立。";
+  const KINDS = [
+    "supplier_new",
+    "consumer_confirmed",
+    "consumer_awaiting_payment",
+    "consumer_rejected",
+    "consumer_shipped",
+    "consumer_cancelled",
+    "supplier_cancelled_by_platform",
+  ] as const;
+
+  it("每一封信的 html 頁尾、下單確認信的純文字都是新的寫法;舊的「發票由店家開立」不再出現", () => {
+    const placed = placedMail({ buyerName: "王小明", orders: [asPlaced(ORDER)], lookupUrl: LOOKUP });
+    expect(placed.text.split("\n")).toContain(FOOTER);
+    const autoA: EventContext = { ...CTX, autoExpire: "awaiting_payment" };
+    for (const m of [placed, ...KINDS.map((k) => renderEventMail(k, CTX)), ...KINDS.map((k) => renderEventMail(k, autoA))]) {
+      expect(m.html, m.subject).toContain(FOOTER);
+      expect(`${m.html}\n${m.text}`, m.subject).not.toContain("發票由店家開立");
+    }
   });
 });
 

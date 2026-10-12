@@ -116,7 +116,8 @@ export const paymentDeadline = (createdAt: string): string | null => {
 };
 const PAYMENT_LABEL = { cod: "貨到付款", transfer: "銀行轉帳" } as const;
 
-const FOOTER = "iFoodmap 食材市集是媒合平台:商品由各店家販售、出貨與收款,發票由店家開立。";
+// 跟服務條款第十條一致:店家開的可能是收據,不一定是發票
+const FOOTER = "iFoodmap 食材市集是媒合平台:商品由各店家販售、出貨與收款,發票或收據由店家開立。";
 
 const shell = (title: string, inner: string) => `
 <div style="font-family:-apple-system,'PingFang TC','Microsoft JhengHei',sans-serif;max-width:560px;margin:0 auto;padding:32px 24px;color:#0f172a">
@@ -180,7 +181,9 @@ const payByText = (createdAt: string) => {
 /** 申訴管道:先聯絡店家,聯絡不到再寫信給平台 */
 export const PLATFORM_COMPLAINT_EMAIL = "ifoodmaptw@gmail.com";
 const NOT_PROVIDED = "(店家尚未提供)";
-const WITHDRAWAL_TEXT = "收到商品隔天起 7 天內可以解除契約(退貨),運費由店家負擔。";
+// 七日解除權:消保法 §18 要寫明期限「和行使方式」(確認信就是那份電子書面);不適用的品項那句(exemptText)接在後面
+const WITHDRAWAL_TEXT =
+  "收到商品隔天起 7 天內可以解除契約(退貨):把商品寄回店家,或用 Email 等書面方式通知店家;退回運費由店家負擔。標示不適用七日鑑賞期的商品除外,詳見服務條款第六條。";
 const COMPLAINT_TEXT = `申訴:請先聯絡店家;聯絡不到時,寫信到 ${PLATFORM_COMPLAINT_EMAIL}。`;
 
 /**

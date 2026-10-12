@@ -311,7 +311,7 @@ describe("market-notify:下單確認", () => {
         "食品業者登錄字號:A-123456789-00000-0",
         "產品責任險:富邦產險 保單號碼 0500-123456",
         "出貨天數:店家接單後 2 個工作天內出貨。", // 貨到付款:從接單起算
-        "收到商品隔天起 7 天內可以解除契約(退貨),運費由店家負擔。",
+        "收到商品隔天起 7 天內可以解除契約(退貨):把商品寄回店家,或用 Email 等書面方式通知店家;退回運費由店家負擔。標示不適用七日鑑賞期的商品除外,詳見服務條款第六條。",
         "以下商品不適用七日鑑賞期:有機高麗菜。",
         "申訴:請先聯絡店家;聯絡不到時,寫信到 ifoodmaptw@gmail.com。",
       ];
@@ -322,7 +322,7 @@ describe("market-notify:下單確認", () => {
         "店家電話:(店家尚未提供)",
         "客服 Email:service-b@example.com",
         "出貨天數:店家確認收款後 3 個工作天內出貨。", // 轉帳:從確認收款起算
-        "收到商品隔天起 7 天內可以解除契約(退貨),運費由店家負擔。",
+        "收到商品隔天起 7 天內可以解除契約(退貨):把商品寄回店家,或用 Email 等書面方式通知店家;退回運費由店家負擔。標示不適用七日鑑賞期的商品除外,詳見服務條款第六條。",
         "申訴:請先聯絡店家;聯絡不到時,寫信到 ifoodmaptw@gmail.com。",
       ];
       for (const [label, text, html] of [
@@ -334,7 +334,8 @@ describe("market-notify:下單確認", () => {
           expect(html, `live=${live} ${label} ${line}`).toContain(line);
         }
       }
-      for (const body of [textB, htmlB]) expect(body).not.toMatch(/食品業者登錄字號|產品責任險|不適用七日鑑賞期/);
+      // 七日解除權那句本身提到「標示不適用七日鑑賞期的商品除外」:這裡看的是 B 店沒有「以下商品不適用」的清單
+      for (const body of [textB, htmlB]) expect(body).not.toMatch(/食品業者登錄字號|產品責任險|以下商品不適用七日鑑賞期/);
       // 客服 Email 是另外的欄位:收新訂單通知的 contact_email 照樣不給消費者
       for (const storeEmail of ["store-a@example.com", "store-b@example.com"]) {
         expect(msg.html).not.toContain(storeEmail);
