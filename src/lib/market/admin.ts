@@ -15,6 +15,7 @@ import { fetchAllPages } from "@/lib/metrics";
 import { LIMITS, type ReviewStatus } from "./constants";
 import { friendlyDbError, MarketDbError, marketDb, unwrap, type PgResult } from "./db";
 import { hasVisibleText } from "./productForm";
+import { missingDisclosures, storeFormFromRow } from "./store";
 import type { MarketProductRow, MarketStoreRow } from "./types";
 
 export const ADMIN_PRODUCT_COLUMNS = "*, market_stores(supplier_id, is_enabled, suppliers(name))";
@@ -183,3 +184,49 @@ export const setStoreEnabled = async (supplierId: string, enabled: boolean, reas
   if (!row) throw new MarketStoreGoneError();
   return row;
 };
+
+// ---------------------------------------------------------------------------------------------
+// 法規(食材市集法規查證 M3、M6、M8、S3、S4):審核檢查清單、自動提醒、零售店家缺的法定資訊
+// ---------------------------------------------------------------------------------------------
+
+export interface ReviewCheckItem {
+  key: string;
+  label: string;
+}
+
+/**
+ * 審核檢查清單:查看視窗裡每一項都打勾才能核准(食品資訊先寫在商品說明、審核時把關;酒類連料理米酒、料理酒都不能賣)。
+ * 標示「不適用七日鑑賞期」的商品多一項 —— 例外要從嚴認定(消保處函),不是店家勾了就算。
+ */
+export const reviewChecklist = (row: Pick<MarketProductRow, "withdrawal_exempt">): ReviewCheckItem[] => [
+  {
+    key: "food-info",
+    label: "商品說明裡有食品資訊:成分、淨重或容量、食品添加物、製造或負責廠商的名稱、電話、地址、原產地、到貨時離有效日期至少幾天、食品業者登錄字號",
+  },
+  { key: "no-alcohol", label: "不是酒類(包括料理米酒、料理酒;菸酒管理法禁止網路販售)" },
+  { key: "no-illegal-wording", label: "品名、說明、照片沒有違法字句:「恕不退換」「退貨運費自付」「圖片僅供參考」、醫療效能宣稱" },
+  ...(row.withdrawal_exempt
+    ? [{ key: "exempt-perishable", label: "標示「不適用七日鑑賞期」的商品確實屬於易腐或短效商品(保存期限少於 7 天左右,或到貨時已接近到期)" }]
+    : []),
+];
+
+/** 自動提醒的規則:[要找的字(最左邊、最長的先比), 提醒] */
+const WARNING_RULES: Array<[RegExp, (found: string) => string]> = [
+  [/料理米酒|料理酒|米酒|紅酒|白酒|啤酒|清酒|酒/, (w) => `提到「${w}」:酒類(包括料理米酒、料理酒)不能在網路販售`],
+  [/恕不退換|不退不換|不接受退貨|退貨運費自付/, (w) => `有「${w}」:不能限制消費者的退貨權利`],
+  [/僅供參考/, (w) => `有「${w}」:商品頁的圖文是契約的一部分,不能寫「僅供參考」`],
+  [/治療|療效|治癒|預防疾病|抗癌|降血壓|降血糖|消炎/, (w) => `有醫療效能字句「${w}」:食品不能宣稱醫療效能`],
+];
+
+/** 品名、規格、說明裡要特別看的字句(只是提醒;沒有提醒不代表沒問題,檢查清單還是要逐項確認) */
+export const reviewWarnings = (row: Pick<MarketProductRow, "name" | "spec" | "description">): string[] => {
+  const text = [row.name, row.spec, row.description ?? ""].join("\n");
+  return WARNING_RULES.flatMap(([re, message]) => {
+    const found = re.exec(text);
+    return found ? [message(found[0])] : [];
+  });
+};
+
+/** 這家店還缺哪些法定資訊(四項加上供應商資料的電話);缺任何一項,資料庫不讓它開放零售(store_disclosure_missing) */
+export const storeMissingDisclosures = (store: MarketStoreRow): string[] =>
+  missingDisclosures(storeFormFromRow(store, null), store.suppliers?.phone ?? null);

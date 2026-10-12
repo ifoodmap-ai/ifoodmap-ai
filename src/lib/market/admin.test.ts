@@ -84,11 +84,15 @@ import {
   MarketStaleReviewError,
   MarketStoreGoneError,
   nameSearchPattern,
+  reviewChecklist,
   reviewProduct,
+  reviewWarnings,
   setStoreEnabled,
+  storeMissingDisclosures,
 } from "./admin";
 import { LIMITS } from "./constants";
 import { friendlyDbError, MarketDbError } from "./db";
+import { STORE_A } from "./testFixtures";
 
 beforeEach(() => {
   calls.length = 0;
@@ -306,5 +310,52 @@ describe("adminErrorMessage:管理後台的錯誤訊息一律中文", () => {
     );
     expect(adminErrorMessage(new Error("Something broke"), "備援")).toBe("備援");
     expect(adminErrorMessage(new MarketStaleReviewError(), "備援")).toBe("這個商品剛被供應商修改過,請重新整理後再審核");
+  });
+});
+
+// 法規查證 M3、M6、M8、S3、S4:審核檢查清單(每一項都打勾才能核准)、自動提醒要特別看的字句、零售店家缺的法定資訊。
+describe("審核檢查清單、自動提醒、店家法定資訊", () => {
+  it("一般商品 3 項;標示不適用七日鑑賞期的商品多一項「確實是易腐或短效商品」", () => {
+    expect(reviewChecklist({ withdrawal_exempt: false }).map((i) => i.key)).toEqual(["food-info", "no-alcohol", "no-illegal-wording"]);
+    expect(reviewChecklist({}).map((i) => i.key)).toEqual(["food-info", "no-alcohol", "no-illegal-wording"]);
+    const exempt = reviewChecklist({ withdrawal_exempt: true });
+    expect(exempt.map((i) => i.key)).toEqual(["food-info", "no-alcohol", "no-illegal-wording", "exempt-perishable"]);
+    const text = exempt.map((i) => i.label).join("\n");
+    for (const word of ["成分", "淨重或容量", "食品添加物", "製造或負責廠商的名稱、電話、地址", "原產地", "到貨時離有效日期至少幾天", "食品業者登錄字號"]) {
+      expect(text, word).toContain(word);
+    }
+    for (const word of ["料理米酒", "料理酒", "菸酒管理法", "恕不退換", "圖片僅供參考", "醫療效能", "易腐或短效"]) {
+      expect(text, word).toContain(word);
+    }
+  });
+
+  it("自動提醒:酒類(連料理米酒、料理酒)、限制退貨、僅供參考、醫療效能;一般商品沒有提醒", () => {
+    expect(reviewWarnings({ name: "料理米酒", spec: "600ml/瓶", description: null })).toEqual([
+      "提到「料理米酒」:酒類(包括料理米酒、料理酒)不能在網路販售",
+    ]);
+    expect(reviewWarnings({ name: "滷包", spec: "1 包", description: "可加料理酒提味" })).toEqual([
+      "提到「料理酒」:酒類(包括料理米酒、料理酒)不能在網路販售",
+    ]);
+    expect(reviewWarnings({ name: "有機高麗菜", spec: "1 顆", description: "生鮮商品恕不退換,圖片僅供參考。多吃可以降血壓" })).toEqual([
+      "有「恕不退換」:不能限制消費者的退貨權利",
+      "有「僅供參考」:商品頁的圖文是契約的一部分,不能寫「僅供參考」",
+      "有醫療效能字句「降血壓」:食品不能宣稱醫療效能",
+    ]);
+    expect(reviewWarnings({ name: "牛肉片", spec: "300g/盒", description: "退貨運費自付" })).toEqual(["有「退貨運費自付」:不能限制消費者的退貨權利"]);
+    expect(reviewWarnings({ name: "有機高麗菜", spec: "1 顆(約 1.2 公斤)", description: "成分:高麗菜。淨重 1.2 公斤。" })).toEqual([]);
+  });
+
+  it("零售店家缺的法定資訊:四項加上供應商資料的電話(看不到字也算缺)", () => {
+    const filled = {
+      ...STORE_A,
+      legal_name: "市集測試 A 店有限公司",
+      representative: "王小明",
+      business_address: "臺北市測試路 1 號",
+      service_email: "service-a@example.com",
+    };
+    expect(storeMissingDisclosures(filled)).toEqual([]);
+    expect(storeMissingDisclosures(STORE_A)).toEqual(["登記名稱", "負責人", "營業所地址", "客服 Email"]);
+    expect(storeMissingDisclosures({ ...filled, suppliers: { name: "A", phone: "\u{3000}" } })).toEqual(["店家電話"]);
+    expect(storeMissingDisclosures({ ...filled, representative: "\u{200B}", suppliers: null })).toEqual(["負責人", "店家電話"]);
   });
 });

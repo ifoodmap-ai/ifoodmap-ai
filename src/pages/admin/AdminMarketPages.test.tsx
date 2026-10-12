@@ -40,6 +40,20 @@ const PENDING = { ...CABBAGE, review_status: "pending" as const, submitted_at: "
 /** fetchAdminProducts 回的一頁 */
 const pageOf = (rows: MarketProductRow[], total = rows.length): AdminProductPage => ({ rows, total });
 
+/** 查看視窗裡的審核檢查清單全部打勾(核准前一定要) */
+const confirmChecklist = async (dialog: HTMLElement) => {
+  const list = within(dialog).getByRole("group", { name: "審核檢查清單(每一項都確認才能核准)" });
+  for (const box of within(list).getAllByRole("checkbox")) {
+    if (!(box as HTMLInputElement).checked) await userEvent.click(box);
+  }
+};
+/** 開著的查看視窗:檢查清單打勾、按「核准上架」 */
+const approveInDialog = async () => {
+  const dialog = await screen.findByRole("dialog");
+  await confirmChecklist(dialog);
+  await userEvent.click(within(dialog).getByRole("button", { name: "核准上架" }));
+};
+
 beforeEach(() => {
   vi.mocked(fetchAdminProducts).mockResolvedValue(pageOf([PENDING]));
   vi.mocked(reviewProduct).mockResolvedValue(PENDING);
@@ -57,6 +71,7 @@ describe("AdminMarketProductsPage", () => {
     const dialog = await screen.findByRole("dialog");
     expect(within(dialog).getByText("宜蘭三星")).toBeInTheDocument();
     expect(within(dialog).getByText("沒有照片")).toBeInTheDocument();
+    await confirmChecklist(dialog);
     await userEvent.click(within(dialog).getByRole("button", { name: "核准上架" }));
     await waitFor(() => expect(reviewProduct).toHaveBeenCalledWith(PENDING, { kind: "approve" }));
     expect(toastSuccess).toHaveBeenCalledWith("已核准「有機高麗菜」");
@@ -100,7 +115,7 @@ describe("AdminMarketProductsPage", () => {
     vi.mocked(reviewProduct).mockRejectedValue(new MarketStaleReviewError());
     render(<AdminMarketProductsPage />);
     await userEvent.click(await screen.findByRole("button", { name: "查看 有機高麗菜" }));
-    await userEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "核准上架" }));
+    await approveInDialog();
     await waitFor(() =>
       expect(toastError).toHaveBeenCalledWith("處理失敗", { description: "這個商品剛被供應商修改過,請重新整理後再審核" }),
     );
@@ -111,7 +126,7 @@ describe("AdminMarketProductsPage", () => {
     vi.mocked(reviewProduct).mockRejectedValue(new MarketStaleReviewError());
     render(<AdminMarketProductsPage />);
     await userEvent.click(await screen.findByRole("button", { name: "查看 有機高麗菜" }));
-    await userEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "核准上架" }));
+    await approveInDialog();
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(toastError).toHaveBeenCalledWith("處理失敗", { description: "這個商品剛被供應商修改過,請重新整理後再審核" });
   });
@@ -218,7 +233,7 @@ describe("AdminMarketProductsPage", () => {
     vi.mocked(fetchAdminProducts).mockResolvedValueOnce(pageOf([PENDING])).mockResolvedValue(pageOf([]));
     render(<AdminMarketProductsPage />);
     await userEvent.click(await screen.findByRole("button", { name: "查看 有機高麗菜" }));
-    await userEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "核准上架" }));
+    await approveInDialog();
     expect(await screen.findByText("沒有待審的商品")).toBeInTheDocument();
     expect(fetchAdminProducts).toHaveBeenCalledTimes(2);
   });
@@ -235,7 +250,7 @@ describe("AdminMarketProductsPage", () => {
     );
     render(<AdminMarketProductsPage />);
     await userEvent.click(await screen.findByRole("button", { name: "查看 有機高麗菜" }));
-    await userEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "核准上架" }));
+    await approveInDialog();
     // 請求還在路上就關掉視窗、切篩選
     await userEvent.keyboard("{Escape}");
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
@@ -262,7 +277,7 @@ describe("AdminMarketProductsPage — 審核結果只作用在同一個商品", 
   const approveCabbageAndClose = async () => {
     render(<AdminMarketProductsPage />);
     await userEvent.click(await screen.findByRole("button", { name: "查看 有機高麗菜" }));
-    await userEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "核准上架" }));
+    await approveInDialog();
     await userEvent.keyboard("{Escape}");
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   };
@@ -283,6 +298,7 @@ describe("AdminMarketProductsPage — 審核結果只作用在同一個商品", 
     const dialog = screen.getByRole("dialog");
     expect(within(dialog).getByRole("heading", { name: "牛番茄" })).toBeInTheDocument();
     expect(within(dialog).queryByRole("alert")).toBeNull();
+    await confirmChecklist(dialog);
     expect(within(dialog).getByRole("button", { name: "核准上架" })).toBeEnabled();
   });
 
@@ -407,10 +423,13 @@ describe("AdminMarketProductsPage — 每張照片的主圖和縮圖都要審(�
   const PHOTO_2 = `${SUPPLIER_A}/${CABBAGE.id}/a9900000-0000-4000-8000-000000000002.jpg`;
   const WITH_PHOTOS = { ...PENDING, photos: [PHOTO_1, PHOTO_2] };
 
+  /** 打開查看視窗並把檢查清單打勾:這一組只看照片載入對核准的影響 */
   const openDetail = async () => {
     render(<AdminMarketProductsPage />);
     await userEvent.click(await screen.findByRole("button", { name: "查看 有機高麗菜" }));
-    return screen.findByRole("dialog");
+    const dialog = await screen.findByRole("dialog");
+    await confirmChecklist(dialog);
+    return dialog;
   };
   /** 視窗裡的圖都觸發 load(jsdom 不會自己載入圖片);except 是要留著的(之後觸發 error) */
   const loadEvery = (dialog: HTMLElement, except: string[] = []) =>
@@ -507,6 +526,8 @@ describe("AdminMarketProductsPage — 每張照片的主圖和縮圖都要審(�
     const again = await screen.findByRole("dialog");
     expect(within(again).getByRole("img", { name: "第 1 張・縮圖" })).toBeInTheDocument();
     expect(within(again).getByRole("button", { name: "核准上架" })).toBeDisabled();
+    // 重開 = 檢查清單也從頭來
+    await confirmChecklist(again);
     loadEvery(again);
     expect(within(again).getByRole("button", { name: "核准上架" })).toBeEnabled();
     expect(within(again).queryByText(/個檔讀不到/)).toBeNull();
@@ -537,6 +558,7 @@ describe("AdminMarketProductsPage — 每張照片的主圖和縮圖都要審(�
     );
     const dialog = await openDetail();
     loadEvery(dialog);
+    await confirmChecklist(dialog);
     await userEvent.click(within(dialog).getByRole("button", { name: "核准上架" }));
     await waitFor(() =>
       expect(toastError).toHaveBeenCalledWith("處理失敗", { description: "這個商品還有照片沒有上傳完成,無法核准" }),
@@ -544,6 +566,132 @@ describe("AdminMarketProductsPage — 每張照片的主圖和縮圖都要審(�
     expect(within(dialog).getByRole("alert")).toHaveTextContent("這個商品還有照片沒有上傳完成,無法核准");
     // 視窗留著:讀不到的那一格就在旁邊
     expect(screen.getByRole("dialog")).toBe(dialog);
+  });
+});
+
+// 法規查證 M3、M8、S3、S4:醒目標示七日鑑賞期;審核檢查清單每一項都打勾才能核准;自動提醒酒類與違法字句。
+describe("AdminMarketProductsPage — 七日鑑賞期標示與審核檢查清單", () => {
+  const MILK = { ...PENDING, id: "a9300000-0000-4000-8000-0000000000c5", name: "鮮奶", withdrawal_exempt: true };
+
+  it("查看視窗醒目標示「適用 / 不適用七日鑑賞期」;清單上不適用的商品有標記", async () => {
+    vi.mocked(fetchAdminProducts).mockResolvedValue(pageOf([PENDING, MILK]));
+    render(<AdminMarketProductsPage />);
+    const milkRow = (await screen.findByText("鮮奶")).closest("li") as HTMLElement;
+    expect(within(milkRow).getByText("不適用七日鑑賞期")).toBeInTheDocument();
+    const cabbageRow = screen.getByText("有機高麗菜").closest("li") as HTMLElement;
+    expect(within(cabbageRow).queryByText("不適用七日鑑賞期")).toBeNull();
+
+    await userEvent.click(screen.getByRole("button", { name: "查看 鮮奶" }));
+    let dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("不適用七日鑑賞期(店家勾選:消費者不能無理由退貨)")).toBeInTheDocument();
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await userEvent.click(screen.getByRole("button", { name: "查看 有機高麗菜" }));
+    dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("適用七日鑑賞期(消費者收到後 7 天內可以退貨)")).toBeInTheDocument();
+  });
+
+  it("審核檢查清單:每一項都打勾才能核准;不適用七日鑑賞期的多一項「確實是易腐或短效商品」", async () => {
+    vi.mocked(fetchAdminProducts).mockResolvedValue(pageOf([PENDING, MILK]));
+    render(<AdminMarketProductsPage />);
+    await userEvent.click(await screen.findByRole("button", { name: "查看 有機高麗菜" }));
+    let dialog = await screen.findByRole("dialog");
+    let list = within(dialog).getByRole("group", { name: "審核檢查清單(每一項都確認才能核准)" });
+    let boxes = within(list).getAllByRole("checkbox");
+    expect(boxes.map((b) => b.closest("label")?.textContent)).toEqual([
+      "商品說明裡有食品資訊:成分、淨重或容量、食品添加物、製造或負責廠商的名稱、電話、地址、原產地、到貨時離有效日期至少幾天、食品業者登錄字號",
+      "不是酒類(包括料理米酒、料理酒;菸酒管理法禁止網路販售)",
+      "品名、說明、照片沒有違法字句:「恕不退換」「退貨運費自付」「圖片僅供參考」、醫療效能宣稱",
+    ]);
+    const approve = within(dialog).getByRole("button", { name: "核准上架" });
+    expect(approve).toBeDisabled();
+    expect(within(dialog).getByText("檢查清單每一項都確認後才能核准")).toBeInTheDocument();
+    await userEvent.click(boxes[0]);
+    await userEvent.click(boxes[1]);
+    expect(approve).toBeDisabled();
+    await userEvent.click(boxes[2]);
+    expect(approve).toBeEnabled();
+    expect(within(dialog).queryByText("檢查清單每一項都確認後才能核准")).toBeNull();
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+    await userEvent.click(screen.getByRole("button", { name: "查看 鮮奶" }));
+    dialog = await screen.findByRole("dialog");
+    list = within(dialog).getByRole("group", { name: "審核檢查清單(每一項都確認才能核准)" });
+    boxes = within(list).getAllByRole("checkbox");
+    expect(boxes).toHaveLength(4);
+    expect(boxes.every((b) => !(b as HTMLInputElement).checked)).toBe(true);
+    expect(boxes[3].closest("label")).toHaveTextContent(
+      "標示「不適用七日鑑賞期」的商品確實屬於易腐或短效商品(保存期限少於 7 天左右,或到貨時已接近到期)",
+    );
+    await confirmChecklist(dialog);
+    await userEvent.click(within(dialog).getByRole("button", { name: "核准上架" }));
+    await waitFor(() => expect(reviewProduct).toHaveBeenCalledWith(MILK, { kind: "approve" }));
+  });
+
+  it("自動提醒:品名或說明有酒類、限制退貨、僅供參考的字句時列在查看視窗(只是提醒,檢查清單照樣要勾)", async () => {
+    const COOKING_WINE = { ...PENDING, id: "a9300000-0000-4000-8000-0000000000c6", name: "料理米酒", description: "生鮮商品恕不退換" };
+    vi.mocked(fetchAdminProducts).mockResolvedValue(pageOf([COOKING_WINE]));
+    render(<AdminMarketProductsPage />);
+    await userEvent.click(await screen.findByRole("button", { name: "查看 料理米酒" }));
+    const dialog = await screen.findByRole("dialog");
+    const warnings = within(dialog).getByRole("list", { name: "自動偵測到要特別看的字句" });
+    expect(within(warnings).getAllByRole("listitem").map((li) => li.textContent)).toEqual([
+      "提到「料理米酒」:酒類(包括料理米酒、料理酒)不能在網路販售",
+      "有「恕不退換」:不能限制消費者的退貨權利",
+    ]);
+    expect(within(dialog).getByRole("button", { name: "核准上架" })).toBeDisabled();
+  });
+
+  it("沒有要特別看的字句:不顯示自動提醒;已核准的商品(不在待審)不顯示檢查清單", async () => {
+    vi.mocked(fetchAdminProducts).mockResolvedValue(pageOf([{ ...PENDING, review_status: "approved" }]));
+    render(<AdminMarketProductsPage />);
+    await userEvent.click(await screen.findByRole("button", { name: "查看 有機高麗菜" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).queryByRole("list", { name: "自動偵測到要特別看的字句" })).toBeNull();
+    expect(within(dialog).queryByRole("group", { name: "審核檢查清單(每一項都確認才能核准)" })).toBeNull();
+    expect(within(dialog).getByText("適用七日鑑賞期(消費者收到後 7 天內可以退貨)")).toBeInTheDocument();
+  });
+});
+
+describe("AdminMarketStoresPage — 店家法定資訊(法規查證 M6)", () => {
+  const FILLED = {
+    ...STORE_A,
+    legal_name: "市集測試 A 店有限公司",
+    representative: "王小明",
+    business_address: "臺北市測試路 1 號",
+    service_email: "service-a@example.com",
+    food_registration_no: "A-123456789-00000-0",
+    liability_insurance: null,
+  };
+
+  it("顯示登記名稱、負責人、電話、營業所地址、客服 Email、登錄字號、產品責任險(沒填寫「未填」)", async () => {
+    vi.mocked(fetchAdminStores).mockResolvedValue([FILLED]);
+    render(<AdminMarketStoresPage />);
+    const row = (await screen.findByText("市集測試 A 店")).closest("li") as HTMLElement;
+    const legal = within(row).getByRole("group", { name: "市集測試 A 店的法定資訊" });
+    expect(legal).toHaveTextContent("登記名稱:市集測試 A 店有限公司");
+    expect(legal).toHaveTextContent("負責人:王小明");
+    expect(legal).toHaveTextContent("電話:02-2345-6789");
+    expect(legal).toHaveTextContent("營業所地址:臺北市測試路 1 號");
+    expect(legal).toHaveTextContent("客服 Email:service-a@example.com");
+    expect(legal).toHaveTextContent("食品業者登錄字號:A-123456789-00000-0");
+    expect(legal).toHaveTextContent("產品責任險:未填");
+    expect(within(row).queryByText(/法定資訊沒填齊/)).toBeNull();
+  });
+
+  it("缺法定資訊(含供應商電話)→ 標出缺哪幾項、不能開放零售;恢復時資料庫擋下顯示中文", async () => {
+    vi.mocked(fetchAdminStores).mockResolvedValue([{ ...STORE_A, is_enabled: false, disabled_reason: "資料待補", suppliers: { ...STORE_A.suppliers!, phone: null } }]);
+    vi.mocked(setStoreEnabled).mockRejectedValue(new MarketDbError({ message: "x", code: "22023", hint: "store_disclosure_missing" }));
+    render(<AdminMarketStoresPage />);
+    const row = (await screen.findByText("市集測試 A 店")).closest("li") as HTMLElement;
+    expect(within(row).getByText("法定資訊沒填齊(缺:登記名稱、負責人、營業所地址、客服 Email、店家電話),不能開放零售")).toBeInTheDocument();
+    await userEvent.click(within(row).getByRole("button", { name: "恢復 市集測試 A 店 的零售" }));
+    await waitFor(() =>
+      expect(toastError).toHaveBeenCalledWith("處理失敗", {
+        description: "開放零售前要填齊店家法定資訊:登記名稱、負責人、營業所地址、客服 Email,以及供應商資料的電話",
+      }),
+    );
   });
 });
 

@@ -13,6 +13,10 @@
 // 也顯示在查看視窗裡。
 //
 // 清單分頁(一頁 ADMIN_PAGE_SIZE 筆)加品名搜尋:已核准的商品再多,較舊的也找得到、下得了架。
+//
+// 法規(食材市集法規查證 M3、M8、S3、S4):查看視窗最上面醒目標示「適用 / 不適用七日鑑賞期」(店家勾選,例外要從嚴認定),
+// 清單上不適用的商品也標出來;審核檢查清單(admin.ts 的 reviewChecklist:食品資訊、不是酒類、沒有違法字句,不適用七日
+// 鑑賞期的再加「確實是易腐或短效商品」)每一項都打勾才能核准;reviewWarnings 自動提醒要特別看的字句(只是提醒)。
 import { useCallback, useEffect, useRef, useState, type Dispatch, type ReactNode, type SetStateAction } from 'react';
 import { Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
@@ -30,7 +34,9 @@ import {
   DELIST_REASON_MAX,
   fetchAdminProducts,
   MarketStaleReviewError,
+  reviewChecklist,
   reviewProduct,
+  reviewWarnings,
   type ReviewFilter,
 } from '@/lib/market/admin';
 import { CATEGORY_LABEL, LIMITS, REVIEW_STATUS_LABEL, TEMPERATURES } from '@/lib/market/constants';
@@ -120,6 +126,13 @@ const ReviewDetail = ({ row, error, busy, onApprove, onReject }: ReviewDetailPro
   const files = row.photos.flatMap((p) => [p, thumbPathOf(p)]);
   const allLoaded = files.every((f) => loaded.includes(f));
   const pending = row.review_status === 'pending';
+  const exempt = !!row.withdrawal_exempt;
+  const checklist = reviewChecklist(row);
+  const warnings = reviewWarnings(row);
+  /** 打勾的檢查項目(每次打開都重新掛上 = 從頭勾) */
+  const [checked, setChecked] = useState<string[]>([]);
+  const allChecked = checklist.every((item) => checked.includes(item.key));
+  const toggle = (key: string) => setChecked((keys) => (keys.includes(key) ? keys.filter((k) => k !== key) : [...keys, key]));
 
   return (
     <>
@@ -129,6 +142,15 @@ const ReviewDetail = ({ row, error, busy, onApprove, onReject }: ReviewDetailPro
           {row.market_stores?.suppliers?.name ?? '—'}・{REVIEW_STATUS_LABEL[row.review_status]}
         </DialogDescription>
       </DialogHeader>
+      <p
+        className={
+          exempt
+            ? 'rounded-md border-2 border-amber-400 bg-amber-50 p-3 text-sm font-semibold text-amber-900'
+            : 'rounded-md border border-emerald-300 bg-emerald-50 p-3 text-sm font-semibold text-emerald-900'
+        }
+      >
+        {exempt ? '不適用七日鑑賞期(店家勾選:消費者不能無理由退貨)' : '適用七日鑑賞期(消費者收到後 7 天內可以退貨)'}
+      </p>
       <section aria-labelledby="market-review-photos" className="space-y-2">
         <h3 id="market-review-photos" className="text-sm font-medium text-slate-700">
           照片({row.photos.length} 張)
@@ -191,6 +213,7 @@ const ReviewDetail = ({ row, error, busy, onApprove, onReject }: ReviewDetailPro
             ['產地', row.origin ?? '—'],
             ['保存方式', row.storage_method ?? '—'],
             ['保存期限', row.shelf_life ?? '—'],
+            ['七日鑑賞期', exempt ? '不適用' : '適用'],
           ] as Array<[string, string]>
         ).map(([k, v]) => (
           <div key={k} className="contents">
@@ -200,6 +223,31 @@ const ReviewDetail = ({ row, error, busy, onApprove, onReject }: ReviewDetailPro
         ))}
       </dl>
       <p className="whitespace-pre-line text-sm text-slate-700">{row.description ?? '(沒有說明)'}</p>
+      {warnings.length > 0 ? (
+        <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800">
+          <p id="market-review-warnings" className="font-medium">
+            自動偵測到要特別看的字句(只是提醒,仍要逐項確認)
+          </p>
+          <ul aria-label="自動偵測到要特別看的字句" className="mt-1 list-disc space-y-0.5 pl-5">
+            {warnings.map((w) => (
+              <li key={w}>{w}</li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+      {pending ? (
+        <fieldset className="rounded-md border border-slate-200 p-3">
+          <legend className="px-1 text-sm font-medium text-slate-700">審核檢查清單(每一項都確認才能核准)</legend>
+          <div className="space-y-1">
+            {checklist.map((item) => (
+              <label key={item.key} className="flex min-h-11 items-start gap-2 py-1 text-sm text-slate-700">
+                <input type="checkbox" checked={checked.includes(item.key)} onChange={() => toggle(item.key)} className="mt-0.5 h-5 w-5 shrink-0" />
+                {item.label}
+              </label>
+            ))}
+          </div>
+        </fieldset>
+      ) : null}
       {error ? (
         <p role="alert" className="rounded-md border border-red-200 bg-red-50 p-2 text-sm text-red-700">
           {error}
@@ -212,12 +260,13 @@ const ReviewDetail = ({ row, error, busy, onApprove, onReject }: ReviewDetailPro
       ) : pending && !allLoaded ? (
         <p className="text-sm text-slate-600">照片載入中,每張主圖和縮圖都載入完成才能核准</p>
       ) : null}
+      {pending && !allChecked ? <p className="text-sm text-slate-600">檢查清單每一項都確認後才能核准</p> : null}
       {pending ? (
         <DialogFooter className="gap-2">
           <Button variant="outline" className="text-red-600" onClick={onReject}>
             退回
           </Button>
-          <Button className="bg-emerald-600 text-white hover:bg-emerald-700" disabled={busy || !allLoaded} onClick={onApprove}>
+          <Button className="bg-emerald-600 text-white hover:bg-emerald-700" disabled={busy || !allLoaded || !allChecked} onClick={onApprove}>
             核准上架
           </Button>
         </DialogFooter>
@@ -346,7 +395,7 @@ const AdminMarketProductsPage = () => {
       <p className="mb-4 text-sm text-slate-500">
         供應商第一次開放零售、或改了品名 / 照片 / 說明等內容,都要在這裡核准後消費者才看得到。改價格、庫存不用重審。
         <br />
-        不收:酒類(免註冊結帳無法辨識年齡)、標示不實、照片不是商品本身。
+        不收:酒類(包括料理米酒、料理酒;菸酒管理法禁止網路販售)、標示不實、照片不是商品本身。
       </p>
 
       <div role="group" aria-label="審核狀態" className="mb-4 flex flex-wrap gap-2">
@@ -432,6 +481,11 @@ const AdminMarketProductsPage = () => {
                   </p>
                   {r.reject_reason ? <p className="text-xs text-red-700">原因:{r.reject_reason}</p> : null}
                 </div>
+                {r.withdrawal_exempt ? (
+                  <Badge variant="outline" className="border-amber-400 bg-amber-50 text-amber-900">
+                    不適用七日鑑賞期
+                  </Badge>
+                ) : null}
                 <Badge variant="outline">{REVIEW_STATUS_LABEL[r.review_status]}</Badge>
                 <div className="flex gap-2">
                   <Button size="sm" variant="outline" onClick={() => openDetail(r)} aria-label={`查看 ${r.name}`}>
