@@ -298,7 +298,7 @@ export default function SupplierCatalogPage() {
                         className="inline-flex min-h-8 items-center px-1 text-xs text-emerald-800 underline underline-offset-2"
                         onClick={() => openRetail(retailItem)}
                       >
-                        {statusText(retailItem, market.storeOpen)}
+                        {statusText(retailItem, market.storeOpen, market.storeClosedReason)}
                       </button>
                     ) : (
                       <Button
@@ -341,6 +341,7 @@ export default function SupplierCatalogPage() {
               onEdit={(p) => openRetail(p)}
               onRetry={market.retry}
               storeOpen={market.storeOpen}
+              storeClosedReason={market.storeClosedReason}
             />
           ) : (
             <div className="text-center py-20 text-gray-400">此帳號尚未綁定供應商</div>

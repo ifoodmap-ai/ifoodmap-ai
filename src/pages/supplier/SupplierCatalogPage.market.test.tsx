@@ -17,6 +17,8 @@ const { db } = vi.hoisted(() => ({
     saved: null as Record<string, unknown> | null,
     // 店家零售有沒有被管理員停用;最後一次 update 帶的條件(看樂觀鎖有沒有比對 updated_at)
     storeEnabled: true,
+    /** 蓋過店家的欄位(法定資訊、供應商電話) */
+    storeExtra: {} as Record<string, unknown>,
     updateFilters: [] as Array<[string, unknown]>,
     // 零售資料(market_products、market_stores)一律比批發商品晚回來:測試不能假設兩邊同時到
     // (審查實測:晚 30ms 回來,「找到批發商品後同步查零售狀態」就穩定失敗)
@@ -40,7 +42,7 @@ vi.mock("@/integrations/supabase/client", () => ({
         if (table === "market_products" && db.marketFails) return { data: null, error: { message: "TypeError: Failed to fetch", code: "", hint: "" } };
         if (table === "market_products") return { data: db.marketProducts, error: null };
         if (table === "market_stores") {
-          const store = { supplier_id: "a9200000-0000-4000-8000-00000000000a", is_enabled: db.storeEnabled, suppliers: { is_active: true } };
+          const store = { supplier_id: "a9200000-0000-4000-8000-00000000000a", is_enabled: db.storeEnabled, suppliers: { is_active: true }, ...db.storeExtra };
           return { data: db.hasStore ? store : null, error: null };
         }
         return { data: [], error: null };
@@ -112,6 +114,7 @@ const renderPage = () =>
   );
 
 beforeEach(() => {
+  db.storeExtra = {};
   db.supplies = [SUPPLY("s-cabbage", "高麗菜"), SUPPLY("s-onion", "洋蔥")];
   db.marketProducts = [{ ...CABBAGE, supply_id: "s-cabbage", review_status: "pending" }];
   db.hasStore = true;
@@ -275,6 +278,22 @@ describe("SupplierCatalogPage — 樂觀鎖與狀態文字", () => {
     const cabbageRow = (await screen.findByText("高麗菜")).closest("tr") as HTMLElement;
     expect(await within(cabbageRow).findByRole("button", { name: "已核准・店家停用中(消費者看不到)" })).toBeInTheDocument();
     expect(within(cabbageRow).queryByRole("button", { name: "已上架" })).toBeNull();
+  });
+
+  it("店家法定資訊沒填齊(消費者看不到這家店):兩個分頁的零售狀態都寫「已核准・店家資料沒填齊(消費者看不到)」", async () => {
+    db.marketProducts = [{ ...CABBAGE, supply_id: "s-cabbage", review_status: "approved" }];
+    db.storeExtra = {
+      legal_name: null,
+      representative: "王小明",
+      business_address: "臺北市測試路 1 號",
+      service_email: "service-a@example.com",
+      suppliers: { is_active: true, phone: "02-2345-6789" },
+    };
+    renderPage();
+    const cabbageRow = (await screen.findByText("高麗菜")).closest("tr") as HTMLElement;
+    expect(await within(cabbageRow).findByRole("button", { name: "已核准・店家資料沒填齊(消費者看不到)" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("tab", { name: "零售商品(給消費者)" }));
+    expect(await screen.findByText("已核准・店家資料沒填齊(消費者看不到)")).toBeInTheDocument();
   });
 });
 

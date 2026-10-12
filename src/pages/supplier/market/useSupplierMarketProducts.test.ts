@@ -157,6 +157,50 @@ describe("useSupplierMarketProducts — 店家對消費者開著嗎", () => {
   });
 });
 
+describe("useSupplierMarketProducts — 店家法定資訊(同 migration 20261012110000 的 market_store_is_open)", () => {
+  const OPEN = {
+    supplier_id: SUPPLIER_A,
+    is_enabled: true,
+    legal_name: "市集測試 A 店有限公司",
+    representative: "王小明",
+    business_address: "臺北市測試路 1 號",
+    service_email: "service-a@example.com",
+    suppliers: { is_active: true, phone: "02-2345-6789" },
+  };
+  const loadWith = async (store: Record<string, unknown>) => {
+    const hook = renderHook(() => useSupplierMarketProducts(SUPPLIER_A));
+    const pair = takePair();
+    pair.products.resolve({ data: [CABBAGE], error: null });
+    pair.store.resolve({ data: store, error: null });
+    await waitFor(() => expect(hook.result.current.loading).toBe(false));
+    return hook.result.current;
+  };
+
+  it("四項法定資訊與供應商電話都有 → 開著(沒有原因)", async () => {
+    expect(await loadWith(OPEN)).toMatchObject({ hasStore: true, storeOpen: true, storeClosedReason: null });
+  });
+
+  it("缺任何一項(看不到字也算)或供應商電話只有空白 → 消費者看不到,原因是 disclosure", async () => {
+    expect(await loadWith({ ...OPEN, legal_name: null })).toMatchObject({ storeOpen: false, storeClosedReason: "disclosure" });
+    expect(await loadWith({ ...OPEN, service_email: "\u{3000}" })).toMatchObject({ storeOpen: false, storeClosedReason: "disclosure" });
+    expect(await loadWith({ ...OPEN, suppliers: { is_active: true, phone: "\u{200B}" } })).toMatchObject({
+      storeOpen: false,
+      storeClosedReason: "disclosure",
+    });
+  });
+
+  it("被停用(零售或供應商帳號)優先寫停用;沒建店沒有原因", async () => {
+    expect(await loadWith({ ...OPEN, is_enabled: false, legal_name: null })).toMatchObject({ storeOpen: false, storeClosedReason: "disabled" });
+    expect(await loadWith({ ...OPEN, suppliers: { is_active: false, phone: "02" } })).toMatchObject({ storeOpen: false, storeClosedReason: "disabled" });
+    const hook = renderHook(() => useSupplierMarketProducts(SUPPLIER_A));
+    const pair = takePair();
+    pair.products.resolve({ data: [], error: null });
+    pair.store.resolve({ data: null, error: null });
+    await waitFor(() => expect(hook.result.current.loading).toBe(false));
+    expect(hook.result.current).toMatchObject({ hasStore: false, storeOpen: false, storeClosedReason: null });
+  });
+});
+
 describe("useSupplierMarketProducts — 錯誤訊息一律中文", () => {
   it("認不得的資料庫錯誤:不顯示英文原文,改成「請稍後再試」加錯誤代碼", async () => {
     const { result } = renderHook(() => useSupplierMarketProducts(SUPPLIER_A));

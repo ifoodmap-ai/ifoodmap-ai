@@ -424,6 +424,10 @@ describe("statusText — 照消費者實際看到的寫", () => {
     expect(statusText({ ...approved, is_listed: false, stock: 0 }, false)).toBe("已核准・店家停用中(消費者看不到)");
     expect(statusText({ ...approved, is_listed: false, stock: 0 })).toBe("已核准・暫停販售");
     expect(statusText({ review_status: "pending", is_listed: true, stock: 0 }, false)).toBe("待審");
+    // 店家法定資訊沒填齊(market_store_is_open 也要求):消費者看不到,原因照實寫
+    expect(statusText({ ...approved, stock: 5 }, false, "disclosure")).toBe("已核准・店家資料沒填齊(消費者看不到)");
+    expect(statusText({ ...approved, stock: 5 }, false, "disabled")).toBe("已核准・店家停用中(消費者看不到)");
+    expect(statusText({ review_status: "pending", is_listed: true, stock: 5 }, false, "disclosure")).toBe("待審");
   });
 
   it("清單:缺貨寫「已上架・缺貨」、店家停用時已核准的都寫「店家停用中」,而且不是綠色", () => {

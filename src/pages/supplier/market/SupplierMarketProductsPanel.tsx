@@ -8,6 +8,7 @@ import MarketImage from "@/components/market/MarketImage";
 import { REVIEW_STATUS_LABEL, TEMPERATURES, type ReviewStatus } from "@/lib/market/constants";
 import { formatTwd } from "@/lib/market/format";
 import type { MarketProductRow } from "@/lib/market/types";
+import type { StoreClosedReason } from "./useSupplierMarketProducts";
 
 const STATUS_CLASS: Record<ReviewStatus, string> = {
   draft: "border-slate-300 bg-slate-50 text-slate-700",
@@ -26,9 +27,10 @@ const NOT_BUYABLE_CLASS = "border-amber-300 bg-amber-50 text-amber-800";
  * 店家零售被停用或供應商帳號停用 → 「已核准・店家停用中(消費者看不到)」;上架開關關掉 → 「已核准・暫停販售」;
  * 庫存 0 → 「已上架・缺貨」(消費者看得到,標「已售完」、不能買)。storeOpen 沒給當作開著。
  */
-export const statusText = (p: StatusInput, storeOpen = true): string => {
+export const statusText = (p: StatusInput, storeOpen = true, closedReason: StoreClosedReason | null = null): string => {
   if (p.review_status !== "approved") return REVIEW_STATUS_LABEL[p.review_status];
-  if (!storeOpen) return "已核准・店家停用中(消費者看不到)";
+  // 店家法定資訊或供應商電話沒填齊(migration 20261012110000 的 market_store_is_open):不是被停用,要講清楚
+  if (!storeOpen) return closedReason === "disclosure" ? "已核准・店家資料沒填齊(消費者看不到)" : "已核准・店家停用中(消費者看不到)";
   if (!p.is_listed) return "已核准・暫停販售";
   return p.stock === 0 ? "已上架・缺貨" : "已上架";
 };
@@ -66,8 +68,10 @@ interface PanelProps {
   onEdit: (product: MarketProductRow) => void;
   /** 讀取失敗後按「重新載入」 */
   onRetry?: () => void;
-  /** 店家對消費者開著嗎(零售啟用 + 供應商帳號啟用);沒給當作開著 */
+  /** 店家對消費者開著嗎(零售啟用 + 供應商帳號啟用 + 法定資訊與電話都有);沒給當作開著 */
   storeOpen?: boolean;
+  /** 關著的原因(停用 / 法定資訊沒填齊),狀態文字照這個寫 */
+  storeClosedReason?: StoreClosedReason | null;
 }
 
 export default function SupplierMarketProductsPanel({
@@ -79,6 +83,7 @@ export default function SupplierMarketProductsPanel({
   onEdit,
   onRetry,
   storeOpen = true,
+  storeClosedReason = null,
 }: PanelProps) {
   if (loading) {
     return (
@@ -131,7 +136,7 @@ export default function SupplierMarketProductsPanel({
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
                   <p className="min-w-0 max-w-full truncate font-medium text-gray-800">{p.name}</p>
-                  <StatusBadge text={statusText(p, storeOpen)} className={statusClass(p, storeOpen)} />
+                  <StatusBadge text={statusText(p, storeOpen, storeClosedReason)} className={statusClass(p, storeOpen)} />
                 </div>
                 <p className="text-xs text-gray-500">
                   {p.spec}・{formatTwd(p.price)}・{TEMPERATURES[p.temperature]}・庫存 {p.stock === null ? "不限" : p.stock}
