@@ -1,7 +1,7 @@
 // 零售市集通知信的內容 —— 純函式,vitest 直接測(render.test.ts)。
 //
-// 🔴 內文是 HTML:店名、品名、買家姓名、地址、備註、原因、轉帳資訊、物流單號都是使用者填的字,一律先 esc() 再放進模板;
-//    主旨是純文字(Resend 的 subject 欄位),不跳脫。
+// 🔴 內文是 HTML:店名、品名、買家姓名、地址、備註、原因、轉帳資訊、物流單號、店家的法定資訊(登記名稱、負責人、營業所地址、
+//    客服 Email、食品業者登錄字號、產品責任險)都是使用者填的字,一律先 esc() 再放進模板;主旨是純文字(Resend 的 subject 欄位),不跳脫。
 // 🔴 查詢連結(含 token)只出現在「下單確認」這一封;handler 的回傳值、log、notifications 表都不能出現 token。
 //    後續的接單 / 出貨信沒有 token(資料庫只存雜湊),改請消費者用確認信裡的連結查看。
 import { esc } from "../_shared/supplier-mail.ts";
@@ -20,6 +20,27 @@ export interface MailItem {
   qty: number;
   unit_price: number;
   line_total: number;
+  /** 不適用七日鑑賞期(market_order_items.withdrawal_exempt,下單當時的快照);只有下單確認信用,沒有就當成適用 */
+  withdrawalExempt?: boolean;
+}
+
+/**
+ * 店家的法定資訊(消保法 §18;market_stores 的欄位,migration 20261012110000)—— 只放在下單確認信。
+ * 店家電話照舊用 MailOrder.storePhone(suppliers.phone)。都是店家自己填的字:一律跳脫、壓成一行。
+ */
+export interface StoreLegal {
+  /** 登記名稱 */
+  legalName: string;
+  /** 負責人 */
+  representative: string;
+  /** 營業所地址 */
+  businessAddress: string;
+  /** 給消費者的客服 Email(跟收新訂單通知的 contact_email 是兩回事) */
+  serviceEmail: string;
+  /** 食品業者登錄字號(選填) */
+  foodRegistrationNo: string;
+  /** 產品責任險說明(選填) */
+  liabilityInsurance: string;
 }
 
 export interface MailOrder {
@@ -36,6 +57,11 @@ export interface MailOrder {
   total: number;
   items: MailItem[];
   shipDays: number | null;
+}
+
+/** 下單確認信的一家店:多了店家的法定資訊 */
+export interface PlacedMailOrder extends MailOrder {
+  legal: StoreLegal;
 }
 
 export const twd = (n: number) => `NT$ ${Number(n).toLocaleString("zh-TW")}`;
@@ -149,8 +175,69 @@ const payByText = (createdAt: string) => {
     : `請在 ${MARKET_AUTO_CANCEL_HOURS} 小時內完成匯款,逾期訂單會自動取消。`;
 };
 
-/** 下單確認(寄給消費者,含查詢連結) */
-export const placedMail = (opts: { buyerName: string; orders: MailOrder[]; lookupUrl: string }): Mail => {
+// ---- 下單確認信每家店的法定資訊(2026-10-12 業主決定;法規查證 M7:下單確認信就是消保法 §18 要求的書面) ----
+
+/** 申訴管道:先聯絡店家,聯絡不到再寫信給平台 */
+export const PLATFORM_COMPLAINT_EMAIL = "ifoodmaptw@gmail.com";
+const NOT_PROVIDED = "(店家尚未提供)";
+const WITHDRAWAL_TEXT = "收到商品隔天起 7 天內可以解除契約(退貨),運費由店家負擔。";
+const COMPLAINT_TEXT = `申訴:請先聯絡店家;聯絡不到時,寫信到 ${PLATFORM_COMPLAINT_EMAIL}。`;
+
+/**
+ * 店家資訊的每一列:登記名稱、負責人、營業所地址、電話、客服 Email 一定列(沒填寫「(店家尚未提供)」);
+ * 食品業者登錄字號、產品責任險有填才列。值先壓成一行:店家填的換行不會在純文字版多出一行,冒充申訴管道或別的欄位。
+ */
+const legalRows = (o: PlacedMailOrder): [string, string][] => {
+  const required = (v: string) => oneLine(v) || NOT_PROVIDED;
+  const rows: [string, string][] = [
+    ["登記名稱", required(o.legal.legalName)],
+    ["負責人", required(o.legal.representative)],
+    ["營業所地址", required(o.legal.businessAddress)],
+    ["店家電話", required(o.storePhone)],
+    ["客服 Email", required(o.legal.serviceEmail)],
+  ];
+  const optional: [string, string][] = [
+    ["食品業者登錄字號", oneLine(o.legal.foodRegistrationNo)],
+    ["產品責任險", oneLine(o.legal.liabilityInsurance)],
+  ];
+  return [...rows, ...optional.filter(([, v]) => v)];
+};
+
+/** 出貨天數:貨到付款從店家接單起算,轉帳從店家確認收款起算 */
+const shipDaysText = (o: MailOrder) => {
+  if (o.shipDays == null) return `出貨天數:${NOT_PROVIDED}`;
+  const from = o.paymentMethod === "transfer" ? "店家確認收款後" : "店家接單後";
+  return `出貨天數:${from}${o.shipDays === 0 ? "當天出貨" : ` ${o.shipDays} 個工作天內出貨`}。`;
+};
+
+/** 這張單裡不適用七日鑑賞期的商品(同名只列一次);沒有就是空字串 */
+const exemptText = (o: MailOrder) => {
+  const names = [...new Set(o.items.filter((i) => i.withdrawalExempt === true).map((i) => i.product_name))];
+  return names.length ? `以下商品不適用七日鑑賞期:${names.join("、")}。` : "";
+};
+
+const legalText = (o: PlacedMailOrder) =>
+  ["店家資訊", ...legalRows(o).map(([k, v]) => `${k}:${v}`), shipDaysText(o), WITHDRAWAL_TEXT, exemptText(o), COMPLAINT_TEXT].filter(Boolean).join("\n");
+
+const small = (html: string, style = "") => `<p style="font-size:13px;line-height:1.7;color:#334155;margin:0 0 6px;${style}">${html}</p>`;
+const legalHtml = (o: PlacedMailOrder) => {
+  const exempt = exemptText(o);
+  return (
+    `<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:12px 14px;margin:0 0 10px;font-size:13px;line-height:1.7;color:#0f172a">` +
+    `<div style="font-size:12px;color:#64748b;margin-bottom:4px">店家資訊</div>` +
+    legalRows(o)
+      .map(([k, v]) => `<div>${esc(k)}:${esc(v)}</div>`)
+      .join("") +
+    `</div>` +
+    small(esc(shipDaysText(o))) +
+    small(esc(WITHDRAWAL_TEXT)) +
+    (exempt ? small(esc(exempt), "font-weight:600") : "") +
+    small(esc(COMPLAINT_TEXT), "margin-bottom:14px")
+  );
+};
+
+/** 下單確認(寄給消費者,含查詢連結;每家店附法定資訊) */
+export const placedMail = (opts: { buyerName: string; orders: PlacedMailOrder[]; lookupUrl: string }): Mail => {
   const subject = `訂單已送出(共 ${opts.orders.length} 家店)— iFoodmap 食材市集`;
   const sections = opts.orders
     .map(
@@ -164,7 +251,8 @@ export const placedMail = (opts: { buyerName: string; orders: MailOrder[]; looku
               : "付款方式:貨到付款。",
           ),
         ) +
-        phoneHtml(o),
+        // 店家電話併進店家資訊(法定資訊,一定列)
+        legalHtml(o),
     )
     .join("");
   const html = shell(
@@ -178,9 +266,7 @@ export const placedMail = (opts: { buyerName: string; orders: MailOrder[]; looku
   const text = [
     `${opts.buyerName} 您好,感謝您在 iFoodmap 食材市集訂購。以下訂單已送給店家,店家接單後會再寄信通知您。`,
     PLACED_DEADLINE,
-    ...opts.orders.map((o) =>
-      [`\n【${o.storeName}】${orderLabel(o.id)}`, itemsText(o), `付款方式:${PAYMENT_LABEL[o.paymentMethod]}`, phoneText(o)].filter(Boolean).join("\n"),
-    ),
+    ...opts.orders.map((o) => [`\n【${o.storeName}】${orderLabel(o.id)}`, itemsText(o), `付款方式:${PAYMENT_LABEL[o.paymentMethod]}`, legalText(o)].join("\n")),
     `\n查看訂單:${opts.lookupUrl}`,
     "這個連結就是您的訂單查詢頁,請保留這封信、不要轉寄給別人。",
     "",
@@ -294,13 +380,15 @@ const eventMail = (kind: EventMailKind, c: EventContext): Mail => {
     }
     case "consumer_cancelled": {
       if (c.autoExpire) {
-        // 72 小時自動取消:寫明是系統因逾時取消(不是店家取消);待接單、待匯款一定還沒收款,不放退款的句子
+        // 72 小時自動取消:寫明是系統因逾時取消(不是店家取消);待接單、待匯款一定還沒收款,不放已收款那種退款句。
+        // 2026-10-12 業主決定(法規查證 S6):轉帳單系統判斷的是「店家有沒有確認收到款項」,不是「買家有沒有匯款」
+        // (買家可能已經匯了);接單時契約已經成立,不寫「這張訂單不會成立」
         const what =
           c.autoExpire === "pending"
             ? `店家超過 ${MARKET_AUTO_CANCEL_HOURS} 小時沒有接單,訂單已自動取消。`
-            : `因為超過 ${MARKET_AUTO_CANCEL_HOURS} 小時沒有完成匯款,訂單已自動取消。`;
-        const after = c.autoExpire === "pending" ? "這張訂單不會成立,您不需要付款。" : "這張訂單不會成立,不需要再匯款;如果您已經匯款,請直接聯絡店家。";
-        const subject = `訂單已自動取消(${c.autoExpire === "pending" ? "店家逾時未接單" : "逾時未完成匯款"})— ${label}`;
+            : "因為店家在期限內沒有確認收到您的匯款,訂單已自動取消。";
+        const after = c.autoExpire === "pending" ? "您不需要付款。" : "不需要再匯款;如果您已經匯款,請聯絡店家退款並保留匯款證明。";
+        const subject = `訂單已自動取消(${c.autoExpire === "pending" ? "店家逾時未接單" : "逾時未確認收款"})— ${label}`;
         const html = shell("訂單已自動取消", p(`您的訂單 ${esc(label)}(「${esc(o.storeName)}」):${esc(what)}`) + p(esc(after)) + phoneHtml(o));
         const text = [`您的訂單 ${label}(「${o.storeName}」):${what}`, after, phoneText(o)].filter(Boolean).join("\n");
         return { subject, html, text };
@@ -324,7 +412,7 @@ const eventMail = (kind: EventMailKind, c: EventContext): Mail => {
         const why =
           c.autoExpire === "pending"
             ? `這張訂單超過 ${MARKET_AUTO_CANCEL_HOURS} 小時沒有接單`
-            : `消費者超過 ${MARKET_AUTO_CANCEL_HOURS} 小時沒有完成匯款`;
+            : `店家超過 ${MARKET_AUTO_CANCEL_HOURS} 小時沒有確認收到款項`; // S6:判斷的是店家有沒有確認收款
         const subject = `零售訂單 ${formatOrderNo(o.id)} 已逾時自動取消 — 請不要出貨`;
         const html = shell(
           "系統已自動取消這張零售訂單",

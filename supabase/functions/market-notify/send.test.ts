@@ -158,7 +158,8 @@ describe("遇到限速、伺服器錯誤、連線失敗會重試(最多 3 次、
     ]);
     const f2 = scripted(boom);
     const s2 = make(f2.impl);
-    await expect(s2.run()).resolves.toEqual({ ok: false, id: null, error: "network down" });
+    // 最後一次也是連線失敗:Resend 可能照樣收到、寄出(業主決定 a)→ 標 unanswered
+    await expect(s2.run()).resolves.toEqual({ ok: false, id: null, error: "network down", maybeDelivered: "unanswered" });
     expect(f2.impl).toHaveBeenCalledTimes(4);
     expect(total(s2.waits)).toBeLessThanOrEqual(5_000);
   });
@@ -225,7 +226,7 @@ describe("遇到限速、伺服器錯誤、連線失敗會重試(最多 3 次、
   // 第 3 階段審查 M6:連線失敗之後重試,Resend 回 409 表示第一次的請求可能還在處理、其實已經寄出
   it("連線失敗後重試回 409:回失敗、標記第一次可能已經寄出;其他 409 照原本", async () => {
     const r1 = await make(scripted(boom, reply(409, '{"name":"concurrent_idempotent_requests"}')).impl).run();
-    expect(r1).toEqual({ ok: false, id: null, error: 'Resend 409: {"name":"concurrent_idempotent_requests"}', maybeDelivered: true });
+    expect(r1).toEqual({ ok: false, id: null, error: 'Resend 409: {"name":"concurrent_idempotent_requests"}', maybeDelivered: "conflict" });
     const r2 = await make(scripted(reply(409)).impl).run();
     expect(r2).toEqual({ ok: false, id: null, error: "Resend 409: {}" });
     const r3 = await make(scripted(reply(503), reply(409)).impl).run();
@@ -237,9 +238,9 @@ describe("遇到限速、伺服器錯誤、連線失敗會重試(最多 3 次、
     const conflict = '{"name":"concurrent_idempotent_requests"}';
     for (const first of [502, 504]) {
       const r = await make(scripted(reply(first), reply(409, conflict)).impl).run();
-      expect(r, String(first)).toEqual({ ok: false, id: null, error: `Resend 409: ${conflict}`, maybeDelivered: true });
+      expect(r, String(first)).toEqual({ ok: false, id: null, error: `Resend 409: ${conflict}`, maybeDelivered: "conflict" });
     }
-    await expect(make(scripted(reply(504), reply(429), reply(409)).impl).run()).resolves.toMatchObject({ maybeDelivered: true });
+    await expect(make(scripted(reply(504), reply(429), reply(409)).impl).run()).resolves.toMatchObject({ maybeDelivered: "conflict" });
     // 逾時:第一個請求的 signal 已經中止(假的逾時),fetch 跟真的一樣丟出 signal.reason
     const timedOut = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
       if (init?.signal?.aborted) throw init.signal.reason;
@@ -251,12 +252,42 @@ describe("遇到限速、伺服器錯誤、連線失敗會重試(最多 3 次、
       return made === 1 ? AbortSignal.abort(new DOMException(`${ms} ms`, "TimeoutError")) : new AbortController().signal;
     };
     const send = createMarketResendSender("re_key", timedOut as unknown as typeof fetch, { sleep: async () => undefined, random: () => 0, timeoutSignal: timeoutOnce });
-    await expect(send(msg)).resolves.toEqual({ ok: false, id: null, error: `Resend 409: ${conflict}`, maybeDelivered: true });
+    await expect(send(msg)).resolves.toEqual({ ok: false, id: null, error: `Resend 409: ${conflict}`, maybeDelivered: "conflict" });
     expect(timedOut).toHaveBeenCalledTimes(2);
     for (const first of [500, 503, 429]) {
       const r = await make(scripted(reply(first), reply(409)).impl).run();
       expect(r, String(first)).toEqual({ ok: false, id: null, error: "Resend 409: {}" });
     }
+  });
+
+  // 業主決定(a):最後一次請求本身是逾時、連線失敗、502 或 504 —— Resend 可能照樣處理完、寄出,跟 409 那種分開標
+  it("最後一次請求是逾時、連線失敗、502、504 而失敗:標 unanswered;429、500、503、4xx 不標;最後成功不標", async () => {
+    await expect(make(scripted(boom).impl).run()).resolves.toEqual({ ok: false, id: null, error: "network down", maybeDelivered: "unanswered" });
+    for (const status of [502, 504]) {
+      const r = await make(scripted(reply(status)).impl).run();
+      expect(r, String(status)).toEqual({ ok: false, id: null, error: `Resend ${status}: {}`, maybeDelivered: "unanswered" });
+    }
+    // 額度已經用完:第一次就是 504 也算(不重試、直接放棄)
+    const clock = { t: 0 };
+    const spent = make(scripted(reply(504)).impl, () => 0, clock);
+    await expect(spent.run(createRetryBudget(0, () => clock.t))).resolves.toMatchObject({ ok: false, maybeDelivered: "unanswered" });
+    expect(spent.retries).toEqual([]);
+    // 逾時:每個請求的 signal 都已經中止(假的逾時),fetch 跟真的一樣丟出 signal.reason
+    const timedOut = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      throw init?.signal?.reason;
+    });
+    const send = createMarketResendSender("re_key", timedOut as unknown as typeof fetch, {
+      sleep: async () => undefined,
+      random: () => 0,
+      timeoutSignal: (ms) => AbortSignal.abort(new DOMException(`${ms} ms`, "TimeoutError")),
+    });
+    await expect(send(msg)).resolves.toMatchObject({ ok: false, error: "Resend 請求逾時(3000 毫秒沒有回應)", maybeDelivered: "unanswered" });
+    expect(timedOut).toHaveBeenCalledTimes(4);
+    for (const status of [429, 500, 503, 400, 422]) {
+      const r = await make(scripted(reply(status)).impl).run();
+      expect(r, String(status)).toEqual({ ok: false, id: null, error: `Resend ${status}: {}` });
+    }
+    await expect(make(scripted(boom, reply(504), ok).impl).run()).resolves.toEqual({ ok: true, id: "re_ok", error: null });
   });
 
   it("retry-after 的寫法:秒數(可以有小數)、HTTP 日期;讀不出來回 null、過去的時間是 0", () => {
@@ -295,7 +326,8 @@ describe("每個請求都帶逾時(AbortSignal.timeout):剩下的額度和 3 秒
   };
   const keyOf = (init?: RequestInit) => (init?.headers as Record<string, string>)["Idempotency-Key"];
 
-  it("逾時 = min(剩下的額度, 3 秒),下限 1 秒;額度用完了,下一封信的請求也有 1 秒;每個請求都帶這個 signal", async () => {
+  // 業主決定(b):逾時改成 min(剩下的額度 + 1 秒, 3 秒),下限 1 秒 —— 一次呼叫的上限一樣 7 秒,快到截止時間的請求多 1 秒可以等到回應
+  it("逾時 = min(剩下的額度 + 1 秒, 3 秒),下限 1 秒;額度用完了,下一封信的請求也有 1 秒;每個請求都帶這個 signal", async () => {
     const clock = { t: 0 };
     const made: { ms: number; signal: AbortSignal }[] = [];
     const impl = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response("{}", { status: 429 }));
@@ -313,11 +345,11 @@ describe("每個請求都帶逾時(AbortSignal.timeout):剩下的額度和 3 秒
     });
     const budget = createRetryBudget(5_000, () => clock.t);
     await send({ ...msg, budget });
-    // 請求在 0、0.7、2.2、4.7 秒送出,剩下 5、4.3、2.8、0.3 秒
-    expect(made.map((m) => m.ms)).toEqual([3_000, 3_000, 2_800, 1_000]);
+    // 請求在 0、0.7、2.2、4.7 秒送出,剩下 5、4.3、2.8、0.3 秒 → 3、3、3(3.8 封頂)、1.3 秒
+    expect(made.map((m) => m.ms)).toEqual([3_000, 3_000, 3_000, 1_300]);
     await send({ ...msg, budget });
-    // 第二封:剩 0.3 秒 → 1 秒;等 0.3 秒後額度用完 → 1 秒,之後不再重試
-    expect(made.map((m) => m.ms).slice(4)).toEqual([1_000, 1_000]);
+    // 第二封:剩 0.3 秒 → 1.3 秒;等 0.3 秒後額度用完 → 1 秒(下限),之後不再重試
+    expect(made.map((m) => m.ms).slice(4)).toEqual([1_300, 1_000]);
     expect(impl).toHaveBeenCalledTimes(6);
     impl.mock.calls.forEach(([, init], i) => expect(init?.signal, `第 ${i + 1} 個請求`).toBe(made[i].signal));
   });
@@ -400,6 +432,7 @@ describe("每個請求都帶逾時(AbortSignal.timeout):剩下的額度和 3 秒
       expect(elapsed).toBeLessThanOrEqual(7_000); // 沒有逾時的話:第一封 7 秒(第 3 次請求在 5 秒送出、7 秒回來)、第二封再 2 秒,共 9 秒
       expect(results.map((r) => r.ok)).toEqual([false, false]);
       expect(results.map((r) => r.error)).toEqual(["Resend 請求逾時(1000 毫秒沒有回應)", "Resend 請求逾時(1000 毫秒沒有回應)"]);
+      expect(results.map((r) => r.maybeDelivered)).toEqual(["unanswered", "unanswered"]); // 最後一次都是逾時(業主決定 a)
       for (const c of resend.calls) expect(c.end - c.start, `${c.key} @${c.start - started}`).toBeLessThanOrEqual(3_000);
       expect(resend.calls.some((c) => c.outcome === "aborted")).toBe(true);
     } finally {
@@ -423,12 +456,12 @@ describe("每個請求都帶逾時(AbortSignal.timeout):剩下的額度和 3 秒
         return r;
       });
       await runUntil(() => elapsed >= 0);
-      // 0 秒送出、3 秒逾時;等 0.7 秒;3.7 秒送出、只剩 1.3 秒 → 5 秒逾時;額度用完,不再重試
-      await expect(pending).resolves.toEqual({ ok: false, id: null, error: "Resend 請求逾時(1300 毫秒沒有回應)" });
-      expect(elapsed).toBe(5_000);
+      // 0 秒送出、3 秒逾時;等 0.7 秒;3.7 秒送出、剩 1.3 秒 + 1 秒 → 6 秒逾時;額度用完,不再重試
+      await expect(pending).resolves.toEqual({ ok: false, id: null, error: "Resend 請求逾時(2300 毫秒沒有回應)", maybeDelivered: "unanswered" });
+      expect(elapsed).toBe(6_000);
       expect(resend.calls.map((c) => [c.start - started, c.end - started, c.outcome])).toEqual([
         [0, 3_000, "aborted"],
-        [3_700, 5_000, "aborted"],
+        [3_700, 6_000, "aborted"],
       ]);
       expect(resend.calls.map((c) => c.key)).toEqual([msg.idempotencyKey, msg.idempotencyKey]);
       expect(retries).toEqual([{ status: null, attempt: 1 }]);

@@ -14,6 +14,8 @@ import {
   type EventContext,
   type EventMailKind,
   type MailOrder,
+  type PlacedMailOrder,
+  type StoreLegal,
 } from "./render.ts";
 
 const ORDER: MailOrder = {
@@ -43,6 +45,17 @@ const CTX: EventContext = {
   // 這筆狀態紀錄的建立時間(PostgREST 回的是微秒格式)
   eventCreatedAt: "2026-10-12T03:00:00.123456+00:00",
 };
+/** 下單確認信每家店的法定資訊(market_stores 的新欄位,migration 20261012110000) */
+const LEGAL: StoreLegal = {
+  legalName: "鮮綠農產有限公司",
+  representative: "王大明",
+  businessAddress: "臺北市中正區測試路 1 號",
+  serviceEmail: "service@example.com",
+  foodRegistrationNo: "A-123456789-00000-0",
+  liabilityInsurance: "富邦產險 保單號碼 0500-123456",
+};
+const asPlaced = (o: MailOrder, legal: Partial<StoreLegal> = {}): PlacedMailOrder => ({ ...o, legal: { ...LEGAL, ...legal } });
+const LOOKUP = "https://app.ifoodmap.ai/market/orders/TOKEN123";
 
 describe("resolveEventMails", () => {
   it("每個狀態寄給誰", () => {
@@ -76,7 +89,7 @@ describe("resolveEventMails", () => {
 });
 
 describe("placedMail", () => {
-  const mail = placedMail({ buyerName: "王<script>小明", orders: [ORDER], lookupUrl: "https://app.ifoodmap.ai/market/orders/TOKEN123" });
+  const mail = placedMail({ buyerName: "王<script>小明", orders: [asPlaced(ORDER)], lookupUrl: LOOKUP });
 
   it("主旨、查詢連結、金額、訂單編號", () => {
     expect(mail.subject).toBe("訂單已送出(共 1 家店)— iFoodmap 食材市集");
@@ -85,6 +98,14 @@ describe("placedMail", () => {
     expect(mail.html).toContain(twd(770));
     expect(mail.html).toContain(formatOrderNo(ORDER.id));
     expect(mail.html).toContain("店家接單後,查詢頁會顯示匯款帳號");
+  });
+
+  // 多了每家店的法定資訊之後:token 照樣只在查詢連結裡(html 的按鈕、text 的「查看訂單」各一次)
+  it("token 只出現在查詢連結裡(html、text 各一次)", () => {
+    for (const body of [mail.html, mail.text]) {
+      expect(body.split("TOKEN123").length - 1).toBe(1);
+      expect(body.split(LOOKUP).length - 1).toBe(1);
+    }
   });
 
   it("使用者填的字都跳脫", () => {
@@ -159,6 +180,19 @@ const EVIL_ORDER: MailOrder = {
   storePhone: evil("S-PHONE"),
   items: [{ product_name: evil("P-NAME"), spec: evil("P-SPEC"), qty: 2, unit_price: 100, line_total: 200 }],
 };
+/** 下單確認信:店家能填的法定資訊欄位,加上一個不適用七日鑑賞期的商品(品名會再出現在不適用的那一句) */
+const EVIL_PLACED: PlacedMailOrder = {
+  ...EVIL_ORDER,
+  items: [{ ...EVIL_ORDER.items[0], withdrawalExempt: true }],
+  legal: {
+    legalName: evil("L-NAME"),
+    representative: evil("L-REP"),
+    businessAddress: evil("L-ADDR"),
+    serviceEmail: evil("L-EMAIL"),
+    foodRegistrationNo: evil("L-FOOD"),
+    liabilityInsurance: evil("L-INS"),
+  },
+};
 const EVIL_CTX: EventContext = {
   ...CTX,
   order: EVIL_ORDER,
@@ -175,7 +209,7 @@ const EVIL_CTX: EventContext = {
 describe("店家、買家能控制的欄位放進 HTML 前一律跳脫", () => {
   // 每一封信的 HTML 會印出哪些欄位(新訂單信只放收件縣市、不放地址;地址任何一封都不出現)
   const RENDERED: Record<string, string[]> = {
-    placed: ["S-NAME", "S-PHONE", "P-NAME", "P-SPEC", "B-NAME"],
+    placed: ["S-NAME", "S-PHONE", "P-NAME", "P-SPEC", "B-NAME", "L-NAME", "L-REP", "L-ADDR", "L-EMAIL", "L-FOOD", "L-INS"],
     supplier_new: ["B-NAME", "B-CITY", "P-NAME", "P-SPEC", "B-NOTE"],
     consumer_confirmed: ["S-NAME", "S-PHONE", "P-NAME", "P-SPEC"],
     consumer_awaiting_payment: ["S-NAME", "S-PHONE", "X-BANK", "X-ACCOUNT", "P-NAME", "P-SPEC"],
@@ -185,7 +219,7 @@ describe("店家、買家能控制的欄位放進 HTML 前一律跳脫", () => {
     supplier_cancelled_by_platform: ["B-NAME", "R-REASON"],
   };
   const mails = () => [
-    ["placed", placedMail({ buyerName: evil("B-NAME"), orders: [EVIL_ORDER], lookupUrl: "https://app.ifoodmap.ai/market/orders/TOKEN123" })] as const,
+    ["placed", placedMail({ buyerName: evil("B-NAME"), orders: [EVIL_PLACED], lookupUrl: LOOKUP })] as const,
     ...(Object.keys(RENDERED).filter((k) => k !== "placed") as EventMailKind[]).map((k) => [k, renderEventMail(k, EVIL_CTX)] as const),
   ];
 
@@ -206,6 +240,28 @@ describe("店家、買家能控制的欄位放進 HTML 前一律跳脫", () => {
     expect(m.html).toContain(`您在「${htmlEscaped(evil("S-NAME"))}」的訂單`);
     expect(m.html).toContain(`請直接聯絡店家(店家電話:${htmlEscaped(evil("S-PHONE"))})。iFoodmap 平台不經手款項。`);
     expect(m.text).toContain(`請直接聯絡店家(店家電話:${evil("S-PHONE")})。iFoodmap 平台不經手款項。`);
+  });
+
+  // 2026-10-12(法規查證 M7):下單確認信每家店多一段法定資訊 —— 店家能填的新欄位都要跳脫,各自在自己的標籤後面
+  it("下單確認信的法定資訊:每個欄位(含不適用七日鑑賞期的品名)都以跳脫後的樣子出現在自己的標籤後面", () => {
+    const m = placedMail({ buyerName: "王小明", orders: [EVIL_PLACED], lookupUrl: LOOKUP });
+    expect(m.html).not.toContain('<a href="https://evil');
+    expect(m.html).not.toContain("<img");
+    const LABELS: [string, string][] = [
+      ["登記名稱", "L-NAME"],
+      ["負責人", "L-REP"],
+      ["營業所地址", "L-ADDR"],
+      ["店家電話", "S-PHONE"],
+      ["客服 Email", "L-EMAIL"],
+      ["食品業者登錄字號", "L-FOOD"],
+      ["產品責任險", "L-INS"],
+    ];
+    for (const [label, marker] of LABELS) {
+      expect(m.html, label).toContain(`${label}:${htmlEscaped(evil(marker))}`);
+      expect(m.text.split("\n"), label).toContain(`${label}:${evil(marker)}`);
+    }
+    expect(m.html).toContain(`以下商品不適用七日鑑賞期:${htmlEscaped(evil("P-NAME"))}。`);
+    expect(m.text.split("\n")).toContain(`以下商品不適用七日鑑賞期:${evil("P-NAME")}。`);
   });
 
   it("純文字版維持原樣(不做 HTML 跳脫)", () => {
@@ -243,7 +299,7 @@ describe("金額:每個數字都在對的標籤旁(html 與 text)", () => {
   ];
   const TEXT_ROWS = ["- 挪威鮭魚(200g/片)× 3:NT$ 615", "- 白蝦仁(300g/盒)× 1:NT$ 619", "小計:NT$ 1,234", "運費:NT$ 150", "總額:NT$ 1,384"];
   const tableMails = () => [
-    ["placed", placedMail({ buyerName: "王小明", orders: [MONEY], lookupUrl: "https://app.ifoodmap.ai/market/orders/TOKEN123" })] as const,
+    ["placed", placedMail({ buyerName: "王小明", orders: [asPlaced(MONEY)], lookupUrl: LOOKUP })] as const,
     ...(["supplier_new", "consumer_confirmed", "consumer_awaiting_payment"] as const).map((k) => [k, renderEventMail(k, { ...CTX, order: MONEY })] as const),
   ];
 
@@ -291,7 +347,7 @@ describe("主旨只有一行(店名等變數去掉 CR / LF / 控制字元 / U+20
 
   it("每一種信的主旨都沒有控制字元、換行類分隔字元或連續空白", () => {
     const subjects = [
-      placedMail({ buyerName: NASTY_CF, orders: [{ ...order, storeName: NASTY_CF }], lookupUrl: "https://app.ifoodmap.ai/market/orders/TOKEN123" }).subject,
+      placedMail({ buyerName: NASTY_CF, orders: [asPlaced({ ...order, storeName: NASTY_CF })], lookupUrl: LOOKUP }).subject,
       ...(
         [
           "supplier_new",
@@ -316,7 +372,7 @@ describe("給消費者的信附店家電話(不給店家的 contact_email)", () 
   const CONSUMER = ["consumer_confirmed", "consumer_awaiting_payment", "consumer_rejected", "consumer_shipped", "consumer_cancelled"] as const;
 
   it("有電話:下單確認與每一封給消費者的狀態信都有「店家電話」;寄給店家的信不放", () => {
-    const placed = placedMail({ buyerName: "王小明", orders: [ORDER], lookupUrl: "https://app.ifoodmap.ai/market/orders/TOKEN123" });
+    const placed = placedMail({ buyerName: "王小明", orders: [asPlaced(ORDER)], lookupUrl: LOOKUP });
     for (const m of [placed, ...CONSUMER.map((k) => renderEventMail(k, CTX))]) {
       expect(m.html, m.subject).toContain("店家電話:02-2345-6789");
       expect(m.text, m.subject).toContain("店家電話:02-2345-6789");
@@ -324,13 +380,143 @@ describe("給消費者的信附店家電話(不給店家的 contact_email)", () 
     for (const k of ["supplier_new", "supplier_cancelled_by_platform"] as const) expect(renderEventMail(k, CTX).html, k).not.toContain("店家電話");
   });
 
-  it("店家沒有填電話:不寫這一行", () => {
+  it("店家沒有填電話:狀態信不寫這一行;下單確認信的店家資訊寫「(店家尚未提供)」(電話是法定資訊)", () => {
     const order = { ...ORDER, storePhone: "" };
-    const placed = placedMail({ buyerName: "王小明", orders: [order], lookupUrl: "https://app.ifoodmap.ai/market/orders/TOKEN123" });
-    for (const m of [placed, ...CONSUMER.map((k) => renderEventMail(k, { ...CTX, order }))]) {
+    for (const m of CONSUMER.map((k) => renderEventMail(k, { ...CTX, order }))) {
       expect(m.html, m.subject).not.toContain("店家電話");
       expect(m.text, m.subject).not.toContain("店家電話");
     }
+    const placed = placedMail({ buyerName: "王小明", orders: [asPlaced(order)], lookupUrl: LOOKUP });
+    for (const body of [placed.html, placed.text]) {
+      expect(body).toContain("店家電話:(店家尚未提供)");
+      expect(body.split("店家電話").length - 1).toBe(1); // 只在店家資訊裡出現一次(原本付款方式後面那一行併進店家資訊)
+    }
+  });
+});
+
+// ---------------------------------------------------------------------
+// 2026-10-12 業主決定(法規查證 M7、5.2):下單確認信就是消保法 §18 要求的書面 ——
+// 每家店加一段:店家資訊、出貨天數(轉帳從確認收款起算)、七日鑑賞期(不適用的品項列品名)、申訴管道
+// ---------------------------------------------------------------------
+
+describe("下單確認信:每家店的法定資訊(消保法 §18)", () => {
+  const placedOf = (...orders: PlacedMailOrder[]) => placedMail({ buyerName: "王小明", orders, lookupUrl: LOOKUP });
+  const WITHDRAWAL = "收到商品隔天起 7 天內可以解除契約(退貨),運費由店家負擔。";
+  const COMPLAINT = "申訴:請先聯絡店家;聯絡不到時,寫信到 ifoodmaptw@gmail.com。";
+
+  it("店家資訊:登記名稱、負責人、營業所地址、店家電話、客服 Email、食品業者登錄字號、產品責任險(html 與 text)", () => {
+    const m = placedOf(asPlaced(ORDER));
+    for (const line of [
+      "店家資訊",
+      "登記名稱:鮮綠農產有限公司",
+      "負責人:王大明",
+      "營業所地址:臺北市中正區測試路 1 號",
+      "店家電話:02-2345-6789",
+      "客服 Email:service@example.com",
+      "食品業者登錄字號:A-123456789-00000-0",
+      "產品責任險:富邦產險 保單號碼 0500-123456",
+    ]) {
+      expect(m.html, line).toContain(line);
+      expect(m.text.split("\n"), line).toContain(line);
+    }
+  });
+
+  it("食品業者登錄字號、產品責任險沒填就不列;其他(含電話)沒填寫「(店家尚未提供)」", () => {
+    const m = placedOf(
+      asPlaced({ ...ORDER, storePhone: " " }, { legalName: "", representative: " ", businessAddress: "", serviceEmail: "", foodRegistrationNo: "", liabilityInsurance: "  " }),
+    );
+    for (const body of [m.html, m.text]) {
+      for (const label of ["登記名稱", "負責人", "營業所地址", "店家電話", "客服 Email"]) expect(body, label).toContain(`${label}:(店家尚未提供)`);
+      expect(body).not.toContain("食品業者登錄字號");
+      expect(body).not.toContain("產品責任險");
+    }
+  });
+
+  it.each([
+    ["transfer", 2, "出貨天數:店家確認收款後 2 個工作天內出貨。"],
+    ["cod", 2, "出貨天數:店家接單後 2 個工作天內出貨。"],
+    ["transfer", 0, "出貨天數:店家確認收款後當天出貨。"],
+    ["cod", 0, "出貨天數:店家接單後當天出貨。"],
+    ["transfer", null, "出貨天數:(店家尚未提供)"],
+  ] as const)("出貨天數:%s、%s 天 → %s(轉帳從確認收款起算)", (paymentMethod, shipDays, line) => {
+    const m = placedOf(asPlaced({ ...ORDER, paymentMethod, shipDays }));
+    expect(m.html).toContain(line);
+    expect(m.text.split("\n")).toContain(line);
+  });
+
+  it("七日鑑賞期:那一句一定有;這張單有不適用的商品才列品名(同名只列一次,沒標記的當成適用)", () => {
+    const none = placedOf(asPlaced(ORDER));
+    for (const body of [none.html, none.text]) {
+      expect(body).toContain(WITHDRAWAL);
+      expect(body).not.toContain("不適用七日鑑賞期");
+    }
+    const items = [
+      { product_name: "有機高麗菜", spec: "1 顆", qty: 1, unit_price: 100, line_total: 100, withdrawalExempt: true },
+      { product_name: "有機高麗菜", spec: "半顆", qty: 1, unit_price: 60, line_total: 60, withdrawalExempt: true },
+      { product_name: "鮮奶", spec: "936ml", qty: 1, unit_price: 95, line_total: 95, withdrawalExempt: true },
+      { product_name: "糙米", spec: "2kg", qty: 1, unit_price: 300, line_total: 300, withdrawalExempt: false },
+      { product_name: "海鹽", spec: "500g", qty: 1, unit_price: 120, line_total: 120 }, // 沒讀到標記 → 適用
+    ];
+    const some = placedOf(asPlaced({ ...ORDER, items }));
+    expect(some.html).toContain(WITHDRAWAL);
+    expect(some.html).toContain("以下商品不適用七日鑑賞期:有機高麗菜、鮮奶。");
+    expect(some.text.split("\n")).toContain(WITHDRAWAL);
+    expect(some.text.split("\n")).toContain("以下商品不適用七日鑑賞期:有機高麗菜、鮮奶。");
+  });
+
+  it("申訴:請先聯絡店家;聯絡不到時,寫信到 ifoodmaptw@gmail.com", () => {
+    const m = placedOf(asPlaced(ORDER));
+    expect(m.html).toContain(COMPLAINT);
+    expect(m.text.split("\n")).toContain(COMPLAINT);
+  });
+
+  it("兩家店:各自一段,店家資訊、出貨天數、不適用的品項不會混到別家", () => {
+    const exempt = { product_name: "鮮奶", spec: "936ml", qty: 1, unit_price: 95, line_total: 95, withdrawalExempt: true };
+    const plain = { product_name: "糙米", spec: "2kg", qty: 1, unit_price: 300, line_total: 300, withdrawalExempt: false };
+    const a = asPlaced(
+      { ...ORDER, id: "a9600000-0000-4000-8000-0000000000a1", storeName: "A 店", storePhone: "02-1111-1111", paymentMethod: "cod", items: [exempt] },
+      { legalName: "A 農產有限公司", serviceEmail: "a@example.com", foodRegistrationNo: "" },
+    );
+    const b = asPlaced(
+      { ...ORDER, id: "a9600000-0000-4000-8000-0000000000b1", storeName: "B 店", storePhone: "02-2222-2222", paymentMethod: "transfer", shipDays: 3, items: [plain] },
+      { legalName: "B 商行", serviceEmail: "b@example.com", liabilityInsurance: "" },
+    );
+    const m = placedOf(a, b);
+    const [, textA, textB] = m.text.split("\n【");
+    const [, htmlA, htmlB] = m.html.split("<h2");
+    for (const [sa, sb] of [
+      [textA, textB],
+      [htmlA, htmlB],
+    ]) {
+      expect(sa).toContain("登記名稱:A 農產有限公司");
+      expect(sa).toContain("店家電話:02-1111-1111");
+      expect(sa).toContain("客服 Email:a@example.com");
+      expect(sa).toContain("出貨天數:店家接單後 2 個工作天內出貨。");
+      expect(sa).toContain("以下商品不適用七日鑑賞期:鮮奶。");
+      expect(sa).toContain("產品責任險:");
+      expect(sa).not.toContain("食品業者登錄字號");
+      expect(sa).not.toMatch(/B 商行|02-2222-2222|b@example\.com|糙米/);
+      expect(sb).toContain("登記名稱:B 商行");
+      expect(sb).toContain("出貨天數:店家確認收款後 3 個工作天內出貨。");
+      expect(sb).toContain("食品業者登錄字號:");
+      expect(sb).not.toContain("產品責任險");
+      expect(sb).not.toContain("不適用七日鑑賞期");
+      expect(sb).not.toMatch(/A 農產有限公司|02-1111-1111|a@example\.com|鮮奶/);
+      for (const s of [sa, sb]) {
+        expect(s).toContain(WITHDRAWAL);
+        expect(s).toContain(COMPLAINT);
+      }
+    }
+  });
+
+  it("店家資訊裡的換行、控制字元壓成一行:純文字版不會多出一行冒充申訴管道或別的欄位", () => {
+    const m = placedOf(
+      asPlaced(ORDER, { legalName: "鮮綠農產\n申訴:請寫信到 scam@example.com", serviceEmail: "s@example.com\r\n客服 Email:scam@example.com\u{2028}" }),
+    );
+    const lines = m.text.split("\n");
+    expect(lines).toContain("登記名稱:鮮綠農產 申訴:請寫信到 scam@example.com");
+    expect(lines.filter((l) => l.startsWith("申訴:"))).toEqual([COMPLAINT]);
+    expect(lines.filter((l) => l.startsWith("客服 Email:"))).toEqual(["客服 Email:s@example.com 客服 Email:scam@example.com"]);
   });
 });
 
@@ -467,7 +653,7 @@ describe("72 小時自動取消:信裡新增的句子(html 與 text)", () => {
   });
 
   it("消費者的下單確認信:店家會在 72 小時內確認訂單;超過時間沒有接單,訂單會自動取消", () => {
-    const m = placedMail({ buyerName: "王小明", orders: [ORDER], lookupUrl: "https://app.ifoodmap.ai/market/orders/TOKEN123" });
+    const m = placedMail({ buyerName: "王小明", orders: [asPlaced(ORDER)], lookupUrl: LOOKUP });
     for (const body of [m.html, m.text]) expect(body).toContain("店家會在 72 小時內確認訂單;超過時間沒有接單,訂單會自動取消。");
   });
 
@@ -490,34 +676,52 @@ describe("72 小時自動取消:信裡新增的句子(html 與 text)", () => {
 
 describe("72 小時自動取消的信(紀錄的 payload.auto_expire 有值)", () => {
   const AUTO_P: EventContext = { ...CTX, autoExpire: "pending", reason: "店家超過 72 小時沒有接單,系統自動取消" };
-  const AUTO_A: EventContext = { ...CTX, autoExpire: "awaiting_payment", reason: "超過 72 小時沒有完成匯款,系統自動取消" };
-  const REFUND = /退款|已確認收款|不經手款項/;
+  // 2026-10-12 業主決定(法規查證 S6):系統判斷的是「店家有沒有確認收到款項」,資料庫的原因跟著改
+  const AUTO_A: EventContext = { ...CTX, autoExpire: "awaiting_payment", reason: "超過 72 小時店家未確認收到款項,系統自動取消" };
+  /** 已收款那種取消信的退款句(自動取消的單一定還沒收款,不能出現) */
+  const PAID_REFUND = /已確認收款|退款由店家處理|不經手款項/;
 
-  it("消費者:pending → 店家超過 72 小時沒有接單,訂單已自動取消(不需要付款)", () => {
+  it("消費者:pending → 店家超過 72 小時沒有接單,訂單已自動取消;您不需要付款", () => {
     const m = renderEventMail("consumer_cancelled", AUTO_P);
     expect(m.subject).toBe(`訂單已自動取消(店家逾時未接單)— 零售訂單 ${formatOrderNo(ORDER.id)}`);
     for (const body of [m.html, m.text]) {
       expect(body).toContain("店家超過 72 小時沒有接單,訂單已自動取消。");
-      expect(body).toContain("這張訂單不會成立,您不需要付款。");
+      expect(body).toContain("您不需要付款。");
+      expect(body).toContain("店家電話:02-2345-6789");
+      expect(body).not.toMatch(/退款/);
+    }
+  });
+
+  // S6:系統判斷的是店家有沒有確認收到款項,不是買家有沒有匯款(買家可能已經匯了)
+  it("消費者:awaiting_payment → 因為店家在期限內沒有確認收到您的匯款,訂單已自動取消;已經匯款請聯絡店家退款", () => {
+    const m = renderEventMail("consumer_cancelled", AUTO_A);
+    expect(m.subject).toBe(`訂單已自動取消(逾時未確認收款)— 零售訂單 ${formatOrderNo(ORDER.id)}`);
+    for (const body of [m.html, m.text]) {
+      expect(body).toContain("因為店家在期限內沒有確認收到您的匯款,訂單已自動取消。");
+      expect(body).toContain("不需要再匯款;如果您已經匯款,請聯絡店家退款並保留匯款證明。");
       expect(body).toContain("店家電話:02-2345-6789");
     }
+    // 舊的說法(把原因說成買家沒匯款)不再出現
+    expect(`${m.subject}\n${m.html}\n${m.text}`).not.toMatch(/沒有完成匯款|未完成匯款/);
   });
 
-  it("消費者:awaiting_payment → 因為超過 72 小時沒有完成匯款,訂單已自動取消", () => {
-    const m = renderEventMail("consumer_cancelled", AUTO_A);
-    expect(m.subject).toBe(`訂單已自動取消(逾時未完成匯款)— 零售訂單 ${formatOrderNo(ORDER.id)}`);
-    for (const body of [m.html, m.text]) {
-      expect(body).toContain("因為超過 72 小時沒有完成匯款,訂單已自動取消。");
-      expect(body).toContain("這張訂單不會成立,不需要再匯款;如果您已經匯款,請直接聯絡店家。");
+  it("兩種自動取消信都沒有「這張訂單不會成立」(接單時契約已經成立),改寫訂單已取消", () => {
+    for (const c of [AUTO_P, AUTO_A]) {
+      for (const k of ["consumer_cancelled", "supplier_cancelled_by_platform"] as const) {
+        const m = renderEventMail(k, c);
+        expect(`${m.subject}\n${m.html}\n${m.text}`, `${k} ${c.autoExpire}`).not.toContain("不會成立");
+      }
+      const m = renderEventMail("consumer_cancelled", c);
+      for (const body of [m.html, m.text]) expect(body, c.autoExpire ?? "").toContain("訂單已自動取消。");
     }
   });
 
-  it("消費者的自動取消信:不寫成店家取消、沒有退款句(就算資料說已收款也一樣)", () => {
+  it("消費者的自動取消信:不寫成店家取消、沒有已收款的退款句(就算資料說已收款也一樣)", () => {
     for (const c of [AUTO_P, AUTO_A, { ...AUTO_A, paid: true }]) {
       const m = renderEventMail("consumer_cancelled", c);
       const all = `${m.subject}\n${m.html}\n${m.text}`;
       expect(all, `${c.autoExpire} paid=${c.paid}`).not.toContain("店家取消");
-      expect(all, `${c.autoExpire} paid=${c.paid}`).not.toMatch(REFUND);
+      expect(all, `${c.autoExpire} paid=${c.paid}`).not.toMatch(PAID_REFUND);
     }
   });
 
@@ -530,11 +734,15 @@ describe("72 小時自動取消的信(紀錄的 payload.auto_expire 有值)", ()
         expect(body).toContain("系統因逾時自動取消");
         expect(body).toContain("訂單裡的商品庫存已經自動補回(只限有設定庫存的商品)。");
         expect(body).toContain("請不要出貨");
-        expect(body).not.toMatch(REFUND);
+        expect(body).not.toMatch(/退款|已確認收款|不經手款項/);
       }
     }
-    for (const body of [p.html, p.text]) expect(body).toContain("這張訂單超過 72 小時沒有接單");
-    for (const body of [a.html, a.text]) expect(body).toContain("消費者超過 72 小時沒有完成匯款");
+    for (const body of [p.html, p.text]) expect(body).toContain("這張訂單超過 72 小時沒有接單,系統因逾時自動取消。");
+    // S6:給店家的寫法也改成「店家沒有確認收到款項」
+    for (const body of [a.html, a.text]) {
+      expect(body).toContain("店家超過 72 小時沒有確認收到款項,系統因逾時自動取消。");
+      expect(body).not.toMatch(/沒有完成匯款/);
+    }
   });
 
   it("主旨分得出是自動取消;一般取消的主旨與內容不變", () => {

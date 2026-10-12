@@ -20,10 +20,11 @@ import {
   type MailOrder,
   orderLabel,
   placedMail,
+  type PlacedMailOrder,
   renderEventMail,
   resolveEventMails,
 } from "./render.ts";
-import { createRetryBudget, type MarketSendMail, type RetryBudget, TOTAL_WAIT_CAP_MS } from "./send.ts";
+import { createRetryBudget, type MarketSendMail, type MaybeDelivered, type RetryBudget, TOTAL_WAIT_CAP_MS } from "./send.ts";
 
 export interface MarketNotifyDeps {
   db: Db;
@@ -43,10 +44,14 @@ interface RequestDeps extends MarketNotifyDeps {
 }
 
 /**
- * 連線失敗、請求逾時、502、504 之後重試,Resend 回 409:同一個 key 的第一次請求可能還在處理、其實已經寄出
- * (send.ts 的 maybeDelivered)
+ * 寄信失敗、但可能已經寄出時,notifications 的 message 結尾加的註記(send.ts 的 maybeDelivered;兩種分開寫):
+ *   conflict:連線失敗、請求逾時、502、504 之後重試,Resend 回 409 —— 同一個 key 的第一次請求可能還在處理、其實已經寄出
+ *   unanswered:最後一次請求本身是逾時、連線失敗、502 或 504 —— Resend 可能照樣處理完、寄出
  */
-const MAYBE_DELIVERED_NOTE = "(重試時 Resend 回 409,第一次可能已經寄出,人工補寄前請先確認收件人沒收到)";
+const MAYBE_DELIVERED_NOTE: Record<MaybeDelivered, string> = {
+  conflict: "(重試時 Resend 回 409,第一次可能已經寄出,人工補寄前請先確認收件人沒收到)",
+  unanswered: "(最後一次請求逾時或中斷,Resend 可能已經寄出,人工補寄前請先確認收件人沒收到)",
+};
 
 // 讀資料用的欄位(handler.test.ts 會對照 migration 的 CREATE TABLE,打錯字測試就會失敗;測試的假資料庫也照這些字串只回傳選到的欄位)
 export const ORDER_COLUMNS =
@@ -56,6 +61,13 @@ export const EVENT_COLUMNS = "id, order_id, from_status, to_status, actor_role, 
 export const SUPPLIER_COLUMNS = "name, contact_email, phone";
 export const STORE_COLUMNS = "ship_days";
 export const TRANSFER_COLUMNS = "transfer_info";
+/**
+ * 下單確認信(消保法 §18 的書面)才讀的欄位:店家法定資訊與明細的「不適用七日鑑賞期」快照(migration 20261012110000)。
+ * 🔴 狀態信不讀這些欄位 —— 部署時 20261012110000 要先套用到正式庫,再部署這版 market-notify;
+ *    順序反過來的話只有下單確認信會失敗(select 不存在的欄位回錯誤 → 500),狀態信照樣寄得出去。
+ */
+export const STORE_LEGAL_COLUMNS = "legal_name, representative, business_address, service_email, food_registration_no, liability_insurance";
+export const ITEM_EXEMPT_COLUMNS = "withdrawal_exempt";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -131,13 +143,16 @@ const one = async (q: PromiseLike<DbResult>): Promise<Row | null> => {
   return (data ?? null) as Row | null;
 };
 
-/** 訂單 → 信裡要用的樣子(店名、店家電話、明細、出貨天數),順便回傳供應商資料(contact_email 只用來寄給店家) */
-const loadMailOrder = async (db: Db, order: Row): Promise<{ mail: MailOrder; supplier: Row | null }> => {
-  const [supplier, store, items] = await Promise.all([
+/** 讀一張訂單的供應商、店家設定、明細(店家設定與明細讀哪些欄位由呼叫的人決定) */
+const readOrderParts = (db: Db, order: Row, storeColumns: string, itemColumns: string) =>
+  Promise.all([
     one(db.from("suppliers").select(SUPPLIER_COLUMNS).eq("id", order.supplier_id).maybeSingle()),
-    one(db.from("market_stores").select(STORE_COLUMNS).eq("supplier_id", order.supplier_id).maybeSingle()),
-    many(db.from("market_order_items").select(ITEM_COLUMNS).eq("order_id", order.id)),
+    one(db.from("market_stores").select(storeColumns).eq("supplier_id", order.supplier_id).maybeSingle()),
+    many(db.from("market_order_items").select(itemColumns).eq("order_id", order.id)),
   ]);
+
+/** 訂單 → 信裡要用的樣子(店名、店家電話、明細、出貨天數) */
+const toMailOrder = (order: Row, supplier: Row | null, store: Row | null, items: Row[]): MailOrder => {
   const mailItems: MailItem[] = items
     .map((i) => ({
       product_name: str(i.product_name),
@@ -145,20 +160,46 @@ const loadMailOrder = async (db: Db, order: Row): Promise<{ mail: MailOrder; sup
       qty: Number(i.qty),
       unit_price: Number(i.unit_price),
       line_total: Number(i.line_total),
+      // 只有下單確認讀這個欄位;沒讀(狀態信)或不是 true 都當成適用
+      withdrawalExempt: i.withdrawal_exempt === true,
     }))
     .sort((a, b) => a.product_name.localeCompare(b.product_name, "zh-Hant"));
   return {
-    supplier,
-    mail: {
-      id: str(order.id),
-      storeName: str(supplier?.name) || "店家",
-      storePhone: str(supplier?.phone).trim(),
-      paymentMethod: order.payment_method === "transfer" ? "transfer" : "cod",
-      subtotal: Number(order.subtotal),
-      shippingFee: Number(order.shipping_fee),
-      total: Number(order.total),
-      items: mailItems,
-      shipDays: store?.ship_days === null || store?.ship_days === undefined ? null : Number(store.ship_days),
+    id: str(order.id),
+    storeName: str(supplier?.name) || "店家",
+    storePhone: str(supplier?.phone).trim(),
+    paymentMethod: order.payment_method === "transfer" ? "transfer" : "cod",
+    subtotal: Number(order.subtotal),
+    shippingFee: Number(order.shipping_fee),
+    total: Number(order.total),
+    items: mailItems,
+    shipDays: store?.ship_days === null || store?.ship_days === undefined ? null : Number(store.ship_days),
+  };
+};
+
+/** 狀態信用:順便回傳供應商資料(contact_email 只用來寄給店家) */
+const loadMailOrder = async (db: Db, order: Row): Promise<{ mail: MailOrder; supplier: Row | null }> => {
+  const [supplier, store, items] = await readOrderParts(db, order, STORE_COLUMNS, ITEM_COLUMNS);
+  return { supplier, mail: toMailOrder(order, supplier, store, items) };
+};
+
+/** 下單確認信用:多讀店家法定資訊與明細的不適用七日鑑賞期(STORE_LEGAL_COLUMNS、ITEM_EXEMPT_COLUMNS) */
+const loadPlacedOrder = async (db: Db, order: Row): Promise<PlacedMailOrder> => {
+  const [supplier, store, items] = await readOrderParts(
+    db,
+    order,
+    `${STORE_COLUMNS}, ${STORE_LEGAL_COLUMNS}`,
+    `${ITEM_COLUMNS}, ${ITEM_EXEMPT_COLUMNS}`,
+  );
+  return {
+    ...toMailOrder(order, supplier, store, items),
+    legal: {
+      legalName: str(store?.legal_name),
+      representative: str(store?.representative),
+      businessAddress: str(store?.business_address),
+      serviceEmail: str(store?.service_email),
+      foodRegistrationNo: str(store?.food_registration_no),
+      liabilityInsurance: str(store?.liability_insurance),
     },
   };
 };
@@ -249,7 +290,7 @@ const deliver = async (
       recipient: d.to,
       channel: "email",
       title: d.subject,
-      message: logMessage + (forwarded ? `(測試轉寄,原收件人:${original})` : "") + (!r.ok && r.maybeDelivered ? MAYBE_DELIVERED_NOTE : ""),
+      message: logMessage + (forwarded ? `(測試轉寄,原收件人:${original})` : "") + (!r.ok && r.maybeDelivered ? MAYBE_DELIVERED_NOTE[r.maybeDelivered] : ""),
       status: r.ok ? "sent" : "failed",
       sent_at: r.ok ? new Date().toISOString() : null,
     });
@@ -278,8 +319,9 @@ const handlePlaced = async (deps: RequestDeps, live: boolean, body: Row): Promis
   const first = orders[0];
   const email = str(first.buyer_email);
 
-  const loaded = await Promise.all(orders.map((o) => loadMailOrder(deps.db, o)));
-  const mailOrders = loaded.map((l) => l.mail).sort((a, b) => a.storeName.localeCompare(b.storeName, "zh-Hant"));
+  // 每家店一段法定資訊(消保法 §18:下單確認信就是書面)
+  const loaded = await Promise.all(orders.map((o) => loadPlacedOrder(deps.db, o)));
+  const mailOrders = loaded.sort((a, b) => a.storeName.localeCompare(b.storeName, "zh-Hant"));
   const mail = placedMail({
     buyerName: str(first.buyer_name),
     orders: mailOrders,

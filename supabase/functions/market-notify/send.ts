@@ -14,10 +14,13 @@
 //      為什麼要重試:Resend 預設每秒只收 2 個請求,一次結帳 3 家店會同時送出 1 封下單確認 + 3 封新訂單信;
 //      Resend 的限速以秒計算,等 1–2 秒就夠讓 4 封信都寄出。
 //   3. 每個請求都帶 AbortSignal.timeout:截止時間只管「等多久再重試」,管不到已經送出、還在等回應的請求。
-//      逾時取「剩下的額度」和 3 秒中較小的,下限 1 秒(額度用完了,還沒送過的信也有一次機會);送出請求到讀完回應內文都算在內。
+//      逾時取「剩下的額度 + 1 秒」和 3 秒中較小的,下限 1 秒(額度用完了,還沒送過的信也有一次機會);送出請求到讀完回應內文都算在內。
 //      逾時算連線失敗,照上面的規則決定要不要重試,也受同一個截止時間限制。
-//      一次呼叫最多寄 2 封(取消紀錄的消費者 + 店家):第一封最後一次重試最多超過截止時間 1 秒、第二封最多再 1 秒,
+//      一次呼叫最多寄 2 封(取消紀錄的消費者 + 店家):截止時間前送出的請求最多超過截止時間 1 秒、之後才送的請求最多 1 秒,
 //      整次呼叫(從 handler 收到請求算起)最多 7 秒加上寫 notifications —— Resend 很慢時也在 pg_net 的 8 秒以內。
+//      多給的 1 秒:快到截止時間才送出的請求(Resend 每個請求 1–2 秒時)多半等得到回應,不會被中止、Resend 卻照樣寄出。
+//   4. 最後一次請求本身是逾時、連線失敗、502 或 504 而失敗:Resend 可能照樣處理完、寄出 → 結果標 maybeDelivered: "unanswered"
+//      (跟上面 409 那種 "conflict" 分開,handler 各寫一句註記)。
 // 沒有 Deno 相依,vitest 直接測(send.test.ts);等待用注入的 sleep、逾時可以注入 timeoutSignal,測試不會真的等。
 import { createResendSender, type SendMail, type SendResult } from "../_shared/supplier-mail.ts";
 
@@ -44,10 +47,12 @@ export type MarketMailMessage = Parameters<SendMail>[0] & {
 };
 
 /**
- * maybeDelivered:連線失敗、請求逾時、502、504 之後重試,Resend 回 409(同一個 key 的第一次請求還在處理)——
- * 第一次可能已經寄出
+ * 寄信失敗、但這封信可能已經寄出(人工補寄前要先確認收件人沒收到):
+ *   "conflict":連線失敗、請求逾時、502、504 之後重試,Resend 回 409(同一個 key 的第一次請求還在處理)
+ *   "unanswered":最後一次請求本身是逾時、連線失敗、502 或 504(Resend 可能照樣處理完、寄出)
  */
-export type MarketSendResult = SendResult & { maybeDelivered?: true };
+export type MaybeDelivered = "conflict" | "unanswered";
+export type MarketSendResult = SendResult & { maybeDelivered?: MaybeDelivered };
 export type MarketSendMail = (msg: MarketMailMessage) => Promise<MarketSendResult>;
 
 /** 最多重試幾次(不含第一次) */
@@ -72,10 +77,12 @@ export const createRetryBudget = (totalMs: number = TOTAL_WAIT_CAP_MS, now: () =
 export const REQUEST_TIMEOUT_CAP_MS = 3_000;
 /** 每個請求至少給多久:額度快用完(甚至用完)時,這個請求也有機會等到回應 */
 export const REQUEST_TIMEOUT_FLOOR_MS = 1_000;
+/** 截止時間前送出的請求,最多可以等到截止時間之後多久 */
+export const REQUEST_TIMEOUT_GRACE_MS = 1_000;
 
-/** 這個請求的逾時:剩下的額度和 3 秒取小的,下限 1 秒 */
+/** 這個請求的逾時:「剩下的額度 + 1 秒」和 3 秒取小的,下限 1 秒 */
 export const requestTimeoutMs = (remainingMs: number): number =>
-  Math.max(REQUEST_TIMEOUT_FLOOR_MS, Math.min(remainingMs, REQUEST_TIMEOUT_CAP_MS));
+  Math.max(REQUEST_TIMEOUT_FLOOR_MS, Math.min(remainingMs + REQUEST_TIMEOUT_GRACE_MS, REQUEST_TIMEOUT_CAP_MS));
 
 export interface MarketSenderOptions {
   /** 等待(測試注入假的,不會真的等);預設 setTimeout */
@@ -117,6 +124,8 @@ export const createMarketResendSender =
     // 之前的請求可能還在 Resend 那邊處理(連線失敗、逾時、502、504):之後同一個 key 回 409,第一次可能已經寄出
     let maybeInFlight = false;
     let conflictAfterFailure = false;
+    // 最後一次請求本身是逾時、連線失敗、502 或 504:Resend 可能照樣處理完、寄出
+    let lastUnanswered = false;
 
     const fetchWithRetry = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       // createResendSender 送出的 headers 是一般物件(Authorization、Content-Type),在這裡補上 Idempotency-Key;每次重試都一樣
@@ -139,8 +148,12 @@ export const createMarketResendSender =
         const remaining = shared.remainingMs();
         if (!retryable || retry >= MAX_RETRIES || remaining <= 0) {
           // 不重試了:回應交給 createResendSender 照原本的方式判斷(失敗就是 Resend <狀態碼>: …);例外也照原本的方式處理
-          if (res === null) throw failure;
+          if (res === null) {
+            lastUnanswered = true;
+            throw failure;
+          }
           if (res.status === 409 && maybeInFlight) conflictAfterFailure = true;
+          if (MAYBE_IN_FLIGHT_STATUSES.includes(res.status)) lastUnanswered = true;
           return res;
         }
         if (res === null || MAYBE_IN_FLIGHT_STATUSES.includes(res.status)) maybeInFlight = true;
@@ -156,5 +169,8 @@ export const createMarketResendSender =
     };
 
     const result = await createResendSender(apiKey, fetchWithRetry)(msg);
-    return !result.ok && conflictAfterFailure ? { ...result, maybeDelivered: true } : result;
+    if (result.ok) return result;
+    if (conflictAfterFailure) return { ...result, maybeDelivered: "conflict" };
+    if (lastUnanswered) return { ...result, maybeDelivered: "unanswered" };
+    return result;
   };

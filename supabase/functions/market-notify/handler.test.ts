@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { FakeDb, type FakeDbOptions, type Row } from "../../tests/fake-supabase.ts";
@@ -11,10 +11,12 @@ import {
   createMarketNotifyHandler,
   EVENT_COLUMNS,
   ITEM_COLUMNS,
+  ITEM_EXEMPT_COLUMNS,
   maskEmail,
   ORDER_COLUMNS,
   secretMatches,
   STORE_COLUMNS,
+  STORE_LEGAL_COLUMNS,
   SUPPLIER_COLUMNS,
   TRANSFER_COLUMNS,
 } from "./handler.ts";
@@ -60,19 +62,39 @@ const tables = (): Record<string, Row[]> => ({
     { id: SUP_A, name: "市集測試 A 店", contact_email: "store-a@example.com", phone: "02-2345-6789" },
     { id: SUP_B, name: "市集測試 B 店", contact_email: null, phone: null },
   ],
+  // 法定資訊(migration 20261012110000 新增的欄位):A 店都有填;B 店沒有食品業者登錄字號、產品責任險
   market_stores: [
-    { supplier_id: SUP_A, ship_days: 2 },
-    { supplier_id: SUP_B, ship_days: 3 },
+    {
+      supplier_id: SUP_A,
+      ship_days: 2,
+      legal_name: "市集測試 A 店有限公司",
+      representative: "王大明",
+      business_address: "臺北市中正區測試路 1 號",
+      service_email: "service-a@example.com",
+      food_registration_no: "A-123456789-00000-0",
+      liability_insurance: "富邦產險 保單號碼 0500-123456",
+    },
+    {
+      supplier_id: SUP_B,
+      ship_days: 3,
+      legal_name: "市集測試 B 商行",
+      representative: "李小華",
+      business_address: "新北市板橋區測試路 2 號",
+      service_email: "service-b@example.com",
+      food_registration_no: null,
+      liability_insurance: null,
+    },
   ],
   market_store_transfer: [{ supplier_id: SUP_B, transfer_info: "郵局(700) 帳號 0001234-5678901" }],
   market_orders: [
     order({ id: ORDER_A, supplier_id: SUP_A, subtotal: 650, shipping_fee: 120, total: 770 }),
     order({ id: ORDER_B, supplier_id: SUP_B, subtotal: 400, shipping_fee: 60, total: 460, payment_method: "transfer" }),
   ],
+  // withdrawal_exempt:下單當時的快照(不適用七日鑑賞期)
   market_order_items: [
-    { order_id: ORDER_A, product_name: "有機高麗菜", spec: "1 顆", qty: 2, unit_price: 100, line_total: 200 },
-    { order_id: ORDER_A, product_name: "牛肉片", spec: "300g/盒", qty: 1, unit_price: 450, line_total: 450 },
-    { order_id: ORDER_B, product_name: "挪威鮭魚", spec: "200g/片", qty: 2, unit_price: 200, line_total: 400 },
+    { order_id: ORDER_A, product_name: "有機高麗菜", spec: "1 顆", qty: 2, unit_price: 100, line_total: 200, withdrawal_exempt: true },
+    { order_id: ORDER_A, product_name: "牛肉片", spec: "300g/盒", qty: 1, unit_price: 450, line_total: 450, withdrawal_exempt: false },
+    { order_id: ORDER_B, product_name: "挪威鮭魚", spec: "200g/片", qty: 2, unit_price: 200, line_total: 400, withdrawal_exempt: false },
   ],
   market_order_events: [
     { id: EV(1), order_id: ORDER_A, from_status: null, to_status: "pending", actor_role: "consumer", note: null, payload: {} },
@@ -95,8 +117,12 @@ const tables = (): Record<string, Row[]> => ({
  */
 class SelectingQuery implements DbQuery {
   private columns: string[] | null = null;
-  constructor(private inner: DbQuery) {}
+  constructor(
+    private inner: DbQuery,
+    private onSelect?: (columns: string) => void,
+  ) {}
   select(columns?: string) {
+    this.onSelect?.(columns ?? "*");
     if (columns !== undefined && columns.trim() !== "*") {
       this.columns = columns.split(",").map((c) => c.trim());
       // 別名、巢狀查詢這裡不支援:handler 改用那種寫法時要先改這個包裝,不然測試會照錯的欄位跑
@@ -144,15 +170,22 @@ class SelectingQuery implements DbQuery {
     return this.inner.then(this.pick).then(onfulfilled, onrejected);
   }
 }
-/** 給 handler 用的資料庫:照 select 字串回傳欄位;測試自己檢查用的還是原本的 FakeDb(db.tables、db.calls) */
-const selecting = (db: FakeDb): Db => ({ from: (table) => new SelectingQuery(db.from(table)), rpc: (fn, args) => db.rpc(fn, args) });
+/**
+ * 給 handler 用的資料庫:照 select 字串回傳欄位;測試自己檢查用的還是原本的 FakeDb(db.tables、db.calls)。
+ * selects 記下每次讀哪個表、哪些欄位(FakeDb 的 calls 不記欄位)。
+ */
+const selecting = (db: FakeDb, selects?: { table: string; columns: string }[]): Db => ({
+  from: (table) => new SelectingQuery(db.from(table), (columns) => selects?.push({ table, columns })),
+  rpc: (fn, args) => db.rpc(fn, args),
+});
 
 const setup = (opts: { live?: boolean; secret?: string; fail?: FakeDbOptions["fail"]; send?: MarketSendMail } = {}) => {
   const db = new FakeDb({ tables: tables(), fail: opts.fail });
   const send = vi.fn<MarketSendMail>(opts.send ?? (async () => ({ ok: true, id: "re_1", error: null })));
   const log = vi.fn();
+  const selects: { table: string; columns: string }[] = [];
   const handler = createMarketNotifyHandler({
-    db: selecting(db),
+    db: selecting(db, selects),
     send,
     config: CONFIG,
     secret: opts.secret ?? SECRET,
@@ -170,7 +203,7 @@ const setup = (opts: { live?: boolean; secret?: string; fail?: FakeDbOptions["fa
     const text = await res.text();
     return { status: res.status, text, body: text ? JSON.parse(text) : null };
   };
-  return { db, send, log, call };
+  return { db, send, log, call, selects };
 };
 
 describe("market-notify:驗證", () => {
@@ -255,6 +288,72 @@ describe("market-notify:下單確認", () => {
   it("找不到這次結帳 404", async () => {
     const s = setup();
     expect((await s.call({ kind: "placed", checkout_id: "a9500000-0000-4000-8000-000000000099", token: TOKEN })).status).toBe(404);
+  });
+
+  // 2026-10-12 業主決定(法規查證 M7):下單確認信就是消保法 §18 的書面,每家店一段法定資訊
+  it("每家店的法定資訊讀自 market_stores 的新欄位與 suppliers.phone,不適用品項讀自 market_order_items.withdrawal_exempt(閘門開 / 關)", async () => {
+    for (const live of [false, true]) {
+      const s = setup({ live });
+      s.db.tables.suppliers[1].contact_email = "store-b@example.com";
+      await s.call({ kind: "placed", checkout_id: CHECKOUT, token: TOKEN });
+      expect(s.send).toHaveBeenCalledTimes(1);
+      const msg = s.send.mock.calls[0][0];
+      expect(msg.to, `live=${live}`).toEqual([live ? "buyer@example.com" : "ifoodmaptw@gmail.com"]);
+      const [, textA, textB] = msg.text.split("\n【");
+      const [, htmlA, htmlB] = msg.html.split("<h2"); // 每家店一個 <h2>(閘門關閉時前面的轉寄說明沒有 <h2>)
+      expect(msg.html.split("<h2")).toHaveLength(3);
+      const A = [
+        "登記名稱:市集測試 A 店有限公司",
+        "負責人:王大明",
+        "營業所地址:臺北市中正區測試路 1 號",
+        "店家電話:02-2345-6789",
+        "客服 Email:service-a@example.com",
+        "食品業者登錄字號:A-123456789-00000-0",
+        "產品責任險:富邦產險 保單號碼 0500-123456",
+        "出貨天數:店家接單後 2 個工作天內出貨。", // 貨到付款:從接單起算
+        "收到商品隔天起 7 天內可以解除契約(退貨),運費由店家負擔。",
+        "以下商品不適用七日鑑賞期:有機高麗菜。",
+        "申訴:請先聯絡店家;聯絡不到時,寫信到 ifoodmaptw@gmail.com。",
+      ];
+      const B = [
+        "登記名稱:市集測試 B 商行",
+        "負責人:李小華",
+        "營業所地址:新北市板橋區測試路 2 號",
+        "店家電話:(店家尚未提供)",
+        "客服 Email:service-b@example.com",
+        "出貨天數:店家確認收款後 3 個工作天內出貨。", // 轉帳:從確認收款起算
+        "收到商品隔天起 7 天內可以解除契約(退貨),運費由店家負擔。",
+        "申訴:請先聯絡店家;聯絡不到時,寫信到 ifoodmaptw@gmail.com。",
+      ];
+      for (const [label, text, html] of [
+        ["A", textA, htmlA],
+        ["B", textB, htmlB],
+      ]) {
+        for (const line of label === "A" ? A : B) {
+          expect(text.split("\n"), `live=${live} ${label} ${line}`).toContain(line);
+          expect(html, `live=${live} ${label} ${line}`).toContain(line);
+        }
+      }
+      for (const body of [textB, htmlB]) expect(body).not.toMatch(/食品業者登錄字號|產品責任險|不適用七日鑑賞期/);
+      // 客服 Email 是另外的欄位:收新訂單通知的 contact_email 照樣不給消費者
+      for (const storeEmail of ["store-a@example.com", "store-b@example.com"]) {
+        expect(msg.html).not.toContain(storeEmail);
+        expect(msg.text).not.toContain(storeEmail);
+      }
+    }
+  });
+
+  // 新欄位的 migration(20261012110000)要先套用到正式庫:只有下單確認讀新欄位 —— 狀態信不受影響
+  it("只有下單確認讀新欄位;狀態信的 select 跟原本一樣(新欄位還沒上正式庫時,狀態信照樣寄得出去)", async () => {
+    const s = setup({ live: true });
+    for (const id of [EV(1), EV(2), EV(4), EV(5), EV(6)]) await s.call({ kind: "event", event_id: id });
+    const eventSelects = [...s.selects];
+    expect(eventSelects.filter((x) => x.table === "market_stores").map((x) => x.columns)).toEqual(Array(5).fill(STORE_COLUMNS));
+    expect(eventSelects.filter((x) => x.table === "market_order_items").map((x) => x.columns)).toEqual(Array(5).fill(ITEM_COLUMNS));
+    s.selects.length = 0;
+    await s.call({ kind: "placed", checkout_id: CHECKOUT, token: TOKEN });
+    expect(s.selects.filter((x) => x.table === "market_stores").map((x) => x.columns)).toEqual(Array(2).fill(`${STORE_COLUMNS}, ${STORE_LEGAL_COLUMNS}`));
+    expect(s.selects.filter((x) => x.table === "market_order_items").map((x) => x.columns)).toEqual(Array(2).fill(`${ITEM_COLUMNS}, ${ITEM_EXEMPT_COLUMNS}`));
   });
 });
 
@@ -640,7 +739,7 @@ describe("market-notify:狀態紀錄", () => {
     });
     s.db.tables.market_order_events.push(
       sysCancel(EV(31), ORDER_A, "pending", "店家超過 72 小時沒有接單,系統自動取消", { auto_expire: "pending" }),
-      sysCancel(EV(32), ORDER_B, "awaiting_payment", "超過 72 小時沒有完成匯款,系統自動取消", { auto_expire: "awaiting_payment" }),
+      sysCancel(EV(32), ORDER_B, "awaiting_payment", "超過 72 小時店家未確認收到款項,系統自動取消", { auto_expire: "awaiting_payment" }),
       sysCancel(EV(33), ORDER_A, "pending", "系統取消", {}),
       sysCancel(EV(34), ORDER_A, "pending", "系統取消", { auto_expire: "shipped" }),
     );
@@ -654,18 +753,29 @@ describe("market-notify:狀態紀錄", () => {
     expect(p.msgs.map((m) => m.to[0])).toEqual(["buyer@example.com", "store-a@example.com"]);
     expect(p.msgs[0].subject).toBe(`訂單已自動取消(店家逾時未接單)— 零售訂單 ${formatOrderNo(ORDER_A)}`);
     expect(p.msgs[1].subject).toBe(`零售訂單 ${formatOrderNo(ORDER_A)} 已逾時自動取消 — 請不要出貨`);
-    for (const body of [p.msgs[0].html, p.msgs[0].text]) expect(body).toContain("店家超過 72 小時沒有接單,訂單已自動取消。");
+    for (const body of [p.msgs[0].html, p.msgs[0].text]) {
+      expect(body).toContain("店家超過 72 小時沒有接單,訂單已自動取消。");
+      expect(body).toContain("您不需要付款。");
+    }
     for (const body of [p.msgs[1].html, p.msgs[1].text]) expect(body).toContain("這張訂單超過 72 小時沒有接單,系統因逾時自動取消。");
     const a = await mailsOf(EV(32));
     expect(a.msgs.map((m) => m.to[0])).toEqual(["buyer@example.com", "store-b@example.com"]);
-    expect(a.msgs[0].subject).toBe(`訂單已自動取消(逾時未完成匯款)— 零售訂單 ${formatOrderNo(ORDER_B)}`);
-    for (const body of [a.msgs[0].html, a.msgs[0].text]) expect(body).toContain("因為超過 72 小時沒有完成匯款,訂單已自動取消。");
-    for (const body of [a.msgs[1].html, a.msgs[1].text]) expect(body).toContain("消費者超過 72 小時沒有完成匯款,系統因逾時自動取消。");
+    // S6:系統判斷的是店家有沒有確認收到款項(買家可能已經匯了)
+    expect(a.msgs[0].subject).toBe(`訂單已自動取消(逾時未確認收款)— 零售訂單 ${formatOrderNo(ORDER_B)}`);
+    for (const body of [a.msgs[0].html, a.msgs[0].text]) {
+      expect(body).toContain("因為店家在期限內沒有確認收到您的匯款,訂單已自動取消。");
+      expect(body).toContain("不需要再匯款;如果您已經匯款,請聯絡店家退款並保留匯款證明。");
+    }
+    for (const body of [a.msgs[1].html, a.msgs[1].text]) expect(body).toContain("店家超過 72 小時沒有確認收到款項,系統因逾時自動取消。");
     for (const m of [...p.msgs, ...a.msgs]) {
       const all = `${m.subject}\n${m.html}\n${m.text}`;
       expect(all, m.subject).not.toContain("店家取消");
-      expect(all, m.subject).not.toMatch(/退款|已確認收款|不經手款項/); // 待匯款被取消的單一定還沒收款(paid_at: null、from_status 不是 paid)
+      expect(all, m.subject).not.toContain("不會成立"); // 接單時契約已經成立
+      expect(all, m.subject).not.toMatch(/沒有完成匯款|未完成匯款/);
+      // 待匯款被取消的單一定還沒收款(paid_at: null、from_status 不是 paid):沒有已收款那種退款句
+      expect(all, m.subject).not.toMatch(/已確認收款|退款由店家處理|不經手款項/);
     }
+    for (const m of [...p.msgs, a.msgs[1]]) expect(`${m.html}\n${m.text}`, m.subject).not.toMatch(/退款/);
     for (const m of [...p.msgs, ...a.msgs].filter((x) => x.subject.startsWith("零售訂單"))) expect(m.text).toContain("庫存已經自動補回");
     for (const m of [p.msgs[0], a.msgs[0]]) {
       for (const storeEmail of ["store-a@example.com", "store-b@example.com"]) expect(`${m.html}${m.text}`).not.toContain(storeEmail);
@@ -913,6 +1023,53 @@ describe("market-notify:狀態紀錄", () => {
       expect(n, label).toBe(2);
       expect(s.db.tables.notifications[0], label).toMatchObject({ status: "failed", sent_at: null });
       expect(String(s.db.tables.notifications[0].message), label).toContain("(重試時 Resend 回 409,第一次可能已經寄出,人工補寄前請先確認收件人沒收到)");
+      expect(String(s.db.tables.notifications[0].message), label).not.toContain("最後一次請求逾時或中斷"); // 兩句分開
+    }
+  });
+
+  // 2026-10-12 業主決定(a):最後一次請求本身是逾時、連線失敗、502 或 504 而記 failed —— Resend 可能照樣處理完、寄出
+  it("最後一次請求逾時、連線失敗、502、504 而記 failed:message 加「最後一次請求逾時或中斷」那句(跟 409 那句分開);429、500、503 不加", async () => {
+    const UNANSWERED = "(最後一次請求逾時或中斷,Resend 可能已經寄出,人工補寄前請先確認收件人沒收到)";
+    const CONFLICT = "(重試時 Resend 回 409,第一次可能已經寄出,人工補寄前請先確認收件人沒收到)";
+    const reply = (status: number) => async () => new Response("{}", { status });
+    const cases: [string, (init?: RequestInit) => Promise<Response>, boolean, string | null][] = [
+      [
+        "連線失敗",
+        async () => {
+          throw new TypeError("connection reset");
+        },
+        false,
+        UNANSWERED,
+      ],
+      [
+        "逾時",
+        async (init) => {
+          throw init?.signal?.reason; // 逾時的 signal 已經中止(假的逾時,不用真的等),跟真的 fetch 一樣丟出原因
+        },
+        true,
+        UNANSWERED,
+      ],
+      ["502", reply(502), false, UNANSWERED],
+      ["504", reply(504), false, UNANSWERED],
+      ["429", reply(429), false, null],
+      ["500", reply(500), false, null],
+      ["503", reply(503), false, null],
+    ];
+    for (const [label, respond, timeout, note] of cases) {
+      const fetchImpl = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => respond(init));
+      const timeoutSignal = (ms: number) => (timeout ? AbortSignal.abort(new DOMException(`${ms} ms`, "TimeoutError")) : new AbortController().signal);
+      const s = setup({
+        live: true,
+        send: createMarketResendSender("re_key", fetchImpl as unknown as typeof fetch, { sleep: async () => undefined, random: () => 0, timeoutSignal }),
+      });
+      const r = await s.call({ kind: "event", event_id: EV(2) });
+      expect(r.body.data, label).toMatchObject({ sent: 0, total: 1 });
+      expect(fetchImpl, label).toHaveBeenCalledTimes(4); // 重試 3 次之後才放棄
+      expect(s.db.tables.notifications[0], label).toMatchObject({ status: "failed", sent_at: null });
+      const message = String(s.db.tables.notifications[0].message);
+      if (note) expect(message.endsWith(note), `${label}:${message}`).toBe(true);
+      else expect(message, label).not.toMatch(/可能已經寄出/);
+      expect(message, label).not.toContain(CONFLICT);
     }
   });
 
@@ -960,6 +1117,10 @@ describe("market-notify:狀態紀錄", () => {
       expect([...t.waits.values()].reduce((a, b) => a + b, 0)).toBeLessThanOrEqual(5_000);
       expect(s.db.tables.notifications.map((n) => n.status)).toEqual(["failed", "failed"]);
       expect(s.log).toHaveBeenCalledWith("error", expect.objectContaining({ step: "send", error: "Resend 請求逾時(1000 毫秒沒有回應)" }));
+      // 兩封的最後一次請求都是逾時:Resend 可能照樣寄出 —— 紀錄註記人工補寄前先確認(業主決定 a)
+      for (const n of s.db.tables.notifications) {
+        expect(String(n.message)).toContain("(最後一次請求逾時或中斷,Resend 可能已經寄出,人工補寄前請先確認收件人沒收到)");
+      }
     } finally {
       vi.useRealTimers();
     }
@@ -1068,6 +1229,48 @@ describe("讀取的欄位都存在於 migration", () => {
     }
   });
 
+  // 2026-10-12 業主決定(法規查證 M6、M7):下單確認信的法定資訊讀 migration 20261012110000 新增的欄位(資料庫的人在做)。
+  // 檔案還沒進 repo 時這項跳過;進來之後自動打開 —— 名稱對不上就紅
+  const COMPLIANCE = "20261012110000_market_compliance.sql";
+  const hasCompliance = existsSync(resolve(__dirname, `../../migrations/${COMPLIANCE}`));
+  /** 拿掉 SQL 註解後,找出 ALTER TABLE <table> … ADD [COLUMN] [IF NOT EXISTS] <欄位> 新增的欄位 */
+  const addedColumns = (sql: string, table: string): string[] => {
+    const code = sql.replace(/--[^\n]*/g, "");
+    const alter = new RegExp(`ALTER\\s+TABLE\\s+(?:IF\\s+EXISTS\\s+)?(?:ONLY\\s+)?(?:public\\.)?"?${table}"?\\s([^;]*);`, "gi");
+    const out: string[] = [];
+    for (const m of code.matchAll(alter)) {
+      for (const c of m[1].matchAll(/\bADD\s+(?:COLUMN\s+)?(?:IF\s+NOT\s+EXISTS\s+)?"?([a-z_][a-z0-9_]*)"?/gi)) {
+        if (!/^(constraint|primary|unique|check|foreign|exclude)$/i.test(c[1])) out.push(c[1].toLowerCase());
+      }
+    }
+    return out;
+  };
+
+  it("找新增欄位的寫法(ADD COLUMN / ADD、IF NOT EXISTS、一個 ALTER 加好幾欄;註解掉的、ADD CONSTRAINT 不算)", () => {
+    const sample = [
+      "-- ALTER TABLE public.market_stores ADD COLUMN commented_out text;",
+      "ALTER TABLE public.market_stores",
+      "  ADD COLUMN IF NOT EXISTS legal_name text,",
+      "  ADD COLUMN representative text NOT NULL DEFAULT '',",
+      "  ADD business_address text,",
+      "  ADD CONSTRAINT market_stores_legal_name_len CHECK (char_length(legal_name) <= 200);",
+      "ALTER TABLE ONLY public.market_order_items ADD COLUMN withdrawal_exempt boolean NOT NULL DEFAULT false;",
+    ].join("\n");
+    expect(addedColumns(sample, "market_stores")).toEqual(["legal_name", "representative", "business_address"]);
+    expect(addedColumns(sample, "market_order_items")).toEqual(["withdrawal_exempt"]);
+  });
+
+  it.skipIf(!hasCompliance)(`下單確認信的法定資訊欄位都在 ${COMPLIANCE}(檔案進 repo 前先跳過)`, () => {
+    const sql = migration(COMPLIANCE);
+    for (const [table, columns] of [
+      ["market_stores", STORE_LEGAL_COLUMNS],
+      ["market_order_items", ITEM_EXEMPT_COLUMNS],
+    ] as const) {
+      const added = addedColumns(sql, table);
+      for (const col of columns.split(",").map((c) => c.trim())) expect(added, `${table}.${col}`).toContain(col);
+    }
+  });
+
   it("寫進 notifications 的欄位也都存在(寄出、寄信失敗、沒寄三種紀錄)", async () => {
     const s = setup({ live: true });
     await s.call({ kind: "event", event_id: EV(2) }); // 寄出
@@ -1093,9 +1296,9 @@ const setupEnv = (env: Record<string, string | undefined>) => {
     { id: EV(9), order_id: ORDER_A, from_status: "pending", to_status: "rejected", actor_role: "supplier", note: "缺貨", payload: {} },
     { id: EV(10), order_id: ORDER_A, from_status: "confirmed", to_status: "cancelled", actor_role: "supplier", note: "無法出貨", payload: {} },
     { id: EV(11), order_id: ORDER_B, from_status: "paid", to_status: "cancelled", actor_role: "supplier", note: "缺貨", payload: {} },
-    // 72 小時自動取消(系統、payload.auto_expire)
+    // 72 小時自動取消(系統、payload.auto_expire);轉帳單的原因照 S6 改成「店家未確認收到款項」
     { id: EV(12), order_id: ORDER_A, from_status: "pending", to_status: "cancelled", actor_role: "system", note: "店家超過 72 小時沒有接單,系統自動取消", payload: { auto_expire: "pending" } },
-    { id: EV(13), order_id: ORDER_B, from_status: "awaiting_payment", to_status: "cancelled", actor_role: "system", note: "超過 72 小時沒有完成匯款,系統自動取消", payload: { auto_expire: "awaiting_payment" } },
+    { id: EV(13), order_id: ORDER_B, from_status: "awaiting_payment", to_status: "cancelled", actor_role: "system", note: "超過 72 小時店家未確認收到款項,系統自動取消", payload: { auto_expire: "awaiting_payment" } },
   );
   db.tables.suppliers[1].contact_email = "store-b@example.com";
   const send = vi.fn<MarketSendMail>(async () => ({ ok: true, id: "re_1", error: null }));
@@ -1157,7 +1360,8 @@ describe("market-notify:MARKET_NOTIFY_LIVE 不是剛好字串 true,就不會寄�
       // 72 小時自動取消:消費者與店家各兩封,一樣只寄測試信箱
       expect(msgs.filter((m) => m.subject.includes("自動取消")), `${label} 自動取消`).toHaveLength(4);
       expect(msgs.filter((m) => m.text.includes("退款由店家處理")), `${label} 已收款取消`).toHaveLength(1);
-      expect(msgs.filter((m) => m.text.includes("店家尚未提供")), `${label} 沒填匯款資訊`).toHaveLength(1);
+      // (下單確認信的店家資訊也可能有「(店家尚未提供)」—— B 店沒有電話;這裡只數匯款資訊那一句)
+      expect(msgs.filter((m) => m.text.includes("(店家尚未提供,請直接聯絡店家)")), `${label} 沒填匯款資訊`).toHaveLength(1);
       for (const m of msgs) {
         expect(m.to, label).toEqual(["ifoodmaptw@gmail.com"]);
         expect(m.subject.startsWith("[測試轉寄] "), `${label} ${m.subject}`).toBe(true);
@@ -1166,6 +1370,14 @@ describe("market-notify:MARKET_NOTIFY_LIVE 不是剛好字串 true,就不會寄�
         expect(m.html, label).toContain("MARKET_NOTIFY_LIVE 未開啟");
       }
       expect(msgs.flatMap((m) => m.to).filter((to) => REAL.includes(to)), label).toEqual([]);
+      // 下單確認信的法定資訊(每家店一段)照樣在轉寄的那封裡,一樣只寄測試信箱
+      for (const body of [msgs[0].html, msgs[0].text]) {
+        expect(body.split("申訴:請先聯絡店家;聯絡不到時,寫信到 ifoodmaptw@gmail.com。").length - 1, label).toBe(2);
+        expect(body, label).toContain("登記名稱:市集測試 A 店有限公司");
+        expect(body, label).toContain("以下商品不適用七日鑑賞期:有機高麗菜。");
+      }
+      // 轉帳單的自動取消(S6):寫的是店家沒有確認收到款項
+      expect(msgs.filter((m) => m.subject.includes("訂單已自動取消(逾時未確認收款)")), `${label} 轉帳自動取消`).toHaveLength(1);
       // 原收件人只列在轉寄說明裡
       expect(msgs[0].html, label).toContain("原本的收件人(消費者):buyer@example.com");
       expect(msgs[1].html, label).toContain("原本的收件人(供應商):store-a@example.com");
@@ -1222,6 +1434,11 @@ describe("market-notify:token 只出現在寄出的確認信,回應、log、資�
       expect(msg.html).toContain(`href="${link}"`);
       expect(msg.text).toContain(link);
       expect(msg.subject).not.toContain(TOKEN);
+      // 多了每家店的法定資訊之後:token 照樣只在查詢連結裡(html 的按鈕、text 的「查看訂單」各一次)
+      for (const body of [msg.html, msg.text]) {
+        expect(body.split(TOKEN).length - 1, `live=${live}`).toBe(1);
+        expect(body.split(link).length - 1, `live=${live}`).toBe(1);
+      }
       expect(leaks(s, r, TOKEN), `live=${live}`).toEqual(NONE);
     }
   });
