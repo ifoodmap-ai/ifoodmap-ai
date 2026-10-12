@@ -15,7 +15,7 @@ import { fetchAllPages } from "@/lib/metrics";
 import { LIMITS, type ReviewStatus } from "./constants";
 import { friendlyDbError, MarketDbError, marketDb, unwrap, type PgResult } from "./db";
 import { hasVisibleText } from "./productForm";
-import { missingDisclosures, storeFormFromRow } from "./store";
+import { disclosureValuesOf, missingDisclosures } from "./store";
 import type { MarketProductRow, MarketStoreRow } from "./types";
 
 export const ADMIN_PRODUCT_COLUMNS = "*, market_stores(supplier_id, is_enabled, suppliers(name))";
@@ -229,4 +229,4 @@ export const reviewWarnings = (row: Pick<MarketProductRow, "name" | "spec" | "de
 
 /** 這家店還缺哪些法定資訊(四項加上供應商資料的電話);缺任何一項,資料庫不讓它開放零售(store_disclosure_missing) */
 export const storeMissingDisclosures = (store: MarketStoreRow): string[] =>
-  missingDisclosures(storeFormFromRow(store, null), store.suppliers?.phone ?? null);
+  missingDisclosures(disclosureValuesOf(store), store.suppliers?.phone ?? null);

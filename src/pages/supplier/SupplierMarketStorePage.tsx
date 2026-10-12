@@ -19,6 +19,7 @@ import { friendlyDbError, MarketDbError } from "@/lib/market/db";
 import { hasVisibleText } from "@/lib/market/productForm";
 import {
   DISCLOSURE_LIMITS,
+  disclosureValuesOf,
   emptyStoreForm,
   fetchOwnStore,
   MarketPartialSaveError,
@@ -201,6 +202,8 @@ export default function SupplierMarketStorePage() {
 
   const describe = (key: keyof StoreForm) => (errors[key] ? `store-${key}-error` : undefined);
   const missing = missingDisclosures(form, supplierPhone);
+  /** 資料庫裡(儲存過的)還缺的:畫面上填好了但還沒按儲存時,消費者仍看不到這家店 */
+  const savedMissing = missingDisclosures(disclosureValuesOf(row), supplierPhone);
 
   return (
     <form onSubmit={onSubmit} noValidate className="mx-auto max-w-3xl space-y-8 p-6">
@@ -232,6 +235,13 @@ export default function SupplierMarketStorePage() {
           <p className="mt-1 font-medium">還缺:{missing.join("、")}</p>
           <p className="mt-1">消費者保護法規定網路銷售要揭露店家資料,消費者在店家頁看得到。沒填齊之前消費者看不到你的店:新店家存不進去,已開放的店也不能改設定。</p>
           {missing.includes("店家電話") ? <p className="mt-1">{PHONE_HELP}。</p> : null}
+        </section>
+      ) : savedMissing.length > 0 ? (
+        <section aria-labelledby="store-unsaved-title" className="rounded-lg border border-sky-300 bg-sky-50 p-4 text-sm text-sky-900">
+          <h2 id="store-unsaved-title" className="font-semibold">
+            法定資訊還沒儲存
+          </h2>
+          <p className="mt-1">法定資訊都填好了,按「儲存店家設定」之後才會生效;儲存之前消費者還是看不到你的店。</p>
         </section>
       ) : null}
 

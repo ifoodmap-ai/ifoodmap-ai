@@ -22,6 +22,15 @@ import { friendlyDbError, MarketDbError, marketDb, unwrap } from "./db";
 import { hasVisibleText } from "./productForm";
 import type { MarketStoreRow } from "./types";
 
+/**
+ * 去頭尾的字元:跟 migration 120000 的 market_trim 同一組(store.test.ts 逐字比對)。JS 的 trim() 去不掉零寬字元
+ * (U+200B–U+200D)、WORD JOINER、U+0085、U+180E;資料庫會先 market_trim 再檢查長度與 Email 格式,前端也照這樣算,
+ * 才不會「前端擋、資料庫其實收」或「前端放行、資料庫擋成通用的 23514」。
+ */
+export const MARKET_TRIM_CHARS = "\\s\\u0085\\u00a0\\u1680\\u180e\\u2000-\\u200d\\u2028\\u2029\\u202f\\u205f\\u2060\\u3000\\ufeff";
+const MARKET_TRIM_RE = new RegExp(`^[${MARKET_TRIM_CHARS}]+|[${MARKET_TRIM_CHARS}]+$`, "gu");
+export const marketTrim = (s: string): string => s.replace(MARKET_TRIM_RE, "");
+
 /** 店家法定資訊的長度上限(跟 migration 20261012110000 的 CHECK 一樣;客服 Email 照 market_email_ok 的 254 字) */
 export const DISCLOSURE_LIMITS = {
   legalName: 100,
@@ -150,43 +159,56 @@ const inRange = (s: string, min: number, max: number) => {
 };
 
 /** 開放零售一定要有的法定資訊(依畫面順序) */
-const REQUIRED_DISCLOSURES: Array<[keyof StoreForm, string]> = [
+const REQUIRED_DISCLOSURES: Array<[keyof DisclosureValues, string]> = [
   ["legalName", "登記名稱"],
   ["representative", "負責人"],
   ["businessAddress", "營業所地址"],
   ["serviceEmail", "客服 Email"],
 ];
 
+export type DisclosureValues = Pick<StoreForm, "legalName" | "representative" | "businessAddress" | "serviceEmail">;
+
+/** 資料列(儲存過的店、管理後台的店)的四項法定資訊;沒有店是四個空字串。只讀這四欄,不碰其他欄位 */
+export const disclosureValuesOf = (
+  row: Pick<MarketStoreRow, "legal_name" | "representative" | "business_address" | "service_email"> | null,
+): DisclosureValues => ({
+  legalName: row?.legal_name ?? "",
+  representative: row?.representative ?? "",
+  businessAddress: row?.business_address ?? "",
+  serviceEmail: row?.service_email ?? "",
+});
+
 /**
- * 開放零售前還缺哪幾項(看不到字也算缺):表單上的四項,加上供應商資料的電話(這頁改不了,要請 iFoodmap 補)。
- * 只看「有沒有填」;填了但格式不對由 validateStoreForm 說明。
+ * 開放零售前還缺哪幾項(看不到字也算缺,同資料庫的 market_visible):四項法定資訊,加上供應商資料的電話
+ * (店家設定頁改不了,要請 iFoodmap 補)。只看「有沒有填」;填了但格式不對由 validateStoreForm 說明。
  */
-export const missingDisclosures = (f: StoreForm, supplierPhone: string | null): string[] => [
-  ...REQUIRED_DISCLOSURES.filter(([key]) => !hasVisibleText(String(f[key]).trim())).map(([, label]) => label),
-  ...(hasVisibleText((supplierPhone ?? "").trim()) ? [] : ["店家電話"]),
+export const missingDisclosures = (f: DisclosureValues, supplierPhone: string | null): string[] => [
+  ...REQUIRED_DISCLOSURES.filter(([key]) => !hasVisibleText(String(f[key as keyof DisclosureValues]))).map(([, label]) => label),
+  ...(hasVisibleText(supplierPhone ?? "") ? [] : ["店家電話"]),
 ];
 
 export const validateStoreForm = (f: StoreForm): StoreFormErrors => {
   const e: StoreFormErrors = {};
   // 法定資訊放最前面:畫面上這一區在最上面,頁面的 toast 顯示第一個錯誤
-  const legalName = f.legalName.trim();
+  // 跟資料庫一樣先 market_trim(連零寬字元一起去頭尾)再看長度與格式
+  const legalName = marketTrim(f.legalName);
   if (!hasVisibleText(legalName)) e.legalName = "請填登記名稱(公司或商號登記的名稱)";
   else if (legalName.length > DISCLOSURE_LIMITS.legalName) e.legalName = `登記名稱最多 ${DISCLOSURE_LIMITS.legalName} 字`;
-  const representative = f.representative.trim();
+  const representative = marketTrim(f.representative);
   if (!hasVisibleText(representative)) e.representative = "請填負責人";
   else if (representative.length > DISCLOSURE_LIMITS.representative) e.representative = `負責人最多 ${DISCLOSURE_LIMITS.representative} 字`;
-  const address = f.businessAddress.trim();
+  const address = marketTrim(f.businessAddress);
   if (!hasVisibleText(address)) e.businessAddress = "請填營業所地址";
   else if (address.length < DISCLOSURE_LIMITS.businessAddressMin || address.length > DISCLOSURE_LIMITS.businessAddress) {
     e.businessAddress = `營業所地址要 ${DISCLOSURE_LIMITS.businessAddressMin}–${DISCLOSURE_LIMITS.businessAddress} 字`;
   }
-  const email = f.serviceEmail.trim();
+  const email = marketTrim(f.serviceEmail);
   if (!hasVisibleText(email)) e.serviceEmail = "請填客服 Email(會公開在店家頁,消費者用來聯絡你)";
   else if (!EMAIL_PATTERN.test(email) || email.length > DISCLOSURE_LIMITS.serviceEmail) e.serviceEmail = "客服 Email 格式不對";
-  if (f.foodRegistrationNo.trim().length > DISCLOSURE_LIMITS.foodRegistrationNo) {
+  if (marketTrim(f.foodRegistrationNo).length > DISCLOSURE_LIMITS.foodRegistrationNo) {
     e.foodRegistrationNo = `食品業者登錄字號最多 ${DISCLOSURE_LIMITS.foodRegistrationNo} 字`;
   }
-  if (f.liabilityInsurance.trim().length > DISCLOSURE_LIMITS.liabilityInsurance) {
+  if (marketTrim(f.liabilityInsurance).length > DISCLOSURE_LIMITS.liabilityInsurance) {
     e.liabilityInsurance = `產品責任險最多 ${DISCLOSURE_LIMITS.liabilityInsurance} 字`;
   }
   if (f.deliveryCities.length === 0) e.deliveryCities = "至少選一個配送縣市";
@@ -224,12 +246,12 @@ export const storePayload = (supplierId: string, f: StoreForm) => {
     payment_methods: methods,
     logo_path: f.logoPath,
     cover_path: f.coverPath,
-    legal_name: f.legalName.trim() || null,
-    representative: f.representative.trim() || null,
-    business_address: f.businessAddress.trim() || null,
-    service_email: f.serviceEmail.trim() || null,
-    food_registration_no: f.foodRegistrationNo.trim() || null,
-    liability_insurance: f.liabilityInsurance.trim() || null,
+    legal_name: marketTrim(f.legalName) || null,
+    representative: marketTrim(f.representative) || null,
+    business_address: marketTrim(f.businessAddress) || null,
+    service_email: marketTrim(f.serviceEmail) || null,
+    food_registration_no: marketTrim(f.foodRegistrationNo) || null,
+    liability_insurance: marketTrim(f.liabilityInsurance) || null,
   };
 };
 

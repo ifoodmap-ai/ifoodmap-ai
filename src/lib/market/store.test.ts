@@ -71,10 +71,13 @@ import { MarketDbError } from "./db";
 import { STORE_A } from "./testFixtures";
 import {
   DISCLOSURE_LIMITS,
+  disclosureValuesOf,
   emptyStoreForm,
   fetchOwnStore,
   MarketPartialSaveError,
   MarketStaleError,
+  MARKET_TRIM_CHARS,
+  marketTrim,
   missingDisclosures,
   saveStore,
   STORE_OWNER_COLUMNS,
@@ -197,7 +200,27 @@ describe("店家法定資訊(法規查證 M6:沒填齊不能開放零售)", () =
     expect(missingDisclosures(valid({ legalName: "", serviceEmail: "\u{3000}" }), "02-2345-6789")).toEqual(["登記名稱", "客服 Email"]);
     expect(missingDisclosures({ ...emptyStoreForm() }, null)).toEqual(["登記名稱", "負責人", "營業所地址", "客服 Email", "店家電話"]);
     expect(missingDisclosures(valid(), "\u{3000}")).toEqual(["店家電話"]);
+    // 零寬字元 JS 的 trim() 去不掉:一樣要算缺(資料庫用 market_visible 判斷)
+    expect(missingDisclosures(valid(), "\u{200B}")).toEqual(["店家電話"]);
     expect(missingDisclosures(valid(), "")).toEqual(["店家電話"]);
+  });
+
+  it("missingDisclosures 只看四項法定資訊:資料列(管理後台、儲存過的店)用 disclosureValuesOf 取值,不需要其他欄位", () => {
+    const row = { legal_name: "市集測試 A 店有限公司", representative: null, business_address: "臺北市測試路 1 號", service_email: "\u{200B}" };
+    expect(disclosureValuesOf(row)).toEqual({ legalName: "市集測試 A 店有限公司", representative: "", businessAddress: "臺北市測試路 1 號", serviceEmail: "\u{200B}" });
+    expect(missingDisclosures(disclosureValuesOf(row), "02-2345-6789")).toEqual(["負責人", "客服 Email"]);
+    expect(missingDisclosures(disclosureValuesOf(null), null)).toEqual(["登記名稱", "負責人", "營業所地址", "客服 Email", "店家電話"]);
+  });
+
+  it("去頭尾跟資料庫的 market_trim 同一組字元:零寬字元、WORD JOINER、BOM、U+0085 也去掉(JS 的 trim() 去不掉)", () => {
+    expect(marketTrim("\u{200B}\u{2060} 王小明\u{3000}\u{FEFF}\u{85}\u{180E}")).toBe("王小明");
+    expect(marketTrim("王\u{200B}小明")).toBe("王\u{200B}小明");
+    // 從網頁複製、尾巴帶零寬空白的 Email:資料庫會先去掉再檢查,前端也不能誤擋;存的是去掉之後的值
+    expect(validateStoreForm(valid({ serviceEmail: "service-a@example.com\u{200B}" })).serviceEmail).toBeUndefined();
+    expect(storePayload("s", valid({ serviceEmail: "\u{FEFF}service-a@example.com\u{200B}" })).service_email).toBe("service-a@example.com");
+    // 頭尾的零寬字元不算長度:資料庫 market_trim 之後只剩 3 字,前端也要擋(不然會變成通用的 23514)
+    expect(validateStoreForm(valid({ businessAddress: "臺北市\u{200B}\u{200B}" })).businessAddress).toBe("營業所地址要 5–200 字");
+    expect(storePayload("s", valid({ legalName: "\u{200B}市集測試 A 店有限公司\u{2060}" })).legal_name).toBe("市集測試 A 店有限公司");
   });
 });
 
@@ -280,7 +303,13 @@ describe("資料列 ↔ 表單", () => {
 // 讀取出錯一定要丟錯:回 null 的話頁面會當成「還沒建店」顯示空白表單,一儲存就把原本的設定蓋掉。
 describe("店家法定資訊跟 migration 20261012110000_market_compliance 一致", () => {
   const MIGRATION = readFileSync(resolve(__dirname, "../../../supabase/migrations/20261012110000_market_compliance.sql"), "utf8");
-  const GUARD = MIGRATION.slice(MIGRATION.indexOf("CREATE OR REPLACE FUNCTION public.market_stores_guard"));
+  /** 只切 guard 這一支函式(到它自己的 $$; 為止),不會連到後面 market_store_is_open 的同一段條件 */
+  const fnBody = (name: string) => {
+    const start = MIGRATION.indexOf(`CREATE OR REPLACE FUNCTION public.${name}`);
+    expect(start, name).toBeGreaterThan(-1);
+    return MIGRATION.slice(start, MIGRATION.indexOf("$$;", start));
+  };
+  const GUARD = fnBody("market_stores_guard");
   const between = (col: string): [number, number] => {
     const all = [...MIGRATION.matchAll(new RegExp(`char_length\\(${col}\\) BETWEEN (\\d+) AND (\\d+)`, "g"))];
     expect(all, `${col} 的 CHECK 要剛好一處`).toHaveLength(1);
@@ -311,6 +340,19 @@ describe("店家法定資訊跟 migration 20261012110000_market_compliance 一�
     expect(GUARD).toContain("HINT = 'store_disclosure_missing'");
     // missingDisclosures 列的就是這五項(四個欄位 + 電話)
     expect(missingDisclosures({ ...emptyStoreForm() }, null)).toHaveLength(5);
+  });
+
+  it("market_store_is_open(公開頁面與下單)也要求同一組:四項法定資訊、供應商電話看得到字 —— 供應商商品清單與管理員頁照這個寫", () => {
+    const isOpen = fnBody("market_store_is_open");
+    expect(isOpen).toContain("s.legal_name IS NOT NULL AND s.representative IS NOT NULL AND s.business_address IS NOT NULL");
+    expect(isOpen).toContain("s.service_email IS NOT NULL AND public.market_visible(p.phone)");
+  });
+
+  it("market_trim 的字元組跟 MARKET_TRIM_CHARS 一字不差(120000)", () => {
+    const catalog = readFileSync(resolve(__dirname, "../../../supabase/migrations/20261009120000_market_catalog.sql"), "utf8");
+    const fn = catalog.slice(catalog.indexOf("CREATE OR REPLACE FUNCTION public.market_trim"));
+    const set = /VALUES \('\[([^\]]+)\]'\)/.exec(fn.slice(0, fn.indexOf("$$;")))?.[1];
+    expect(set).toBe(MARKET_TRIM_CHARS);
   });
 });
 

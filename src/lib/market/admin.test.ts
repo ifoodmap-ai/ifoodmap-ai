@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 type Call = {
   table: string;
   op: string;
+  columns?: string;
   payload?: unknown;
   filters: Array<[string, unknown]>;
   selectOptions?: unknown;
@@ -27,7 +28,8 @@ vi.mock("@/integrations/supabase/client", () => ({
       const result = () =>
         next.pages ? { data: next.pages.shift() ?? [], error: null, count: next.count } : { data: next.data, error: next.error, count: next.count };
       const b = {
-        select: (_columns?: string, options?: unknown) => {
+        select: (columns?: string, options?: unknown) => {
+          call.columns = columns;
           if (options) call.selectOptions = options;
           return b;
         },
@@ -357,5 +359,17 @@ describe("審核檢查清單、自動提醒、店家法定資訊", () => {
     expect(storeMissingDisclosures(STORE_A)).toEqual(["登記名稱", "負責人", "營業所地址", "客服 Email"]);
     expect(storeMissingDisclosures({ ...filled, suppliers: { name: "A", phone: "\u{3000}" } })).toEqual(["店家電話"]);
     expect(storeMissingDisclosures({ ...filled, representative: "\u{200B}", suppliers: null })).toEqual(["負責人", "店家電話"]);
+    expect(storeMissingDisclosures({ ...filled, suppliers: { name: "A", phone: "\u{200B}" } })).toEqual(["店家電話"]);
+  });
+
+  it("只讀法定資訊四欄與電話:列沒有配送縣市、付款方式(查詢改成明列欄位時)也不會出錯", () => {
+    const narrow = { supplier_id: "s1", legal_name: "A", representative: "B", business_address: "臺北市測試路 1 號", service_email: "a@example.com", suppliers: { name: "A", phone: "02" } };
+    expect(storeMissingDisclosures(narrow as unknown as typeof STORE_A)).toEqual([]);
+  });
+
+  it("零售店家的查詢帶供應商電話(缺電話要標出來,沒帶的話每家店都會被當成缺電話)", async () => {
+    next.pages = [[]];
+    await fetchAdminStores();
+    expect(calls[0].columns).toMatch(/suppliers\([^)]*\bphone\b/);
   });
 });

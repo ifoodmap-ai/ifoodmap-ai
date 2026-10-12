@@ -554,6 +554,25 @@ describe("SupplierMarketStorePage — 店家法定資訊", () => {
     expect(missing).toHaveTextContent("還缺:營業所地址、客服 Email、店家電話");
   });
 
+  it("法定資訊都填好但還沒儲存:改說「按儲存後才會生效」(儲存之前消費者仍看不到);存好才不再提示", async () => {
+    vi.mocked(fetchOwnStore).mockResolvedValue({ store: STORE_A_BASE, transferInfo: "台灣銀行 004 帳號 123", supplierPhone: PHONE });
+    vi.mocked(saveStore).mockResolvedValue({ ...STORE_A, updated_at: "2026-10-12T02:00:00.000001+00:00" });
+    renderPage();
+    expect(await screen.findByRole("region", { name: "開放零售前還缺這些資料" })).toHaveTextContent("還缺:登記名稱、負責人、營業所地址、客服 Email");
+    await userEvent.type(screen.getByLabelText("登記名稱 *"), "市集測試 A 店有限公司");
+    await userEvent.type(screen.getByLabelText("負責人 *"), "王小明");
+    await userEvent.type(screen.getByLabelText("營業所地址 *"), "臺北市測試路 1 號");
+    await userEvent.type(screen.getByLabelText("客服 Email *"), "service-a@example.com");
+    expect(screen.queryByRole("region", { name: "開放零售前還缺這些資料" })).toBeNull();
+    expect(screen.getByRole("region", { name: "法定資訊還沒儲存" })).toHaveTextContent(
+      "法定資訊都填好了,按「儲存店家設定」之後才會生效;儲存之前消費者還是看不到你的店。",
+    );
+    await userEvent.click(screen.getByRole("button", { name: "儲存店家設定" }));
+    await waitFor(() => expect(saveStore).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.queryByRole("region", { name: "法定資訊還沒儲存" })).toBeNull());
+    expect(screen.queryByRole("region", { name: "開放零售前還缺這些資料" })).toBeNull();
+  });
+
   it("客服 Email 格式不對、地址太短:照資料庫的規則擋下,不會送出", async () => {
     vi.mocked(fetchOwnStore).mockResolvedValue({
       store: { ...STORE_A, service_email: "not-an-email", business_address: "臺北1號" },
@@ -567,8 +586,8 @@ describe("SupplierMarketStorePage — 店家法定資訊", () => {
     expect(saveStore).not.toHaveBeenCalled();
   });
 
-  it("資料庫回 store_disclosure_missing(供應商電話只有空白):中文訊息列出缺哪一項,說明要請 iFoodmap 補", async () => {
-    vi.mocked(fetchOwnStore).mockResolvedValue({ store: STORE_A, transferInfo: "台灣銀行 004 帳號 123", supplierPhone: "\u{3000}" });
+  it("資料庫回 store_disclosure_missing(供應商電話只有零寬字元):中文訊息列出缺哪一項,說明要請 iFoodmap 補", async () => {
+    vi.mocked(fetchOwnStore).mockResolvedValue({ store: STORE_A, transferInfo: "台灣銀行 004 帳號 123", supplierPhone: "\u{200B}" });
     vi.mocked(saveStore).mockRejectedValue(new MarketDbError({ message: "店家資料不完整", code: "22023", hint: "store_disclosure_missing" }));
     renderPage();
     expect(await screen.findByRole("region", { name: "開放零售前還缺這些資料" })).toHaveTextContent("還缺:店家電話");
