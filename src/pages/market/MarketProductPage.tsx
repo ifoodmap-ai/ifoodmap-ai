@@ -11,10 +11,12 @@ import { MARKET_FOCUS_RING, useMarketTitle } from "@/components/market/MarketLay
 import { MarketStaleNotice } from "@/components/market/MarketNotices";
 import { scrollIntoViewOnFocus } from "@/components/market/focus";
 import StoreInfoList from "@/components/market/StoreInfoList";
+import { ProductWithdrawalNotice } from "@/components/market/WithdrawalNotice";
 import { fetchMarketProduct, isPubliclyVisible } from "@/lib/market/catalog";
 import { CATEGORY_LABEL, REVIEW_STATUS_LABEL, TEMPERATURES } from "@/lib/market/constants";
 import { isUuid } from "@/lib/market/db";
 import { formatTwd, stockLabel } from "@/lib/market/format";
+import { isWithdrawalExempt } from "@/lib/market/withdrawal";
 import MarketLoadError from "./MarketLoadError";
 import MarketNotFound from "./MarketNotFound";
 import MarketOffline from "./MarketOffline";
@@ -134,6 +136,8 @@ export default function MarketProductPage() {
           <p className="text-sm text-slate-700">
             {TEMPERATURES[product.temperature]}・{stockLabel(product.stock)}
           </p>
+          {/* 七日鑑賞期逐項標示(準則 §2:要先告知才能排除;放在價格、規格旁邊,加入購物車之前就看得到) */}
+          <ProductWithdrawalNotice exempt={isWithdrawalExempt(product)} />
           {details.some(([, v]) => v) && (
             <dl className="grid grid-cols-[auto,1fr] gap-x-3 gap-y-1 text-sm">
               {details

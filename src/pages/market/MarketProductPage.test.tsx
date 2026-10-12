@@ -10,7 +10,7 @@ vi.mock("@/lib/market/catalog", async (importOriginal) => ({
 }));
 
 import { fetchMarketProduct } from "@/lib/market/catalog";
-import { CABBAGE, SALMON, STORE_A } from "@/lib/market/testFixtures";
+import { BEEF, CABBAGE, SALMON, STORE_A } from "@/lib/market/testFixtures";
 import { cartStore } from "@/lib/market/useCart";
 import { createMemoryStorage } from "@/test/memory-storage";
 import MarketProductPage from "./MarketProductPage";
@@ -19,6 +19,9 @@ import { renderMarketRoute } from "./testUtils";
 import { act } from "@testing-library/react";
 import { onlineManager } from "@tanstack/react-query";
 import { newTestQueryClient } from "./testUtils";
+
+/** 沒有 withdrawal_exempt 欄位的舊資料(migration 20261012110000 之前) */
+const BEEF_DEFAULT = (({ withdrawal_exempt: _omit, ...rest }) => rest)(BEEF);
 
 const PHOTO = (n: number) =>
   `${STORE_A.supplier_id}/${CABBAGE.id}/a9900000-0000-4000-8000-00000000000${n}.jpg`;
@@ -204,5 +207,32 @@ describe("MarketProductPage:離線與背景重抓失敗", () => {
     await userEvent.click(within(notice).getByRole("button", { name: "重新載入" }));
     expect(await screen.findByText("NT$ 120")).toBeInTheDocument();
     expect(screen.queryByText(/更新失敗/)).toBeNull();
+  });
+});
+
+describe("MarketProductPage:七日鑑賞期標示(法規查證 M3 的 A 方案)", () => {
+  const notice = () => screen.getByRole("group", { name: "退貨規定" });
+  const before = (a: Element, b: Element) => (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+
+  it("不適用的商品:價格旁邊標「不適用七日鑑賞期」加原因,連到服務條款第六條", async () => {
+    vi.mocked(fetchMarketProduct).mockResolvedValue({ ...CABBAGE, withdrawal_exempt: true });
+    renderAt(CABBAGE.id);
+    await screen.findByRole("heading", { level: 1, name: "有機高麗菜" });
+    expect(within(notice()).getByText("不適用七日鑑賞期")).toBeInTheDocument();
+    expect(notice()).toHaveTextContent("這項商品易腐敗或保存期限較短,依法不能無理由退貨;商品有瑕疵時,仍可以向店家要求處理。");
+    expect(within(notice()).getByRole("link", { name: "詳見服務條款第六條" })).toHaveAttribute("href", "/market/terms#withdrawal");
+    expect(screen.queryByText("收到後 7 天內可退貨")).toBeNull();
+    // 位置:緊接在價格、規格那一區(價格之後、加入購物車之前)
+    expect(before(screen.getByText("NT$ 100"), notice())).toBe(true);
+    expect(before(notice(), screen.getByRole("button", { name: "加入購物車" }))).toBe(true);
+  });
+
+  it("適用的商品(預設、沒有這個欄位的舊資料):標「收到後 7 天內可退貨」,一樣連到第六條", async () => {
+    vi.mocked(fetchMarketProduct).mockResolvedValue(BEEF_DEFAULT);
+    renderAt(BEEF_DEFAULT.id);
+    await screen.findByRole("heading", { level: 1, name: "牛肉片" });
+    expect(within(notice()).getByText("收到後 7 天內可退貨")).toBeInTheDocument();
+    expect(within(notice()).getByRole("link", { name: "詳見服務條款第六條" })).toHaveAttribute("href", "/market/terms#withdrawal");
+    expect(screen.queryByText("不適用七日鑑賞期")).toBeNull();
   });
 });
