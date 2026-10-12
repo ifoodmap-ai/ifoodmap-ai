@@ -139,3 +139,55 @@ describe("MarketStorePage:離線與背景重抓失敗", () => {
     expect(screen.queryByRole("heading", { name: "店家資料載入失敗" })).toBeNull();
   });
 });
+
+describe("MarketStorePage:店家的法定資訊與退貨說明(法規查證 M2、M6)", () => {
+  const LEGAL = {
+    legal_name: "市集測試 A 店有限公司",
+    representative: "王大明",
+    business_address: "臺北市大安區測試路 1 號",
+    service_email: "service@store-a.example",
+    food_registration_no: "A-12345678-00000-1",
+    liability_insurance: null,
+  };
+  const rows = () =>
+    within(screen.getByRole("list", { name: "店家資訊" }))
+      .getAllByRole("listitem")
+      .map((li) => li.textContent);
+
+  it("列出登記名稱、負責人、營業所地址、電話、客服 Email;有填登錄字號就顯示、責任險沒填就不顯示", async () => {
+    vi.mocked(fetchMarketStore).mockResolvedValue({ ...STORE_A, ...LEGAL });
+    vi.mocked(fetchStoreProducts).mockResolvedValue([CABBAGE]);
+    renderAt(STORE_A.supplier_id);
+    expect(await screen.findByRole("heading", { level: 2, name: "店家資訊" })).toBeInTheDocument();
+    expect(rows()).toEqual([
+      "登記名稱:市集測試 A 店有限公司",
+      "負責人:王大明",
+      "營業所地址:臺北市大安區測試路 1 號",
+      "電話:02-2345-6789",
+      "客服 Email:service@store-a.example",
+      "食品業者登錄字號:A-12345678-00000-1",
+    ]);
+    expect(screen.queryByText(/store-a@market-test\.invalid/)).toBeNull(); // contact_email 不顯示
+  });
+
+  it("店家沒寫退換貨說明:顯示逐項標示的版本(不再說生鮮一律不適用),並連到服務條款第六條", async () => {
+    vi.mocked(fetchMarketStore).mockResolvedValue({ ...STORE_A, ...LEGAL, return_policy: null });
+    vi.mocked(fetchStoreProducts).mockResolvedValue([CABBAGE]);
+    renderAt(STORE_A.supplier_id);
+    expect(
+      await screen.findByText(
+        "請直接聯絡店家。商品頁標示「不適用七日鑑賞期」的商品(例如生鮮易腐食品)不能無理由退貨,其他商品收到後 7 天內可以退貨;商品有瑕疵時都可以向店家要求處理。",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/生鮮食品依法不適用七天鑑賞期/)).toBeNull();
+    expect(screen.getByRole("link", { name: "詳見服務條款第六、七條" })).toHaveAttribute("href", "/market/terms#withdrawal");
+  });
+
+  it("店家自己寫了退換貨說明:照樣顯示,後面也連到服務條款第六、七條", async () => {
+    vi.mocked(fetchMarketStore).mockResolvedValue({ ...STORE_A, ...LEGAL });
+    vi.mocked(fetchStoreProducts).mockResolvedValue([CABBAGE]);
+    renderAt(STORE_A.supplier_id);
+    expect(await screen.findByText("生鮮食品收到後 24 小時內有問題請拍照聯絡我們")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "詳見服務條款第六、七條" })).toHaveAttribute("href", "/market/terms#withdrawal");
+  });
+});

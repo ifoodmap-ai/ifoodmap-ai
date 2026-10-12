@@ -1,6 +1,8 @@
-// /market/s/:supplierId 店家頁:封面、logo、店名、介紹、配送與付款條件、退換貨說明、這家店上架中的商品(可依分類篩)。
+// /market/s/:supplierId 店家頁:封面、logo、店名、介紹、配送與付款條件、退換貨說明、店家的法定資訊、這家店上架中的商品(可依分類篩)。
+// 法定資訊(消保法 §18、應記載事項第 1 點):登記名稱、負責人、營業所地址、電話、客服 Email,登錄字號、責任險有填才顯示。
+// 退換貨:店家沒寫時顯示逐項標示的版本(法規查證報告 5.2 的 A 版;不再說「生鮮一律不適用」),一律附服務條款第六條的連結。
 import { useMemo, useState } from "react";
-import { useParams } from "react-router-dom";
+import { Link, useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { Store } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -9,13 +11,18 @@ import { MARKET_FOCUS_RING, useMarketTitle } from "@/components/market/MarketLay
 import { MarketOfflineNotice, MarketStaleNotice } from "@/components/market/MarketNotices";
 import ProductCard from "@/components/market/ProductCard";
 import StoreInfoList from "@/components/market/StoreInfoList";
+import StoreLegalInfo from "@/components/market/StoreLegalInfo";
 import { fetchMarketStore, fetchStoreProducts, isStoreOpen } from "@/lib/market/catalog";
 import type { MarketCategoryKey } from "@/lib/market/constants";
 import { isUuid } from "@/lib/market/db";
 import { publicImageUrl } from "@/lib/market/images";
+import { WITHDRAWAL_EXEMPT_LABEL, WITHDRAWAL_TERMS_PATH } from "@/lib/market/withdrawal";
 import MarketLoadError from "./MarketLoadError";
 import MarketNotFound from "./MarketNotFound";
 import MarketOffline from "./MarketOffline";
+
+/** 店家沒寫退換貨說明時(報告 5.2 的 A 版;標示文字跟商品頁、服務條款第六條一樣) */
+const DEFAULT_RETURN_POLICY = `請直接聯絡店家。商品頁標示「${WITHDRAWAL_EXEMPT_LABEL}」的商品(例如生鮮易腐食品)不能無理由退貨,其他商品收到後 7 天內可以退貨;商品有瑕疵時都可以向店家要求處理。`;
 
 export default function MarketStorePage() {
   const { supplierId = "" } = useParams();
@@ -112,14 +119,35 @@ export default function MarketStorePage() {
           </h2>
           <p className="whitespace-pre-line text-slate-700">{store.intro ?? "店家還沒有填寫介紹。"}</p>
           <h2 className="pt-2 font-semibold text-slate-900">退換貨說明</h2>
-          <p className="whitespace-pre-line text-slate-700">{store.return_policy ?? "請直接聯絡店家。生鮮食品依法不適用七天鑑賞期。"}</p>
+          <p className="whitespace-pre-line text-slate-700">{store.return_policy ?? DEFAULT_RETURN_POLICY}</p>
+          <Link to={WITHDRAWAL_TERMS_PATH} className={`inline-flex min-h-11 items-center text-sm font-medium text-emerald-800 underline ${MARKET_FOCUS_RING}`}>
+            詳見服務條款第六、七條
+          </Link>
         </section>
-        <section aria-labelledby="store-terms-title" className="space-y-2 rounded-xl border border-slate-200 bg-white p-4">
-          <h2 id="store-terms-title" className="font-semibold text-slate-900">
-            配送與付款
-          </h2>
-          <StoreInfoList store={store} />
-        </section>
+        <div className="space-y-4">
+          <section aria-labelledby="store-terms-title" className="space-y-2 rounded-xl border border-slate-200 bg-white p-4">
+            <h2 id="store-terms-title" className="font-semibold text-slate-900">
+              配送與付款
+            </h2>
+            <StoreInfoList store={store} />
+          </section>
+          <section aria-labelledby="store-legal-title" className="space-y-2 rounded-xl border border-slate-200 bg-white p-4">
+            <h2 id="store-legal-title" className="font-semibold text-slate-900">
+              店家資訊
+            </h2>
+            <StoreLegalInfo
+              info={{
+                legalName: store.legal_name,
+                representative: store.representative,
+                businessAddress: store.business_address,
+                phone: store.suppliers?.phone,
+                serviceEmail: store.service_email,
+                foodRegistrationNo: store.food_registration_no,
+                liabilityInsurance: store.liability_insurance,
+              }}
+            />
+          </section>
+        </div>
       </div>
 
       <section aria-labelledby="store-products-title" className="space-y-3">
