@@ -72,8 +72,37 @@ describe("MarketLegalPage", () => {
     expect(terms).toContain("我們會在 3 個工作天內回覆");
     expect(privacy).toContain("保存 5 年");
     expect(privacy).toContain("製給複製本不收費用");
-    expect(privacy).toContain("連線紀錄:依各服務商方案,通常保存 1 至 7 天");
-    expect(privacy).toContain("受本市集委託維護系統的人員");
+    expect(privacy).toMatch(/系統紀錄保存 1 至 7 天/);
+    expect(privacy).toContain("受本市集委託維護系統的廠商或人員");
+    expect(TERMS.updated).toBe("2026-10-12");
+    expect(PRIVACY.updated).toBe("2026-10-12");
+  });
+
+  it("法規查證員核對定稿後的修正(2026-10-12):利用方式、連線紀錄、維護廠商、俗稱、來信保存、產品責任險", () => {
+    const section = (doc: typeof TERMS, heading: RegExp) => {
+      const s = doc.sections.find((x) => heading.test(x.heading));
+      if (!s) throw new Error(`找不到 ${heading}`);
+      return s.paragraphs;
+    };
+    // 個資法 §8 的「利用方式」:放在用途最後一項(依法令保存)與特定目的之間
+    const uses = section(PRIVACY, /^三、/);
+    const at = uses.indexOf("利用方式:以電子方式處理、儲存與傳輸,例如在店家後台與訂單查詢頁顯示、寄送 Email。");
+    expect(at).toBeGreaterThan(0);
+    expect(uses[at - 1]).toMatch(/^依法令保存交易紀錄/);
+    expect(uses[at + 1]).toMatch(/^特定目的:/);
+    const retention = section(PRIVACY, /^六、/);
+    expect(retention).toContain(
+      "連線紀錄:依各服務商的設定保存,例如資料庫服務商的系統紀錄保存 1 至 7 天;網站主機與寄信服務的紀錄,保存期間依各服務商的規定。",
+    );
+    // 來信跟訂單資料的起算點不同:不寫「跟訂單資料一樣」
+    expect(retention).toContain("你寫給本市集的信件:處理完成後保存 5 年,期滿後刪除。");
+    expect(allText(PRIVACY)).not.toContain("跟訂單資料一樣");
+    expect(section(PRIVACY, /^四、/).join("")).toContain("以及受本市集委託維護系統的廠商或人員。");
+    expect(section(TERMS, /^六、/).join("")).toContain("(俗稱七天鑑賞期、七日鑑賞期,法律上稱為猶豫期)");
+    // 產品責任險是選填:店家有投保才列
+    const stores = section(TERMS, /^二、/).join("");
+    expect(stores).toContain("食品業者登錄字號(依法須登錄者)與產品責任險投保資訊(店家有投保時);下單確認信也會附上這些資訊。");
+    expect(stores).not.toContain("產品責任險的投保情形");
     expect(TERMS.updated).toBe("2026-10-12");
     expect(PRIVACY.updated).toBe("2026-10-12");
   });
