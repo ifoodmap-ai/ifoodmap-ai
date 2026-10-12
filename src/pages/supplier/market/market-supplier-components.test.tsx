@@ -1,5 +1,5 @@
 // 供應商端零售元件:照片欄位(上傳、最多 5 張、設封面、移除)、商品視窗(驗證、送審、按鈕依狀態)。
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { MemoryRouter } from "react-router-dom";
@@ -143,6 +143,65 @@ describe("MarketProductDialog", () => {
     await waitFor(() =>
       expect(toastError).toHaveBeenCalledWith("儲存失敗", { description: "請先完成「零售市集 › 店家設定」再新增零售商品" }),
     );
+  });
+});
+
+describe("MarketProductDialog — 七日鑑賞期與食品資訊(法規查證 M3、M8、S4)", () => {
+  it("勾選框「此商品不適用七日鑑賞期」預設不勾(適用),附說明與「變更後商品會重新送審」;勾了才送 withdrawalExempt=true", async () => {
+    const { save } = renderDialog(null);
+    const box = screen.getByRole("checkbox", { name: "此商品不適用七日鑑賞期" });
+    expect(box).not.toBeChecked();
+    const hint = document.getElementById(box.getAttribute("aria-describedby") ?? "");
+    expect(hint).toHaveTextContent(
+      "生鮮易腐、保存期限短(少於 7 天左右),或收到時已接近到期。勾選後消費者不能無理由退貨;沒勾的商品,消費者收到後 7 天內可以退貨。",
+    );
+    expect(hint).toHaveTextContent("變更後商品會重新送審");
+
+    await userEvent.type(screen.getByLabelText("品名 *"), "有機菠菜");
+    await userEvent.selectOptions(screen.getByLabelText("分類 *"), "vegetable");
+    await userEvent.type(screen.getByLabelText("零售規格 *"), "300g/包");
+    await userEvent.type(screen.getByLabelText("零售價(元)*"), "80");
+    await userEvent.click(box);
+    await userEvent.click(screen.getByRole("button", { name: "送出審核" }));
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+    expect(save.mock.calls[0][0].form).toMatchObject({ withdrawalExempt: true });
+  });
+
+  it("沒勾就是「適用」:送 withdrawalExempt=false;既有商品帶入資料庫的值", async () => {
+    const { save } = renderDialog({ ...CABBAGE, review_status: "approved", withdrawal_exempt: true });
+    expect(screen.getByRole("checkbox", { name: "此商品不適用七日鑑賞期" })).toBeChecked();
+    await userEvent.click(screen.getByRole("checkbox", { name: "此商品不適用七日鑑賞期" }));
+    await userEvent.click(screen.getByRole("button", { name: "儲存" }));
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+    expect(save.mock.calls[0][0].form).toMatchObject({ withdrawalExempt: false });
+    cleanup();
+    renderDialog({ ...CABBAGE, review_status: "draft" });
+    expect(screen.getByRole("checkbox", { name: "此商品不適用七日鑑賞期" })).not.toBeChecked();
+  });
+
+  it("商品說明的提示列出要寫的食品資訊,並提醒不能寫的字句(接在說明欄的 aria-describedby,出錯時錯誤也接上)", async () => {
+    renderDialog(null);
+    const description = screen.getByLabelText("說明");
+    const ids = (description.getAttribute("aria-describedby") ?? "").split(" ").filter(Boolean);
+    const hint = ids.map((id) => document.getElementById(id)?.textContent ?? "").join("");
+    for (const item of [
+      "成分",
+      "淨重或容量",
+      "食品添加物",
+      "製造或國內負責廠商的名稱、電話、地址",
+      "原產地",
+      "到貨時離有效日期至少幾天",
+      "食品業者登錄字號",
+      "恕不退換",
+      "圖片僅供參考",
+      "醫療效能",
+    ]) {
+      expect(hint, item).toContain(item);
+    }
+    // 說明超過上限時:錯誤訊息跟提示都接在 aria-describedby
+    fireEvent.change(description, { target: { value: "字".repeat(2001) } });
+    await userEvent.click(screen.getByRole("button", { name: "送出審核" }));
+    expect(description.getAttribute("aria-describedby")?.split(" ")).toEqual(expect.arrayContaining([ids[0], "mp-description-error"]));
   });
 });
 

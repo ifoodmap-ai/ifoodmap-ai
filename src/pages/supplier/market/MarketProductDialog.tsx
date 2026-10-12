@@ -4,6 +4,8 @@
 // 修改既有商品帶讀到的 updated_at(樂觀鎖):別人先改過就不覆寫,視窗留著(可以先抄下改過的內容)、不能再存,
 // 按「重新載入」才關視窗、請父層重新讀取。新商品的 id 可以由父層給(同一個來源沿用還沒確認存好的 id,
 // 存檔回應遺失後重開不會建出第二筆;撞主鍵時 saveMarketProduct 會補存到那一筆)。
+// 法規(食材市集法規查證 M3、M8、S4):每個商品由店家勾選「不適用七日鑑賞期」(預設適用,管理員審核時確認,改了會重審);
+// 食品應記載的資訊先寫進商品說明(說明欄的提示列出要寫什麼、哪些字句不能寫),審核時把關。
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -224,19 +226,43 @@ export default function MarketProductDialog({
               </div>
             ))}
           </div>
+          <div className="rounded-md border border-slate-200 p-3">
+            <label className="flex min-h-11 items-center gap-3 text-sm font-medium text-slate-800">
+              <input
+                id="mp-withdrawalExempt"
+                type="checkbox"
+                checked={form.withdrawalExempt}
+                onChange={(e) => set("withdrawalExempt", e.target.checked)}
+                aria-describedby="mp-withdrawalExempt-hint"
+                className="h-5 w-5 shrink-0"
+              />
+              此商品不適用七日鑑賞期
+            </label>
+            <p id="mp-withdrawalExempt-hint" className="mt-1 text-sm text-slate-600">
+              生鮮易腐、保存期限短(少於 7 天左右),或收到時已接近到期。勾選後消費者不能無理由退貨;沒勾的商品,消費者收到後 7 天內可以退貨。
+              <span className="mt-1 block font-medium text-amber-800">變更後商品會重新送審。</span>
+            </p>
+          </div>
           <div>
             <label htmlFor="mp-description" className="mb-1 block text-sm font-medium text-slate-700">
               說明
             </label>
             <textarea
               id="mp-description"
-              rows={4}
+              rows={5}
               value={form.description}
               maxLength={LIMITS.description}
+              placeholder="例:成分:高麗菜。淨重:1.2 公斤。原產地:宜蘭三星。製造廠商:三星農場,03-989-1234,宜蘭縣三星鄉○○路 1 號。到貨時離有效日期至少 3 天。"
               onChange={(e) => set("description", e.target.value)}
               className={`${INPUT} py-2`}
-              {...aria("description")}
+              aria-invalid={!!errors.description}
+              // 提示一直接著;出錯時再加上錯誤訊息
+              aria-describedby={["mp-description-hint", errors.description ? "mp-description-error" : null].filter(Boolean).join(" ")}
             />
+            <p id="mp-description-hint" className="mt-1 text-xs text-slate-600">
+              請寫進食品資訊:成分、淨重或容量、食品添加物、製造或國內負責廠商的名稱、電話、地址、原產地、到貨時離有效日期至少幾天、食品業者登錄字號(有登錄的話)。
+              不能寫「恕不退換」「退貨運費自付」「圖片僅供參考」,也不能有醫療效能的宣稱(例如治療、預防疾病)。審核時會檢查。
+            </p>
             {err("description")}
           </div>
           <MarketPhotoField
