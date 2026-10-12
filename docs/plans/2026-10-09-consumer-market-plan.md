@@ -18405,3 +18405,14 @@ gate / render / handler / index 與 `config.toml` 先照計畫的程式碼區塊
 - 頁尾「發票由店家開立」(S1,建議):信件 FOOTER 屬於同一項,要一起改,這次都沒動。
 - S7 其餘(結帳頁的出貨天數、一句個資告知)與第 325 行(S6):不在這次的指示裡。
 - 🔴 部署順序:前端的公開查詢現在會 select 新欄位。20261012110000 沒套用就先上前端,商品與店家的公開查詢會被 PostgREST 以 400 擋下,頁面顯示載入失敗。照 DEPLOY.md 的順序:migration → `market-notify` → 前端。
+
+### 2026-10-12:compliance 的 guard 註解照實際行為改寫,停用中的店用 upsert 的行為接受現狀(commit `2927331`,分支 `market`)
+
+第五輪審查:沒有 Critical、Important,20261012100000 與 20261012110000 可以一起套用。下面是 Minor 1,決定**接受現狀**,只改 20261012110000 的註解(檔頭第 2 點、`market_stores_guard` 裡的說明),SQL 邏輯不動。去掉註解行之後,檔案跟改之前一字不差。
+
+- 原本的註解寫「被管理員停用的店怎麼改都不檢查」,這只對純 UPDATE 成立。
+- 店家設定頁用的是 upsert(`INSERT … ON CONFLICT DO UPDATE`)。INSERT 那一步的 BEFORE INSERT 會先跑 guard,而 guard 對供應商的 INSERT 先把 `is_enabled` 設成 true 再檢查。所以停用中的店送來的那一列缺法定欄位時,一樣回 `store_disclosure_missing`。
+- 店家不會因此被重新打開:衝突之後走 UPDATE,供應商改不了 `is_enabled`,照舊保留;前端的表單本來就要求填齊。
+- 用 scratch 測試確認過註解跟實際行為一致(3 / 3,不進 repo):停用中的店 upsert 缺欄位 → `store_disclosure_missing`;純 UPDATE 清掉欄位 → OK;upsert 送齊四項 → 成功,店照樣停用、停用原因還在。
+
+**數字**:`market_compliance` 乾跑(帶 100000 + 110000)**23 / 23**,殘留五個 0;vitest:`2927331` 的乾淨副本 **119 檔 / 1986 項**全過(上一節記的 `StoreLegalInfo.test.tsx` 載入失敗已經不見了)。
