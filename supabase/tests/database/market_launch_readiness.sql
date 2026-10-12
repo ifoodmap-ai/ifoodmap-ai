@@ -4,16 +4,37 @@
 --   cd /Users/aimand/.gemini/File/ifoodmap && SUPABASE_ACCESS_TOKEN="$(cat <token 檔>)" \
 --     node scripts/supabase-sql.mjs ro supabase/tests/database/market_launch_readiness.sql
 -- 每一項的期望值、意義與遇到時怎麼處理:docs/DEPLOY.md「第 3 階段」的「開放前檢查」。
--- 欄位與函式對照 migration 20261009120000 / 120100 / 130000 / 130100 / 130200 與加固 20261012100000(套用之後 migrations 多一個版本、
--- expire_orders_cron 有值、client_ip_ignores_xff / blocked_async_commit 變 true)。不呼叫 market_store_is_open() 等只開給 API 角色的函式:
--- 唯讀端點的角色沒有執行權(42501)。
+-- 欄位與函式對照 migration 20261009120000 / 120100 / 130000 / 130100 / 130200、加固 20261012100000 與法規補強 20261012110000
+-- (兩支套用之後 migrations 多兩個版本;expire_orders_cron 有值、client_ip_ignores_xff / blocked_async_commit 變 true;
+-- compliance_columns 變 8、email_ok_for_authenticated / items_snapshot_trigger 變 true)。
+-- 不呼叫 market_store_is_open()、market_visible() 等只開給 API 角色或 guard 的函式:唯讀端點的角色沒有執行權(42501)。
 -- 時間一律用台北日(擋下紀錄 market_rate_blocks_daily 的 day 就是台北日)。
+-- 法規補強 20261012110000 之後,「營業中」多了店家法定資訊四項必填與供應商電話(market_store_is_open 也這樣判斷):
+-- 新欄位用 to_jsonb(列)->>'欄位' 取,套用前欄位不存在也不會出錯,判斷方式自動跟著線上的版本。
 -- =====================================================================
+WITH req AS (
+  -- 20261012110000 套用了沒(店家表有 legal_name 這一欄)
+  SELECT EXISTS (SELECT 1 FROM pg_attribute a WHERE a.attrelid = 'public.market_stores'::regclass
+                  AND a.attname = 'legal_name' AND NOT a.attisdropped) AS disclosure
+), st AS (
+  -- 每家店:零售啟用 + 供應商帳號啟用(enabled);法定資訊四項 + 供應商電話都有(disclosed)。
+  -- 電話照 market_store_is_open 用 market_visible 判斷,唯讀角色沒有它的執行權,這裡用「有任何非空白字元」近似(只差在只填零寬字元這種情形)
+  SELECT s.supplier_id, sp.contact_email,
+         (s.is_enabled AND sp.is_active) AS enabled,
+         ((to_jsonb(s)->>'legal_name') IS NOT NULL AND (to_jsonb(s)->>'representative') IS NOT NULL
+          AND (to_jsonb(s)->>'business_address') IS NOT NULL AND (to_jsonb(s)->>'service_email') IS NOT NULL
+          AND COALESCE(sp.phone, '') ~ '[^[:space:]]') AS disclosed
+    FROM public.market_stores s
+    JOIN public.suppliers sp ON sp.id = s.supplier_id
+), open_st AS (
+  -- 對外營業中的店家(= market_store_is_open 的條件;不呼叫它:只開給 anon / authenticated / service_role,唯讀角色呼叫會 42501)
+  SELECT st.* FROM st, req WHERE st.enabled AND (NOT req.disclosure OR st.disclosed)
+)
 SELECT json_build_object(
   -- ---------- 固定值(每次都應該一樣;對不上就停下來查) ----------
   'migrations', (SELECT json_agg(m.version ORDER BY m.version) FROM supabase_migrations.schema_migrations m
                   WHERE m.version IN ('20261009120000', '20261009120100', '20261009130000', '20261009130100', '20261009130200',
-                                      '20261012100000')),
+                                      '20261012100000', '20261012110000')),
   'checkout_open', (SELECT c.value = 'true' FROM public.app_config c WHERE c.key = 'market_checkout_open'),
   'notify_url_ok', (SELECT c.value = 'https://cwvpehqcvbfuynabpqop.supabase.co/functions/v1/market-notify'
                       FROM public.app_config c WHERE c.key = 'market_notify_function_url'),
@@ -49,17 +70,31 @@ SELECT json_build_object(
   'blocked_async_commit', EXISTS (SELECT 1 FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace
                                    AND p.proname IN ('market_rate_take', 'market_place_order')
                                    AND pg_get_functiondef(p.oid) LIKE '%synchronous_commit%'),
+  -- 法規補強 20261012110000 套用之後才會是 8 / true / true(之前 0 / false / false):
+  --   新欄位:商品與明細的 withdrawal_exempt、店家的六個法定資訊
+  'compliance_columns', (SELECT count(*) FROM pg_attribute a WHERE NOT a.attisdropped AND (
+                            (a.attrelid IN ('public.market_products'::regclass, 'public.market_order_items'::regclass)
+                             AND a.attname = 'withdrawal_exempt')
+                         OR (a.attrelid = 'public.market_stores'::regclass
+                             AND a.attname IN ('legal_name', 'representative', 'business_address', 'service_email',
+                                               'food_registration_no', 'liability_insurance')))),
+  --   店家直接寫店家表時 CHECK 會用店家本人的身分執行 market_email_ok,所以開給 authenticated(anon 照舊沒有)
+  'email_ok_for_authenticated', has_function_privilege('authenticated', 'public.market_email_ok(text)', 'EXECUTE'),
+  --   明細的 withdrawal_exempt 由 trigger 從商品帶入下單當時的值
+  'items_snapshot_trigger', EXISTS (SELECT 1 FROM pg_trigger t WHERE t.tgrelid = 'public.market_order_items'::regclass
+                                     AND t.tgname = 'trg_market_order_items_snapshot' AND NOT t.tgisinternal),
 
   -- ---------- 營運數字(照實記下來;意義與處理見 DEPLOY.md) ----------
-  -- 對外營業中的店家:店家零售啟用 + 供應商帳號啟用。條件跟 market_store_is_open(120000)的內容一樣,但不呼叫它 ——
-  -- 那支只開給 anon / authenticated / service_role,唯讀端點的角色沒有執行權(呼叫會 42501)
-  'stores_open', (SELECT count(*) FROM public.market_stores s JOIN public.suppliers sp ON sp.id = s.supplier_id
-                   WHERE s.is_enabled AND sp.is_active),
+  -- 對外營業中的店家(上面的 open_st)
+  'stores_open', (SELECT count(*) FROM open_st),
+  -- 零售啟用、供應商帳號也啟用,但法定資訊或供應商電話沒填齊 → 消費者看不到、也不能下單(20261012110000 之前是 null)。
+  -- 店家設定擋得住缺欄位;擋不到的是:管理員在「會員 › 供應商」清掉電話(guard 管不到供應商表)、套用 110000 之前就開好的店
+  'stores_enabled_missing_disclosure', (SELECT CASE WHEN req.disclosure THEN (SELECT count(*) FROM st WHERE st.enabled AND NOT st.disclosed) END
+                                          FROM req),
   -- 營業中、但聯絡信箱是空的或格式不對的店家 —— market-notify 寄新訂單通知前用同一條規則檢查
   -- (supabase/functions/_shared/supplier-mail.ts 的 EMAIL_PATTERN、≤ 254 字;不去頭尾空白),這幾家收不到新訂單信
-  'stores_open_bad_contact_email', (SELECT count(*) FROM public.market_stores s JOIN public.suppliers sp ON sp.id = s.supplier_id
-                                     WHERE s.is_enabled AND sp.is_active
-                                       AND NOT COALESCE(char_length(sp.contact_email) <= 254 AND sp.contact_email
+  'stores_open_bad_contact_email', (SELECT count(*) FROM open_st o
+                                     WHERE NOT COALESCE(char_length(o.contact_email) <= 254 AND o.contact_email
                                              ~ '^[A-Za-z0-9._%+''-]+@[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*\.([A-Za-z]{2,}|xn--[A-Za-z0-9-]+)$',
                                              false)),
   -- 付款方式含轉帳、轉帳資訊卻被刪掉的店家(這幾家的轉帳結帳會回 PAYMENT_NOT_ACCEPTED)
@@ -67,10 +102,8 @@ SELECT json_build_object(
                                     WHERE 'transfer' = ANY (s.payment_methods)
                                       AND NOT EXISTS (SELECT 1 FROM public.market_store_transfer t WHERE t.supplier_id = s.supplier_id)),
   -- 消費者看得到的商品(已核准 + 上架中 + 店家營業中)
-  'products_listed', (SELECT count(*) FROM public.market_products p
-                        JOIN public.market_stores s ON s.supplier_id = p.supplier_id
-                        JOIN public.suppliers sp ON sp.id = p.supplier_id
-                       WHERE p.review_status = 'approved' AND p.is_listed AND s.is_enabled AND sp.is_active),
+  'products_listed', (SELECT count(*) FROM public.market_products p JOIN open_st o ON o.supplier_id = p.supplier_id
+                       WHERE p.review_status = 'approved' AND p.is_listed),
   'products_pending_review', (SELECT count(*) FROM public.market_products p WHERE p.review_status = 'pending'),
   'products_pending_over_2_days', (SELECT count(*) FROM public.market_products p
                                     WHERE p.review_status = 'pending' AND p.submitted_at < now() - interval '2 days'),
