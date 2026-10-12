@@ -118,6 +118,31 @@ describe("MarketLayout 換頁", () => {
     expect(scrollTo).toHaveBeenCalledTimes(1);
   });
 
+  it("網址帶 #錨點 換頁時不捲回頂端(交給頁面捲到那一條,例如條款第六條 #withdrawal)", async () => {
+    const scrollTo = vi.spyOn(window, "scrollTo").mockImplementation(() => {});
+    const Go = () => {
+      const navigate = useNavigate();
+      return (
+        <button type="button" onClick={() => navigate("/market/p/x#withdrawal")}>
+          去錨點
+        </button>
+      );
+    };
+    render(
+      <MemoryRouter initialEntries={["/market"]}>
+        <Routes>
+          <Route path="/market" element={<MarketLayout />}>
+            <Route index element={<Go />} />
+            <Route path="p/:id" element={<p>有錨點的頁面</p>} />
+          </Route>
+        </Routes>
+      </MemoryRouter>,
+    );
+    await userEvent.click(screen.getByRole("button", { name: "去錨點" }));
+    expect(screen.getByText("有錨點的頁面")).toBeInTheDocument();
+    expect(scrollTo).not.toHaveBeenCalled();
+  });
+
   it("離開市集時,分頁標題還原成進市集之前的", async () => {
     vi.spyOn(window, "scrollTo").mockImplementation(() => {});
     document.title = "進市集之前的標題";

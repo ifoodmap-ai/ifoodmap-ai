@@ -32,13 +32,13 @@ export const useMarketTitle = (title: string | null | undefined) => {
 
 export default function MarketLayout() {
   const { count } = useCart();
-  const { pathname } = useLocation();
+  const { pathname, hash } = useLocation();
   const navigationType = useNavigationType();
 
   // 點連結換頁(PUSH / REPLACE)捲回頂端,不然手機從清單下方點進商品頁會停在半頁。
-  // 上一頁 / 下一頁(POP)交給瀏覽器還原位置;第一次載入也是 POP。
+  // 上一頁 / 下一頁(POP)交給瀏覽器還原位置;第一次載入也是 POP。網址帶 #錨點(例如條款第六條)時交給頁面自己捲到那一條。
   useEffect(() => {
-    if (navigationType !== "POP") window.scrollTo(0, 0);
+    if (navigationType !== "POP" && !hash) window.scrollTo(0, 0);
     // 只看 pathname:首頁改篩選條件(?q=、?cat=)是 REPLACE,不能每打一個字就捲回頂端
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pathname]);
