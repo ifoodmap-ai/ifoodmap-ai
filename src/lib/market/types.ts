@@ -14,6 +14,19 @@ export interface MarketStoreRow {
   supplier_id: string;
   is_enabled: boolean;
   disabled_reason?: string | null;
+  /**
+   * 店家法定資訊(migration 20261012110000_market_compliance.sql;消保法 §18、零售 / 食品應記載事項):
+   * 登記名稱、負責人、營業所地址、客服 Email 四項加上供應商電話(suppliers.phone)都有,才能開放零售。
+   * 只有店家自己(store.ts)與管理後台的查詢會帶;市集公開查詢帶哪幾項看 catalog.ts。
+   */
+  legal_name?: string | null;
+  representative?: string | null;
+  business_address?: string | null;
+  service_email?: string | null;
+  /** 食品業者登錄字號(依法要登錄的才有;選填) */
+  food_registration_no?: string | null;
+  /** 產品責任險(選填) */
+  liability_insurance?: string | null;
   logo_path: string | null;
   cover_path: string | null;
   intro: string | null;
@@ -43,6 +56,11 @@ export interface MarketProductRow {
   shelf_life: string | null;
   description: string | null;
   photos: string[];
+  /**
+   * true = 不適用七日鑑賞期(店家勾選,管理員審核時確認;改了會回到待審)。預設 false = 適用。
+   * migration 20261012110000 之後一定有值;沒有這個欄位的舊假資料當成 false。
+   */
+  withdrawal_exempt?: boolean;
   review_status: ReviewStatus;
   reject_reason?: string | null;
   is_listed: boolean;

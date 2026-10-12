@@ -143,6 +143,31 @@ describe("payload 與儲存", () => {
   });
 });
 
+describe("七日鑑賞期標示(withdrawal_exempt:true = 不適用)", () => {
+  it("新商品預設「適用」;從資料列帶入;payload 帶 withdrawal_exempt", () => {
+    expect(emptyProductForm().withdrawalExempt).toBe(false);
+    expect(emptyProductForm({ id: "s1", name: "牛腱心", category: "肉品", pack_size: "5kg/箱", price: 420, description: null }).withdrawalExempt).toBe(false);
+    expect(productFormFromRow({ ...CABBAGE, withdrawal_exempt: true }).withdrawalExempt).toBe(true);
+    expect(productFormFromRow({ ...CABBAGE, withdrawal_exempt: false }).withdrawalExempt).toBe(false);
+    // 沒有這個欄位的資料(欄位加進來之前的假資料)當成「適用」
+    expect(productFormFromRow({ ...CABBAGE, withdrawal_exempt: undefined }).withdrawalExempt).toBe(false);
+    expect(productPayload(valid({ withdrawalExempt: true })).withdrawal_exempt).toBe(true);
+    expect(productPayload(valid()).withdrawal_exempt).toBe(false);
+  });
+
+  it("新增、修改都送 withdrawal_exempt(修改時一般儲存也送:資料庫看到它變了會改回待審)", async () => {
+    await saveMarketProduct({ supplierId: "sup", productId: "p1", isNew: true, form: valid({ withdrawalExempt: true }), submit: true });
+    expect(calls[0].payload).toMatchObject({ withdrawal_exempt: true, review_status: "pending" });
+    await saveMarketProduct({ supplierId: "sup", productId: "p1", isNew: false, form: valid({ withdrawalExempt: false }), submit: false, expectedUpdatedAt: STAMP });
+    expect(calls[1].payload).toMatchObject({ withdrawal_exempt: false });
+    expect(calls[1].payload).not.toHaveProperty("review_status");
+  });
+
+  it("已核准商品的提醒寫明:改七日鑑賞期的標示也會重新送審", () => {
+    expect(productActions("approved").notice).toMatch(/七日鑑賞期的標示/);
+  });
+});
+
 describe("productActions", () => {
   it("新商品 / 草稿:儲存草稿 + 送出審核", () => {
     expect(productActions(null)).toMatchObject({ secondary: { label: "儲存草稿" }, primary: { label: "送出審核", submit: true } });

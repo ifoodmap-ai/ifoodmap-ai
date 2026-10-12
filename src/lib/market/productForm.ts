@@ -47,6 +47,8 @@ export interface ProductForm {
   shelfLife: string;
   description: string;
   photos: string[];
+  /** true = 此商品不適用七日鑑賞期(生鮮易腐、保存期限短或到貨時已接近到期);預設 false = 適用 */
+  withdrawalExempt: boolean;
   isListed: boolean;
   supplyId: string | null;
 }
@@ -85,6 +87,7 @@ export const emptyProductForm = (seed?: SupplySeed | null): ProductForm => ({
   shelfLife: "",
   description: seed?.description ?? "",
   photos: [],
+  withdrawalExempt: false,
   isListed: true,
   supplyId: seed?.id ?? null,
 });
@@ -102,6 +105,7 @@ export const productFormFromRow = (row: MarketProductRow): ProductForm => ({
   shelfLife: row.shelf_life ?? "",
   description: row.description ?? "",
   photos: [...row.photos],
+  withdrawalExempt: row.withdrawal_exempt ?? false,
   isListed: row.is_listed,
   supplyId: row.supply_id ?? null,
 });
@@ -143,6 +147,7 @@ export const productPayload = (f: ProductForm) => ({
   shelf_life: f.shelfLife.trim() || null,
   description: f.description.trim() || null,
   photos: f.photos,
+  withdrawal_exempt: f.withdrawalExempt,
   is_listed: f.isListed,
   supply_id: f.supplyId,
 });
@@ -239,7 +244,8 @@ export const productActions = (status: ReviewStatus | null): ProductActions => {
       return {
         secondary: null,
         primary: { label: "儲存", submit: false },
-        notice: "修改品名、分類、規格、溫層、產地、保存方式、保存期限、說明或照片後會重新送審(審核通過前消費者看不到);只改價格、庫存、上架開關不用重審。",
+        notice:
+          "修改品名、分類、規格、溫層、產地、保存方式、保存期限、說明、照片或七日鑑賞期的標示後會重新送審(審核通過前消費者看不到);只改價格、庫存、上架開關不用重審。",
       };
     case "rejected":
       return { secondary: { label: "儲存(先不送審)", submit: false }, primary: { label: "重新送審", submit: true }, notice: null };
