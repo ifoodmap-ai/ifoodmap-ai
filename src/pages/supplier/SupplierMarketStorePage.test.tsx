@@ -31,9 +31,20 @@ vi.mock("@/lib/market/images", async (importOriginal) => ({
 import { uploadMarketImage } from "@/lib/market/images";
 import { MarketDbError } from "@/lib/market/db";
 import { fetchOwnStore, MarketPartialSaveError, MarketStaleError, saveStore } from "@/lib/market/store";
-import { STORE_A } from "@/lib/market/testFixtures";
+import { STORE_A as STORE_A_BASE } from "@/lib/market/testFixtures";
 import type { MarketStoreRow } from "@/lib/market/types";
 import SupplierMarketStorePage from "./SupplierMarketStorePage";
+
+/** 法定資訊都填好的 A 店(testFixtures 的 STORE_A 沒有這些欄位:migration 20261012110000 才加) */
+const STORE_A: MarketStoreRow = {
+  ...STORE_A_BASE,
+  legal_name: "市集測試 A 店有限公司",
+  representative: "王小明",
+  business_address: "臺北市測試路 1 號",
+  service_email: "service-a@example.com",
+};
+/** 供應商資料的電話(suppliers.phone) */
+const PHONE = "02-2345-6789";
 
 const renderPage = () =>
   render(
@@ -42,9 +53,17 @@ const renderPage = () =>
     </MemoryRouter>,
   );
 
+/** 新店家:照畫面把四項法定資訊填好 */
+const fillLegal = async () => {
+  await userEvent.type(await screen.findByLabelText("登記名稱 *"), "新店家商行");
+  await userEvent.type(screen.getByLabelText("負責人 *"), "林小華");
+  await userEvent.type(screen.getByLabelText("營業所地址 *"), "新竹市測試路 3 號");
+  await userEvent.type(screen.getByLabelText("客服 Email *"), "service@example.com");
+};
+
 beforeEach(() => {
   supplier.current = null;
-  vi.mocked(fetchOwnStore).mockResolvedValue({ store: null, transferInfo: null });
+  vi.mocked(fetchOwnStore).mockResolvedValue({ store: null, transferInfo: null, supplierPhone: PHONE });
   vi.mocked(saveStore).mockResolvedValue(STORE_A);
 });
 afterEach(cleanup);
@@ -52,6 +71,7 @@ afterEach(cleanup);
 describe("SupplierMarketStorePage", () => {
   it("還沒建店:沒選縣市就儲存 → 縣市欄位顯示錯誤,不會送出", async () => {
     renderPage();
+    await fillLegal();
     await userEvent.click(await screen.findByRole("button", { name: "儲存店家設定" }));
     expect(await screen.findByText("至少選一個配送縣市")).toBeInTheDocument();
     expect(saveStore).not.toHaveBeenCalled();
@@ -71,12 +91,21 @@ describe("SupplierMarketStorePage", () => {
 
   it("填好就儲存,送出的表單帶選的縣市與運費", async () => {
     renderPage();
+    await fillLegal();
     await userEvent.click(await screen.findByLabelText("臺北市"));
     await userEvent.clear(screen.getByLabelText("固定運費(元)"));
     await userEvent.type(screen.getByLabelText("固定運費(元)"), "120");
     await userEvent.click(screen.getByRole("button", { name: "儲存店家設定" }));
     await waitFor(() => expect(saveStore).toHaveBeenCalledTimes(1));
-    expect(vi.mocked(saveStore).mock.calls[0][1]).toMatchObject({ deliveryCities: ["臺北市"], shippingFee: "120", acceptCod: true });
+    expect(vi.mocked(saveStore).mock.calls[0][1]).toMatchObject({
+      deliveryCities: ["臺北市"],
+      shippingFee: "120",
+      acceptCod: true,
+      legalName: "新店家商行",
+      representative: "林小華",
+      businessAddress: "新竹市測試路 3 號",
+      serviceEmail: "service@example.com",
+    });
     expect(toastSuccess).toHaveBeenCalledWith("已儲存店家設定");
   });
 
@@ -84,6 +113,7 @@ describe("SupplierMarketStorePage", () => {
     vi.mocked(fetchOwnStore).mockResolvedValue({
       store: { ...STORE_A, is_enabled: false, disabled_reason: "客訴處理中" },
       transferInfo: "台灣銀行 004 帳號 123",
+      supplierPhone: PHONE,
     });
     renderPage();
     expect(await screen.findByRole("alert")).toHaveTextContent("原因:客訴處理中");
@@ -99,7 +129,7 @@ describe("SupplierMarketStorePage — 讀取狀態", () => {
   it("讀取失敗:不顯示表單、送不出儲存,顯示原因與「重新載入」;重新載入成功才帶入原本的設定", async () => {
     vi.mocked(fetchOwnStore)
       .mockRejectedValueOnce(new TypeError("Failed to fetch"))
-      .mockResolvedValueOnce({ store: STORE_A, transferInfo: "台灣銀行 004 帳號 123" });
+      .mockResolvedValueOnce({ store: STORE_A, transferInfo: "台灣銀行 004 帳號 123", supplierPhone: PHONE });
     renderPage();
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent("讀取店家設定失敗");
@@ -139,7 +169,7 @@ describe("SupplierMarketStorePage — 讀取狀態", () => {
     expect(document.querySelector("form")).toBeNull();
     expect(screen.queryByRole("button", { name: "儲存店家設定" })).toBeNull();
     expect(screen.queryByRole("alert")).toBeNull();
-    finish({ store: STORE_A, transferInfo: null });
+    finish({ store: STORE_A, transferInfo: null, supplierPhone: PHONE });
     expect(await screen.findByLabelText("新北市")).toBeChecked();
   });
 
@@ -217,6 +247,7 @@ describe("SupplierMarketStorePage — 儲存成功後換成資料庫整理過的
       payment_methods: ["cod"],
     });
     renderPage();
+    await fillLegal();
     await userEvent.click(await screen.findByLabelText("新北市"));
     await userEvent.click(screen.getByLabelText("臺北市"));
     await userEvent.type(screen.getByLabelText("店家介紹"), "  當日採收  ");
@@ -235,6 +266,7 @@ describe("SupplierMarketStorePage — 儲存成功後換成資料庫整理過的
 
   it("轉帳資訊存的是去掉頭尾空白的值,畫面也換成那個值", async () => {
     renderPage();
+    await fillLegal();
     await userEvent.click(await screen.findByLabelText("臺北市"));
     await userEvent.click(screen.getByLabelText(/銀行轉帳/));
     await userEvent.type(screen.getByLabelText("轉帳資訊(銀行、分行、帳號、戶名)"), "  台灣銀行 004 帳號 123  ");
@@ -244,7 +276,7 @@ describe("SupplierMarketStorePage — 儲存成功後換成資料庫整理過的
   });
 
   it("取消勾轉帳再存:轉帳資訊沒有存(資料庫還是舊的),再勾回來看到的是資料庫裡的值", async () => {
-    vi.mocked(fetchOwnStore).mockResolvedValue({ store: STORE_A, transferInfo: "台灣銀行 004 帳號 123" });
+    vi.mocked(fetchOwnStore).mockResolvedValue({ store: STORE_A, transferInfo: "台灣銀行 004 帳號 123", supplierPhone: PHONE });
     vi.mocked(saveStore).mockResolvedValue({ ...STORE_A, payment_methods: ["cod"] });
     renderPage();
     const info = await screen.findByLabelText("轉帳資訊(銀行、分行、帳號、戶名)");
@@ -271,7 +303,7 @@ describe("SupplierMarketStorePage — 上傳、儲存同時發生", () => {
   };
 
   beforeEach(() => {
-    vi.mocked(fetchOwnStore).mockResolvedValue({ store: STORE_A, transferInfo: "台灣銀行 004 帳號 123" });
+    vi.mocked(fetchOwnStore).mockResolvedValue({ store: STORE_A, transferInfo: "台灣銀行 004 帳號 123", supplierPhone: PHONE });
   });
 
   it("A. 上傳中按儲存、上傳先完成:儲存鈕停用並說明原因、按了不會送出;新 logo 不會被蓋回舊值,上傳完才存得進去", async () => {
@@ -350,7 +382,7 @@ describe("SupplierMarketStorePage — 不蓋掉別人的修改", () => {
   const SAVED_AT = "2026-10-10T07:05:00.654321+00:00";
 
   it("更新時把讀到的 updated_at 原字串與轉帳資訊交給 saveStore;存完下一次用資料庫回的新 updated_at", async () => {
-    vi.mocked(fetchOwnStore).mockResolvedValue({ store: { ...STORE_A, updated_at: READ_AT }, transferInfo: "台灣銀行 004 帳號 123" });
+    vi.mocked(fetchOwnStore).mockResolvedValue({ store: { ...STORE_A, updated_at: READ_AT }, transferInfo: "台灣銀行 004 帳號 123", supplierPhone: PHONE });
     vi.mocked(saveStore).mockResolvedValue({ ...STORE_A, updated_at: SAVED_AT });
     renderPage();
     await userEvent.click(await screen.findByRole("button", { name: "儲存店家設定" }));
@@ -364,6 +396,7 @@ describe("SupplierMarketStorePage — 不蓋掉別人的修改", () => {
 
   it("還沒建店:saveStore 拿到 updatedAt null(第一次建立)", async () => {
     renderPage();
+    await fillLegal();
     await userEvent.click(await screen.findByLabelText("臺北市"));
     await userEvent.click(screen.getByRole("button", { name: "儲存店家設定" }));
     await waitFor(() => expect(saveStore).toHaveBeenCalledTimes(1));
@@ -372,8 +405,8 @@ describe("SupplierMarketStorePage — 不蓋掉別人的修改", () => {
 
   it("資料已被其他人更新:顯示訊息與「重新載入」,表單保留剛改的(不覆寫);重新載入才換成資料庫的值", async () => {
     vi.mocked(fetchOwnStore)
-      .mockResolvedValueOnce({ store: { ...STORE_A, updated_at: READ_AT }, transferInfo: "台灣銀行 004 帳號 123" })
-      .mockResolvedValueOnce({ store: { ...STORE_A, intro: "同事改過的介紹", updated_at: SAVED_AT }, transferInfo: "台灣銀行 004 帳號 123" });
+      .mockResolvedValueOnce({ store: { ...STORE_A, updated_at: READ_AT }, transferInfo: "台灣銀行 004 帳號 123", supplierPhone: PHONE })
+      .mockResolvedValueOnce({ store: { ...STORE_A, intro: "同事改過的介紹", updated_at: SAVED_AT }, transferInfo: "台灣銀行 004 帳號 123", supplierPhone: PHONE });
     vi.mocked(saveStore).mockRejectedValue(new MarketStaleError());
     renderPage();
     const intro = await screen.findByLabelText("店家介紹");
@@ -400,7 +433,7 @@ describe("SupplierMarketStorePage — 只存好一部分", () => {
   const checkFailed = () => new MarketDbError({ message: "check", code: "23514" });
 
   it("轉帳資訊存好、店家沒存到:訊息講清楚;之後存檔用資料庫裡的新轉帳資訊,取消勾轉帳再勾回來看到的也是新的", async () => {
-    vi.mocked(fetchOwnStore).mockResolvedValue({ store: { ...STORE_A, payment_methods: ["cod"], updated_at: READ_AT }, transferInfo: null });
+    vi.mocked(fetchOwnStore).mockResolvedValue({ store: { ...STORE_A, payment_methods: ["cod"], updated_at: READ_AT }, transferInfo: null, supplierPhone: PHONE });
     vi.mocked(saveStore)
       .mockRejectedValueOnce(new MarketPartialSaveError("transfer", null, "新帳號 2222", checkFailed()))
       .mockResolvedValueOnce({ ...STORE_A, payment_methods: ["cod"], updated_at: SAVED_AT });
@@ -426,7 +459,7 @@ describe("SupplierMarketStorePage — 只存好一部分", () => {
   });
 
   it("店家存好、轉帳資訊沒存到:訊息講清楚;店家換成資料庫的值、下次用新的 updated_at,轉帳資訊保留剛打的、資料庫的舊帳號記錄不變", async () => {
-    vi.mocked(fetchOwnStore).mockResolvedValue({ store: { ...STORE_A, updated_at: READ_AT }, transferInfo: "舊帳號 1111" });
+    vi.mocked(fetchOwnStore).mockResolvedValue({ store: { ...STORE_A, updated_at: READ_AT }, transferInfo: "舊帳號 1111", supplierPhone: PHONE });
     vi.mocked(saveStore)
       .mockRejectedValueOnce(
         new MarketPartialSaveError("store", { ...STORE_A, intro: "資料庫的介紹", updated_at: SAVED_AT }, null, checkFailed()),
@@ -475,11 +508,98 @@ describe("SupplierMarketStorePage — 錯誤訊息轉中文、可以重試", () 
   });
 
   it("儲存時資料庫回英文錯誤:toast 顯示中文 + 錯誤代碼,不顯示原文", async () => {
-    vi.mocked(fetchOwnStore).mockResolvedValue({ store: STORE_A, transferInfo: "台灣銀行 004 帳號 123" });
+    vi.mocked(fetchOwnStore).mockResolvedValue({ store: STORE_A, transferInfo: "台灣銀行 004 帳號 123", supplierPhone: PHONE });
     vi.mocked(saveStore).mockRejectedValue(new MarketDbError({ message: "Could not find the 'x' column", code: "PGRST204" }));
     renderPage();
     await userEvent.click(await screen.findByRole("button", { name: "儲存店家設定" }));
     await waitFor(() => expect(toastError).toHaveBeenCalledWith("儲存失敗", { description: "請稍後再試(錯誤代碼 PGRST204)" }));
+  });
+});
+
+// 法規查證 M6、S4:店家法定資訊(登記名稱、負責人、營業所地址、客服 Email 必填;食品業者登錄字號、產品責任險選填)
+// 加上供應商資料的電話,沒填齊就不能開放零售(資料庫擋成 store_disclosure_missing);退換貨說明的例句不能寫「24 小時內」。
+describe("SupplierMarketStorePage — 店家法定資訊", () => {
+  it("法定資訊一區在最上面:四項必填、兩項選填,maxLength 跟資料庫一樣;店家電話顯示供應商資料的電話(這頁改不了)", async () => {
+    vi.mocked(fetchOwnStore).mockResolvedValue({ store: STORE_A, transferInfo: null, supplierPhone: PHONE });
+    renderPage();
+    expect(await screen.findByLabelText("登記名稱 *")).toHaveValue("市集測試 A 店有限公司");
+    expect(screen.getByLabelText("登記名稱 *")).toHaveAttribute("maxLength", "100");
+    expect(screen.getByLabelText("負責人 *")).toHaveAttribute("maxLength", "50");
+    expect(screen.getByLabelText("營業所地址 *")).toHaveAttribute("maxLength", "200");
+    expect(screen.getByLabelText("客服 Email *")).toHaveAttribute("maxLength", "254");
+    expect(screen.getByLabelText("客服 Email *")).toHaveAttribute("type", "email");
+    expect(screen.getByLabelText("食品業者登錄字號(選填)")).toHaveAttribute("maxLength", "40");
+    expect(screen.getByLabelText("產品責任險(選填)")).toHaveAttribute("maxLength", "100");
+    const phone = screen.getByText(PHONE);
+    expect(phone.closest("[data-store-phone]")).toHaveTextContent("要改請聯絡 iFoodmap");
+    expect(screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent)[0]).toBe("店家法定資訊(消費者在店家頁看得到)");
+    // 都填齊、有電話:不顯示「還缺」
+    expect(screen.queryByRole("region", { name: "開放零售前還缺這些資料" })).toBeNull();
+  });
+
+  it("沒填齊:最上面列出還缺哪幾項(含供應商電話);存的時候四項沒填會擋並標出欄位;填好的就不再列", async () => {
+    vi.mocked(fetchOwnStore).mockResolvedValue({ store: STORE_A_BASE, transferInfo: null, supplierPhone: null });
+    renderPage();
+    const missing = await screen.findByRole("region", { name: "開放零售前還缺這些資料" });
+    expect(missing).toHaveTextContent("還缺:登記名稱、負責人、營業所地址、客服 Email、店家電話");
+    expect(missing).toHaveTextContent("店家電話來自你的供應商資料,這頁改不了,請聯絡 iFoodmap(ifoodmaptw@gmail.com)補上");
+    await userEvent.click(screen.getByRole("button", { name: "儲存店家設定" }));
+    expect(saveStore).not.toHaveBeenCalled();
+    expect(toastError).toHaveBeenCalledWith("有欄位需要修正", { description: "請填登記名稱(公司或商號登記的名稱)" });
+    expect(screen.getByLabelText("登記名稱 *")).toHaveAttribute("aria-invalid", "true");
+    expect(screen.getByLabelText("客服 Email *")).toHaveAttribute("aria-describedby", expect.stringContaining("store-serviceEmail-error"));
+    await userEvent.type(screen.getByLabelText("登記名稱 *"), "市集測試 A 店有限公司");
+    await userEvent.type(screen.getByLabelText("負責人 *"), "王小明");
+    expect(missing).toHaveTextContent("還缺:營業所地址、客服 Email、店家電話");
+  });
+
+  it("客服 Email 格式不對、地址太短:照資料庫的規則擋下,不會送出", async () => {
+    vi.mocked(fetchOwnStore).mockResolvedValue({
+      store: { ...STORE_A, service_email: "not-an-email", business_address: "臺北1號" },
+      transferInfo: null,
+      supplierPhone: PHONE,
+    });
+    renderPage();
+    await userEvent.click(await screen.findByRole("button", { name: "儲存店家設定" }));
+    expect(await screen.findByText("客服 Email 格式不對")).toBeInTheDocument();
+    expect(screen.getByText("營業所地址要 5–200 字")).toBeInTheDocument();
+    expect(saveStore).not.toHaveBeenCalled();
+  });
+
+  it("資料庫回 store_disclosure_missing(供應商電話只有空白):中文訊息列出缺哪一項,說明要請 iFoodmap 補", async () => {
+    vi.mocked(fetchOwnStore).mockResolvedValue({ store: STORE_A, transferInfo: "台灣銀行 004 帳號 123", supplierPhone: "\u{3000}" });
+    vi.mocked(saveStore).mockRejectedValue(new MarketDbError({ message: "店家資料不完整", code: "22023", hint: "store_disclosure_missing" }));
+    renderPage();
+    expect(await screen.findByRole("region", { name: "開放零售前還缺這些資料" })).toHaveTextContent("還缺:店家電話");
+    await userEvent.click(screen.getByRole("button", { name: "儲存店家設定" }));
+    await waitFor(() =>
+      expect(toastError).toHaveBeenCalledWith("儲存失敗", {
+        description: "開放零售前要填齊店家法定資訊,還缺:店家電話。店家電話來自你的供應商資料,這頁改不了,請聯絡 iFoodmap(ifoodmaptw@gmail.com)補上。",
+      }),
+    );
+  });
+
+  it("資料庫說缺、畫面上卻都填了(例如別的分頁剛改過):顯示資料庫那句的中文", async () => {
+    vi.mocked(fetchOwnStore).mockResolvedValue({ store: STORE_A, transferInfo: "台灣銀行 004 帳號 123", supplierPhone: PHONE });
+    vi.mocked(saveStore).mockRejectedValue(new MarketDbError({ message: "x", code: "22023", hint: "store_disclosure_missing" }));
+    renderPage();
+    await userEvent.click(await screen.findByRole("button", { name: "儲存店家設定" }));
+    await waitFor(() =>
+      expect(toastError).toHaveBeenCalledWith("儲存失敗", {
+        description: "開放零售前要填齊店家法定資訊:登記名稱、負責人、營業所地址、客服 Email,以及供應商資料的電話",
+      }),
+    );
+  });
+
+  it("退換貨說明的例句不再寫「24 小時內」;提醒不能寫限制消費者權益的字句,不適用七日鑑賞期要在商品上勾", async () => {
+    vi.mocked(fetchOwnStore).mockResolvedValue({ store: STORE_A, transferInfo: null, supplierPhone: PHONE });
+    renderPage();
+    const policy = await screen.findByLabelText("退換貨說明");
+    expect(policy).toHaveAttribute("placeholder", "例:商品有瑕疵或與訂購內容不符,請拍照聯絡我們,我們會盡快處理換貨或退款。");
+    expect(policy.getAttribute("placeholder")).not.toMatch(/24 小時/);
+    expect(policy).toHaveAccessibleDescription(
+      "不能寫「恕不退換」「退貨運費自付」這類限制消費者權益的字句。不適用七日鑑賞期的商品,請在商品上逐項勾選。",
+    );
   });
 });
 
@@ -497,7 +617,7 @@ describe("SupplierMarketStorePage — 無障礙", () => {
   });
 
   it("「看消費者看到的店家頁」連結的可點範圍至少 44px 高", async () => {
-    vi.mocked(fetchOwnStore).mockResolvedValue({ store: STORE_A, transferInfo: "台灣銀行 004 帳號 123" });
+    vi.mocked(fetchOwnStore).mockResolvedValue({ store: STORE_A, transferInfo: "台灣銀行 004 帳號 123", supplierPhone: PHONE });
     renderPage();
     expect(await screen.findByRole("link", { name: "看消費者看到的店家頁" })).toHaveClass("inline-flex", "min-h-11", "items-center");
   });

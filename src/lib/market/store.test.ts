@@ -1,4 +1,7 @@
 // store.ts:表單 ↔ 資料列、驗證(上限跟資料庫一樣)、儲存順序(轉帳資訊一定先存)。
+// 店家法定資訊(登記名稱、負責人、營業所地址、客服 Email 必填,食品業者登錄字號、產品責任險選填):長度、格式跟
+// migration 20261012110000_market_compliance 的 CHECK / market_email_ok 一樣,看不到字也算沒填。
+// 測試字串裡看不見的字元一律寫成 \u{…}。
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // 假的 supabase:每次 from() 記一筆(表、操作、資料、篩選),await 時從 queue 拿「<表>.<操作>」的回應,沒有就用預設值。
@@ -65,10 +68,12 @@ vi.mock("@/integrations/supabase/client", () => ({
 import { MarketDbError } from "./db";
 import { STORE_A } from "./testFixtures";
 import {
+  DISCLOSURE_LIMITS,
   emptyStoreForm,
   fetchOwnStore,
   MarketPartialSaveError,
   MarketStaleError,
+  missingDisclosures,
   saveStore,
   STORE_OWNER_COLUMNS,
   storeFormFromRow,
@@ -78,6 +83,14 @@ import {
   type StoreForm,
 } from "./store";
 
+/** 法定資訊四項都填好的表單值 */
+const LEGAL = {
+  legalName: "市集測試 A 店有限公司",
+  representative: "王小明",
+  businessAddress: "臺北市測試路 1 號",
+  serviceEmail: "service-a@example.com",
+};
+
 const valid = (over: Partial<StoreForm> = {}): StoreForm => ({
   ...emptyStoreForm(),
   deliveryCities: ["臺北市"],
@@ -85,6 +98,7 @@ const valid = (over: Partial<StoreForm> = {}): StoreForm => ({
   freeShippingThreshold: "1000",
   minOrderAmount: "300",
   shipDays: "2",
+  ...LEGAL,
   ...over,
 });
 
@@ -125,6 +139,66 @@ describe("validateStoreForm", () => {
   });
 });
 
+describe("店家法定資訊(法規查證 M6:沒填齊不能開放零售)", () => {
+  it("登記名稱、負責人、營業所地址、客服 Email 必填:空白、全形空白、零寬字元都算沒填", () => {
+    for (const blank of ["", "   ", "\u{3000}\u{3000}", "\u{200B}", "\u{200B}\u{3000} \u{FEFF}"]) {
+      const e = validateStoreForm(valid({ legalName: blank, representative: blank, businessAddress: blank, serviceEmail: blank }));
+      expect(e.legalName, JSON.stringify(blank)).toBe("請填登記名稱(公司或商號登記的名稱)");
+      expect(e.representative).toBe("請填負責人");
+      expect(e.businessAddress).toBe("請填營業所地址");
+      expect(e.serviceEmail).toBe("請填客服 Email(會公開在店家頁,消費者用來聯絡你)");
+    }
+  });
+
+  it("長度跟資料庫一樣:登記名稱 1–100、負責人 1–50、營業所地址 5–200、登錄字號 ≤ 40、產品責任險 ≤ 100", () => {
+    expect(DISCLOSURE_LIMITS).toEqual({
+      legalName: 100,
+      representative: 50,
+      businessAddressMin: 5,
+      businessAddress: 200,
+      serviceEmail: 254,
+      foodRegistrationNo: 40,
+      liabilityInsurance: 100,
+    });
+    expect(validateStoreForm(valid({ legalName: "名".repeat(101) })).legalName).toBe("登記名稱最多 100 字");
+    expect(validateStoreForm(valid({ legalName: "名".repeat(100) })).legalName).toBeUndefined();
+    expect(validateStoreForm(valid({ representative: "人".repeat(51) })).representative).toBe("負責人最多 50 字");
+    expect(validateStoreForm(valid({ representative: "人".repeat(50) })).representative).toBeUndefined();
+    expect(validateStoreForm(valid({ businessAddress: "臺北1號" })).businessAddress).toBe("營業所地址要 5–200 字");
+    expect(validateStoreForm(valid({ businessAddress: "址".repeat(201) })).businessAddress).toBe("營業所地址要 5–200 字");
+    expect(validateStoreForm(valid({ businessAddress: "址".repeat(200) })).businessAddress).toBeUndefined();
+    expect(validateStoreForm(valid({ foodRegistrationNo: "A".repeat(41) })).foodRegistrationNo).toBe("食品業者登錄字號最多 40 字");
+    expect(validateStoreForm(valid({ foodRegistrationNo: "A".repeat(40) })).foodRegistrationNo).toBeUndefined();
+    expect(validateStoreForm(valid({ liabilityInsurance: "保".repeat(101) })).liabilityInsurance).toBe("產品責任險最多 100 字");
+    // 頭尾空白不算在長度裡(資料庫存的是去掉頭尾空白之後的值)
+    expect(validateStoreForm(valid({ representative: `  ${"人".repeat(50)}  ` })).representative).toBeUndefined();
+  });
+
+  it("客服 Email 照 market_email_ok:亂填、沒有網域、超過 254 字都擋;一般格式可以", () => {
+    for (const bad of ["not-an-email", "a@b", `${"a".repeat(243)}@example.com`]) {
+      expect(validateStoreForm(valid({ serviceEmail: bad })).serviceEmail, bad).toBe("客服 Email 格式不對");
+    }
+    expect(validateStoreForm(valid({ serviceEmail: " Shop.Service+1@example.com.tw " })).serviceEmail).toBeUndefined();
+  });
+
+  it("食品業者登錄字號、產品責任險可以不填", () => {
+    expect(validateStoreForm(valid({ foodRegistrationNo: "", liabilityInsurance: "" }))).toEqual({});
+  });
+
+  it("法定資訊的錯誤排在最前面(畫面上這一區在最上面,toast 顯示第一個錯誤)", () => {
+    const e = validateStoreForm({ ...emptyStoreForm() });
+    expect(Object.keys(e).slice(0, 4)).toEqual(["legalName", "representative", "businessAddress", "serviceEmail"]);
+  });
+
+  it("missingDisclosures:依序列出還缺的項目(看不到字也算缺);供應商電話只有空白也算缺", () => {
+    expect(missingDisclosures(valid(), "02-2345-6789")).toEqual([]);
+    expect(missingDisclosures(valid({ legalName: "", serviceEmail: "\u{3000}" }), "02-2345-6789")).toEqual(["登記名稱", "客服 Email"]);
+    expect(missingDisclosures({ ...emptyStoreForm() }, null)).toEqual(["登記名稱", "負責人", "營業所地址", "客服 Email", "店家電話"]);
+    expect(missingDisclosures(valid(), "\u{3000}")).toEqual(["店家電話"]);
+    expect(missingDisclosures(valid(), "")).toEqual(["店家電話"]);
+  });
+});
+
 describe("資料列 ↔ 表單", () => {
   it("storeFormFromRow 再 storePayload 回得去", () => {
     const form = storeFormFromRow(STORE_A, "台灣銀行 004 帳號 123");
@@ -161,7 +235,36 @@ describe("資料列 ↔ 表單", () => {
       payment_methods: ["cod", "transfer"],
       logo_path: "sup-1/store/logo.jpg",
       cover_path: "sup-1/store/cover.jpg",
+      legal_name: "市集測試 A 店有限公司",
+      representative: "王小明",
+      business_address: "臺北市測試路 1 號",
+      service_email: "service-a@example.com",
+      food_registration_no: null,
+      liability_insurance: null,
     });
+  });
+
+  it("法定資訊:資料列 → 表單 → payload 回得去;去掉頭尾空白;選填留白 = null", () => {
+    const row = {
+      ...STORE_A,
+      legal_name: "市集測試 A 店有限公司",
+      representative: "王小明",
+      business_address: "臺北市測試路 1 號",
+      service_email: "service-a@example.com",
+      food_registration_no: "A-123456789-00000-0",
+      liability_insurance: "新光產險 產品責任險 2000 萬",
+    };
+    const form = storeFormFromRow(row, null);
+    expect(form).toMatchObject({ ...LEGAL, foodRegistrationNo: "A-123456789-00000-0", liabilityInsurance: "新光產險 產品責任險 2000 萬" });
+    expect(storePayload("sup-1", form)).toMatchObject({
+      legal_name: "市集測試 A 店有限公司",
+      food_registration_no: "A-123456789-00000-0",
+      liability_insurance: "新光產險 產品責任險 2000 萬",
+    });
+    expect(storeFormFromRow(STORE_A, null)).toMatchObject({ legalName: "", representative: "", businessAddress: "", serviceEmail: "" });
+    expect(
+      storePayload("s", valid({ legalName: " 市集測試 A 店有限公司 ", serviceEmail: " service-a@example.com ", foodRegistrationNo: "  " })),
+    ).toMatchObject({ legal_name: "市集測試 A 店有限公司", service_email: "service-a@example.com", food_registration_no: null });
   });
 
   it("免運門檻留白 = null;空白介紹 = null", () => {
@@ -174,18 +277,32 @@ describe("資料列 ↔ 表單", () => {
 
 // 讀取出錯一定要丟錯:回 null 的話頁面會當成「還沒建店」顯示空白表單,一儲存就把原本的設定蓋掉。
 describe("fetchOwnStore", () => {
-  it("讀到店家與轉帳資訊:只查自家、欄位是 STORE_OWNER_COLUMNS", async () => {
+  it("讀到店家、轉帳資訊與供應商電話:只查自家、欄位是 STORE_OWNER_COLUMNS", async () => {
     queue["market_stores.select"] = [{ data: STORE_A, error: null }];
     queue["market_store_transfer.select"] = [{ data: { transfer_info: "台灣銀行 004 帳號 123" }, error: null }];
-    await expect(fetchOwnStore("sup-1")).resolves.toEqual({ store: STORE_A, transferInfo: "台灣銀行 004 帳號 123" });
+    queue["suppliers.select"] = [{ data: { phone: "02-2345-6789" }, error: null }];
+    await expect(fetchOwnStore("sup-1")).resolves.toEqual({ store: STORE_A, transferInfo: "台灣銀行 004 帳號 123", supplierPhone: "02-2345-6789" });
     expect(calls.map((c) => [c.table, c.columns, c.filters])).toEqual([
       ["market_stores", STORE_OWNER_COLUMNS, [["supplier_id", "sup-1"]]],
       ["market_store_transfer", "transfer_info", [["supplier_id", "sup-1"]]],
+      ["suppliers", "phone", [["id", "sup-1"]]],
     ]);
   });
 
-  it("查無店家、查無轉帳資訊 → 都是 null(這才是「還沒建店」)", async () => {
-    await expect(fetchOwnStore("sup-1")).resolves.toEqual({ store: null, transferInfo: null });
+  it("店家自己的查詢帶六個法定資訊欄位;不帶 contact_email", () => {
+    for (const col of ["legal_name", "representative", "business_address", "service_email", "food_registration_no", "liability_insurance"]) {
+      expect(STORE_OWNER_COLUMNS.split(", "), col).toContain(col);
+    }
+    expect(STORE_OWNER_COLUMNS).not.toContain("contact_email");
+  });
+
+  it("查無店家、查無轉帳資訊 → 都是 null(這才是「還沒建店」);查無電話 → null", async () => {
+    await expect(fetchOwnStore("sup-1")).resolves.toEqual({ store: null, transferInfo: null, supplierPhone: null });
+  });
+
+  it("供應商電話查詢失敗 → 丟 MarketDbError,不能當成沒有電話", async () => {
+    queue["suppliers.select"] = [{ data: null, error: { message: "permission denied", code: "42501" } }];
+    await expect(fetchOwnStore("sup-1")).rejects.toBeInstanceOf(MarketDbError);
   });
 
   it("店家查詢失敗 → 丟 MarketDbError,不能回 null", async () => {

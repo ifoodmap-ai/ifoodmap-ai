@@ -7,13 +7,31 @@
 //   3. 已經有轉帳資訊而且改了:店家存好之後才更新(店家過期或驗證失敗就什麼都不寫)。
 //   真的只存好一部分 → MarketPartialSaveError,訊息講清楚哪一部分存好、帶著已經存進資料庫的值。
 //
+// 店家法定資訊(食材市集法規查證 M6;migration 20261012110000_market_compliance):登記名稱、負責人、營業所地址、
+// 客服 Email 必填,食品業者登錄字號、產品責任險選填。開放中(或剛建立)的店家缺任何一項、或供應商資料(suppliers.phone)
+// 沒有電話,資料庫擋成 22023 store_disclosure_missing;店家被管理員停用時不檢查。表單一律當必填(做成必填是業主的決定),
+// 長度與 Email 格式跟資料庫一樣(DISCLOSURE_LIMITS、market_email_ok = checkout.ts 的 EMAIL_PATTERN),看不到字也算沒填。
+//
 // 不蓋掉別人的修改:更新既有店家時只更新 updated_at 還是「讀到的那個值」的列(兩個分頁、兩位同事同時改,
 // 後存的人更新不到任何一列 → MarketStaleError,什麼都不覆寫)。updated_at 一定用讀到的原字串比對:
 // PostgREST 回的是微秒精度,轉成 Date 再轉回字串會掉到毫秒,就永遠對不上。第一次建立店家沒有值可比對,用 insert
 // (別的分頁先建好了 → 23505 → 一樣是 MarketStaleError,不會用 upsert 把它蓋掉)。
+import { EMAIL_PATTERN } from "./checkout";
 import { isTwCity, LIMITS, type PaymentMethod, type TwCity } from "./constants";
 import { friendlyDbError, MarketDbError, marketDb, unwrap } from "./db";
+import { hasVisibleText } from "./productForm";
 import type { MarketStoreRow } from "./types";
+
+/** 店家法定資訊的長度上限(跟 migration 20261012110000 的 CHECK 一樣;客服 Email 照 market_email_ok 的 254 字) */
+export const DISCLOSURE_LIMITS = {
+  legalName: 100,
+  representative: 50,
+  businessAddressMin: 5,
+  businessAddress: 200,
+  serviceEmail: 254,
+  foodRegistrationNo: 40,
+  liabilityInsurance: 100,
+} as const;
 
 export const STALE_STORE_MESSAGE = "資料已被其他人更新,請重新載入後再改";
 
@@ -58,6 +76,14 @@ export interface StoreBase {
 }
 
 export interface StoreForm {
+  /** 登記名稱(公司或商號登記的名稱) */
+  legalName: string;
+  representative: string;
+  businessAddress: string;
+  /** 客服 Email:公開在店家頁(不是供應商的 contact_email 新訂單通知信箱) */
+  serviceEmail: string;
+  foodRegistrationNo: string;
+  liabilityInsurance: string;
   intro: string;
   returnPolicy: string;
   deliveryCities: TwCity[];
@@ -75,6 +101,12 @@ export interface StoreForm {
 export type StoreFormErrors = Partial<Record<keyof StoreForm, string>>;
 
 export const emptyStoreForm = (): StoreForm => ({
+  legalName: "",
+  representative: "",
+  businessAddress: "",
+  serviceEmail: "",
+  foodRegistrationNo: "",
+  liabilityInsurance: "",
   intro: "",
   returnPolicy: "",
   deliveryCities: [],
@@ -90,6 +122,12 @@ export const emptyStoreForm = (): StoreForm => ({
 });
 
 export const storeFormFromRow = (row: MarketStoreRow, transferInfo: string | null): StoreForm => ({
+  legalName: row.legal_name ?? "",
+  representative: row.representative ?? "",
+  businessAddress: row.business_address ?? "",
+  serviceEmail: row.service_email ?? "",
+  foodRegistrationNo: row.food_registration_no ?? "",
+  liabilityInsurance: row.liability_insurance ?? "",
   intro: row.intro ?? "",
   returnPolicy: row.return_policy ?? "",
   deliveryCities: row.delivery_cities.filter(isTwCity),
@@ -111,8 +149,46 @@ const inRange = (s: string, min: number, max: number) => {
   return Number.isInteger(n) && n >= min && n <= max;
 };
 
+/** 開放零售一定要有的法定資訊(依畫面順序) */
+const REQUIRED_DISCLOSURES: Array<[keyof StoreForm, string]> = [
+  ["legalName", "登記名稱"],
+  ["representative", "負責人"],
+  ["businessAddress", "營業所地址"],
+  ["serviceEmail", "客服 Email"],
+];
+
+/**
+ * 開放零售前還缺哪幾項(看不到字也算缺):表單上的四項,加上供應商資料的電話(這頁改不了,要請 iFoodmap 補)。
+ * 只看「有沒有填」;填了但格式不對由 validateStoreForm 說明。
+ */
+export const missingDisclosures = (f: StoreForm, supplierPhone: string | null): string[] => [
+  ...REQUIRED_DISCLOSURES.filter(([key]) => !hasVisibleText(String(f[key]).trim())).map(([, label]) => label),
+  ...(hasVisibleText((supplierPhone ?? "").trim()) ? [] : ["店家電話"]),
+];
+
 export const validateStoreForm = (f: StoreForm): StoreFormErrors => {
   const e: StoreFormErrors = {};
+  // 法定資訊放最前面:畫面上這一區在最上面,頁面的 toast 顯示第一個錯誤
+  const legalName = f.legalName.trim();
+  if (!hasVisibleText(legalName)) e.legalName = "請填登記名稱(公司或商號登記的名稱)";
+  else if (legalName.length > DISCLOSURE_LIMITS.legalName) e.legalName = `登記名稱最多 ${DISCLOSURE_LIMITS.legalName} 字`;
+  const representative = f.representative.trim();
+  if (!hasVisibleText(representative)) e.representative = "請填負責人";
+  else if (representative.length > DISCLOSURE_LIMITS.representative) e.representative = `負責人最多 ${DISCLOSURE_LIMITS.representative} 字`;
+  const address = f.businessAddress.trim();
+  if (!hasVisibleText(address)) e.businessAddress = "請填營業所地址";
+  else if (address.length < DISCLOSURE_LIMITS.businessAddressMin || address.length > DISCLOSURE_LIMITS.businessAddress) {
+    e.businessAddress = `營業所地址要 ${DISCLOSURE_LIMITS.businessAddressMin}–${DISCLOSURE_LIMITS.businessAddress} 字`;
+  }
+  const email = f.serviceEmail.trim();
+  if (!hasVisibleText(email)) e.serviceEmail = "請填客服 Email(會公開在店家頁,消費者用來聯絡你)";
+  else if (!EMAIL_PATTERN.test(email) || email.length > DISCLOSURE_LIMITS.serviceEmail) e.serviceEmail = "客服 Email 格式不對";
+  if (f.foodRegistrationNo.trim().length > DISCLOSURE_LIMITS.foodRegistrationNo) {
+    e.foodRegistrationNo = `食品業者登錄字號最多 ${DISCLOSURE_LIMITS.foodRegistrationNo} 字`;
+  }
+  if (f.liabilityInsurance.trim().length > DISCLOSURE_LIMITS.liabilityInsurance) {
+    e.liabilityInsurance = `產品責任險最多 ${DISCLOSURE_LIMITS.liabilityInsurance} 字`;
+  }
   if (f.deliveryCities.length === 0) e.deliveryCities = "至少選一個配送縣市";
   if (!inRange(f.shippingFee, 0, LIMITS.shippingFee)) e.shippingFee = `運費要是 0 到 ${LIMITS.shippingFee.toLocaleString("zh-TW")} 的整數`;
   if (f.freeShippingThreshold.trim() && !inRange(f.freeShippingThreshold, 1, LIMITS.freeShippingThreshold)) {
@@ -148,21 +224,37 @@ export const storePayload = (supplierId: string, f: StoreForm) => {
     payment_methods: methods,
     logo_path: f.logoPath,
     cover_path: f.coverPath,
+    legal_name: f.legalName.trim() || null,
+    representative: f.representative.trim() || null,
+    business_address: f.businessAddress.trim() || null,
+    service_email: f.serviceEmail.trim() || null,
+    food_registration_no: f.foodRegistrationNo.trim() || null,
+    liability_insurance: f.liabilityInsurance.trim() || null,
   };
 };
 
 export const STORE_OWNER_COLUMNS =
   "supplier_id, is_enabled, disabled_reason, logo_path, cover_path, intro, return_policy, delivery_cities, shipping_fee, " +
-  "free_shipping_threshold, min_order_amount, ship_days, payment_methods, updated_at";
+  "free_shipping_threshold, min_order_amount, ship_days, payment_methods, updated_at, " +
+  "legal_name, representative, business_address, service_email, food_registration_no, liability_insurance";
 
-export const fetchOwnStore = async (supplierId: string): Promise<{ store: MarketStoreRow | null; transferInfo: string | null }> => {
+export interface OwnStore {
+  store: MarketStoreRow | null;
+  transferInfo: string | null;
+  /** 供應商資料的電話(suppliers.phone):開放零售的條件之一,這頁改不了 */
+  supplierPhone: string | null;
+}
+
+export const fetchOwnStore = async (supplierId: string): Promise<OwnStore> => {
   const store = unwrap(
     await marketDb<MarketStoreRow>("market_stores").select(STORE_OWNER_COLUMNS).eq("supplier_id", supplierId).maybeSingle(),
   );
   const transfer = unwrap(
     await marketDb<{ transfer_info: string }>("market_store_transfer").select("transfer_info").eq("supplier_id", supplierId).maybeSingle(),
   );
-  return { store, transferInfo: transfer?.transfer_info ?? null };
+  // 登入者都讀得到 suppliers(「Authenticated users can view suppliers」);讀錯一定要丟,不能當成沒有電話
+  const supplier = unwrap(await marketDb<{ phone: string | null }>("suppliers").select("phone").eq("id", supplierId).maybeSingle());
+  return { store, transferInfo: transfer?.transfer_info ?? null, supplierPhone: supplier?.phone ?? null };
 };
 
 const isUniqueViolation = (e: unknown) => e instanceof MarketDbError && e.code === "23505";

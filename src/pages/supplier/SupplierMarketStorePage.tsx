@@ -5,6 +5,9 @@
 // 讀取失敗 ≠ 還沒建店:讀取失敗只顯示錯誤與「重新載入」、不顯示表單 —— 顯示空白表單的話,
 // 供應商一儲存,upsert 就把原本的介紹、退換貨說明、logo、封面蓋掉。只有讀取成功、而且查無店家,才是新店家表單。
 // 兩個分頁 / 兩位同事同時改:儲存時把讀到的 updated_at 交給 saveStore 比對,對不上就顯示「資料已被其他人更新」、不覆寫。
+// 店家法定資訊(食材市集法規查證 M6):登記名稱、負責人、營業所地址、客服 Email 必填,加上供應商資料的電話(這頁改不了),
+// 沒填齊不能開放零售 —— 新店家存不進去、開放中的店也不能改設定(資料庫回 store_disclosure_missing)。最上面列出還缺哪幾項;
+// 存的時候被資料庫擋下,也照畫面上的值列出缺的項目。退換貨說明的例句不寫「24 小時內」這類縮短法定權益的寫法(S4)。
 import { useEffect, useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
 import { Loader2 } from "lucide-react";
@@ -12,12 +15,15 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { useCurrentSupplier } from "@/hooks/use-current-supplier";
 import { LIMITS, TW_CITIES, type TwCity } from "@/lib/market/constants";
-import { friendlyDbError } from "@/lib/market/db";
+import { friendlyDbError, MarketDbError } from "@/lib/market/db";
+import { hasVisibleText } from "@/lib/market/productForm";
 import {
+  DISCLOSURE_LIMITS,
   emptyStoreForm,
   fetchOwnStore,
   MarketPartialSaveError,
   MarketStaleError,
+  missingDisclosures,
   saveStore,
   STALE_STORE_MESSAGE,
   storeFormFromRow,
@@ -33,6 +39,18 @@ const INPUT = "min-h-11 w-full rounded-md border border-slate-300 bg-white px-3 
 const CHECKBOX = "h-5 w-5 shrink-0";
 /** 認不得的錯誤顯示這句(資料庫錯誤附上錯誤代碼),不顯示英文原文 */
 const UNEXPECTED = "請稍後再試";
+/** 店家電話來自供應商資料(suppliers.phone,管理員在「會員 › 供應商」改),供應商這頁改不了 */
+const PHONE_HELP = "店家電話來自你的供應商資料,這頁改不了,請聯絡 iFoodmap(ifoodmaptw@gmail.com)補上";
+
+/** 法定資訊欄位:[欄位, 標籤, 上限, 提示, input type, 自動填入, 佔整行] */
+const LEGAL_FIELDS: Array<[keyof StoreForm, string, number, string | null, "text" | "email", string, boolean]> = [
+  ["legalName", "登記名稱 *", DISCLOSURE_LIMITS.legalName, "公司或商號登記的名稱", "text", "organization", false],
+  ["representative", "負責人 *", DISCLOSURE_LIMITS.representative, null, "text", "name", false],
+  ["businessAddress", "營業所地址 *", DISCLOSURE_LIMITS.businessAddress, null, "text", "street-address", true],
+  ["serviceEmail", "客服 Email *", DISCLOSURE_LIMITS.serviceEmail, "公開在店家頁,消費者用來聯絡你;可以跟接新訂單通知的信箱不同", "email", "email", true],
+  ["foodRegistrationNo", "食品業者登錄字號(選填)", DISCLOSURE_LIMITS.foodRegistrationNo, "依法要登錄的食品業者請填", "text", "off", false],
+  ["liabilityInsurance", "產品責任險(選填)", DISCLOSURE_LIMITS.liabilityInsurance, "例:○○產險 產品責任險 保額 2,000 萬", "text", "off", false],
+];
 
 const FieldError = ({ id, message }: { id: string; message?: string }) =>
   message ? (
@@ -58,16 +76,19 @@ export default function SupplierMarketStorePage() {
   const anyUploading = uploading.logo || uploading.cover;
   /** 儲存時發現資料已被其他人更新:沒有覆寫,要重新載入才能再改 */
   const [stale, setStale] = useState(false);
+  /** 供應商資料的電話(開放零售的條件之一) */
+  const [supplierPhone, setSupplierPhone] = useState<string | null>(null);
 
   useEffect(() => {
     if (!supplierId) return;
     let cancelled = false;
     (async () => {
       try {
-        const { store, transferInfo } = await fetchOwnStore(supplierId);
+        const { store, transferInfo, supplierPhone: phone } = await fetchOwnStore(supplierId);
         if (cancelled) return;
         setRow(store);
         setSavedTransfer(transferInfo);
+        setSupplierPhone(phone ?? null);
         setForm(store ? storeFormFromRow(store, transferInfo) : emptyStoreForm());
         setErrors({});
         setStale(false);
@@ -130,7 +151,13 @@ export default function SupplierMarketStorePage() {
       }
       // 資料已被其他人更新:店家沒有寫,表單保留剛改的內容,顯示重新載入(重新載入才換成資料庫的值)
       setStale(err instanceof MarketStaleError || (err instanceof MarketPartialSaveError && err.failure instanceof MarketStaleError));
-      toast.error(err instanceof MarketPartialSaveError ? "只存好一部分" : "儲存失敗", { description: friendlyDbError(err, UNEXPECTED) });
+      // 法定資訊沒填齊(資料庫的 store_disclosure_missing):照畫面上的值列出還缺哪幾項;畫面上看起來都填了才用資料庫那句
+      const nowMissing = missingDisclosures(form, supplierPhone);
+      const description =
+        err instanceof MarketDbError && err.hint === "store_disclosure_missing" && nowMissing.length > 0
+          ? `開放零售前要填齊店家法定資訊,還缺:${nowMissing.join("、")}。${nowMissing.includes("店家電話") ? `${PHONE_HELP}。` : ""}`
+          : friendlyDbError(err, UNEXPECTED);
+      toast.error(err instanceof MarketPartialSaveError ? "只存好一部分" : "儲存失敗", { description });
     } finally {
       setSaving(false);
     }
@@ -173,6 +200,7 @@ export default function SupplierMarketStorePage() {
   }
 
   const describe = (key: keyof StoreForm) => (errors[key] ? `store-${key}-error` : undefined);
+  const missing = missingDisclosures(form, supplierPhone);
 
   return (
     <form onSubmit={onSubmit} noValidate className="mx-auto max-w-3xl space-y-8 p-6">
@@ -196,8 +224,58 @@ export default function SupplierMarketStorePage() {
         </div>
       ) : null}
 
+      {missing.length > 0 ? (
+        <section aria-labelledby="store-missing-title" className="rounded-lg border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900">
+          <h2 id="store-missing-title" className="font-semibold">
+            開放零售前還缺這些資料
+          </h2>
+          <p className="mt-1 font-medium">還缺:{missing.join("、")}</p>
+          <p className="mt-1">消費者保護法規定網路銷售要揭露店家資料,消費者在店家頁看得到。沒填齊不能開放零售:新店家存不進去,已開放的店也不能改設定。</p>
+          {missing.includes("店家電話") ? <p className="mt-1">{PHONE_HELP}。</p> : null}
+        </section>
+      ) : null}
+
       {/* 儲存中鎖住所有欄位:存完表單會換成資料庫的值,期間的修改會被蓋掉(min-w-0:fieldset 預設 min-width 會撐寬手機版面) */}
       <fieldset disabled={saving} className="min-w-0 space-y-8">
+        <section className="space-y-4" aria-labelledby="store-legal">
+          <h2 id="store-legal" className="font-semibold text-gray-900">
+            店家法定資訊(消費者在店家頁看得到)
+          </h2>
+          <div className="grid gap-4 min-[640px]:grid-cols-2">
+            {LEGAL_FIELDS.map(([key, label, max, hint, type, autoComplete, wide]) => (
+              <div key={key} className={wide ? "min-[640px]:col-span-2" : undefined}>
+                <label htmlFor={`store-${key}`} className="mb-1 block text-sm font-medium text-slate-700">
+                  {label}
+                </label>
+                <input
+                  id={`store-${key}`}
+                  type={type}
+                  autoComplete={autoComplete}
+                  maxLength={max}
+                  value={String(form[key])}
+                  onChange={(e) => set(key, e.target.value as never)}
+                  aria-invalid={!!errors[key]}
+                  aria-describedby={[hint ? `store-${key}-hint` : null, describe(key)].filter(Boolean).join(" ") || undefined}
+                  className={INPUT}
+                />
+                {hint ? (
+                  <p id={`store-${key}-hint`} className="mt-1 text-xs text-slate-500">
+                    {hint}
+                  </p>
+                ) : null}
+                <FieldError id={`store-${key}-error`} message={errors[key]} />
+              </div>
+            ))}
+            <div data-store-phone className="text-sm">
+              <p className="mb-1 font-medium text-slate-700">店家電話</p>
+              <p className="flex min-h-11 items-center">
+                {hasVisibleText((supplierPhone ?? "").trim()) ? <span>{supplierPhone}</span> : <span className="font-medium text-red-700">還沒有電話</span>}
+              </p>
+              <p className="mt-1 text-xs text-slate-500">電話來自你的供應商資料,要改請聯絡 iFoodmap。</p>
+            </div>
+          </div>
+        </section>
+
         <section className="space-y-4" aria-labelledby="store-look">
           <h2 id="store-look" className="font-semibold text-gray-900">
             外觀與介紹
@@ -358,11 +436,14 @@ export default function SupplierMarketStorePage() {
               maxLength={LIMITS.returnPolicy}
               value={form.returnPolicy}
               onChange={(e) => set("returnPolicy", e.target.value)}
-              placeholder="例:生鮮食品收到後 24 小時內有問題請拍照聯絡我們"
+              placeholder="例:商品有瑕疵或與訂購內容不符,請拍照聯絡我們,我們會盡快處理換貨或退款。"
               aria-invalid={!!errors.returnPolicy}
-              aria-describedby={describe("returnPolicy")}
+              aria-describedby={["store-returnPolicy-hint", describe("returnPolicy")].filter(Boolean).join(" ")}
               className={`${INPUT} py-2`}
             />
+            <p id="store-returnPolicy-hint" className="mt-1 text-xs text-slate-500">
+              不能寫「恕不退換」「退貨運費自付」這類限制消費者權益的字句。不適用七日鑑賞期的商品,請在商品上逐項勾選。
+            </p>
             <FieldError id="store-returnPolicy-error" message={errors.returnPolicy} />
           </div>
         </section>
