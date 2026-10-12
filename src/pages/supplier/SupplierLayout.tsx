@@ -7,7 +7,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import PortalSwitcher from "@/components/PortalSwitcher";
 import SectionTabs, { type SectionTabItem } from "@/components/portal/SectionTabs";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 // 後台精簡第一期:11 個選單項目收成 5 個分區,分區裡用分頁(深連結到原本的路由)。
 // 路由完全不動 —— 分頁只是指向原路由的連結,所以通知信、書籤都不受影響。
@@ -100,6 +100,9 @@ export default function SupplierLayout() {
   const location = useLocation();
   const [email, setEmail] = useState("");
   const [mobileOpen, setMobileOpen] = useState(false);
+  const menuButtonRef = useRef<HTMLButtonElement>(null);
+  const mobileDrawerRef = useRef<HTMLDivElement>(null);
+  const wasMobileOpenRef = useRef(false);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -111,6 +114,18 @@ export default function SupplierLayout() {
   useEffect(() => {
     setMobileOpen(false);
   }, [location.pathname]);
+
+  // 抽屜收起時把焦點送回選單鈕:點抽屜裡的連結換頁、點遮罩收起時,焦點會留在已經藏起來的抽屜裡
+  // 或掉回 body,鍵盤與讀屏使用者就不知道自己在哪了。焦點本來就在別處(選單鈕本身、主內容)就不搶。
+  useEffect(() => {
+    const wasOpen = wasMobileOpenRef.current;
+    wasMobileOpenRef.current = mobileOpen;
+    if (!wasOpen || mobileOpen) return;
+    const active = document.activeElement;
+    if (!active || active === document.body || mobileDrawerRef.current?.contains(active)) {
+      menuButtonRef.current?.focus();
+    }
+  }, [mobileOpen]);
 
   const handleLogout = async () => {
     await supabase.auth.signOut();
@@ -174,6 +189,7 @@ export default function SupplierLayout() {
       {/* 手機:點遮罩關抽屜 */}
       {mobileOpen && (
         <div
+          data-testid="supplier-drawer-overlay"
           className="fixed inset-0 z-40 bg-black/50 md:hidden"
           onClick={() => setMobileOpen(false)}
         />
@@ -181,12 +197,18 @@ export default function SupplierLayout() {
 
       {/* 手機:滑出式抽屜。原本是 flex-shrink-0 的 w-60 aside,
           在 390px 螢幕上會把內容擠到只剩 150px —— 金額直接被切掉、
-          標籤一個字一行,等於不能用。 */}
+          標籤一個字一行,等於不能用。
+          收起時光移到畫面外不夠:連結還在 Tab 順序與無障礙樹裡,鍵盤、讀屏會走到看不見的連結。
+          所以收起時整個抽屜 visibility: hidden(裡面全部不能聚焦、讀屏也讀不到),
+          visibility 跟 transform 一起 transition —— 收起時等滑出動畫跑完才藏、打開時立刻出現,動畫不變。
+          寫成 inline style 而不是 Tailwind 的 invisible,jsdom 測試(沒載 CSS)才驗得到。 */}
       <div
+        ref={mobileDrawerRef}
         data-testid="supplier-sidebar-mobile"
-        className={`fixed inset-y-0 left-0 z-50 flex flex-col md:hidden transition-transform duration-200 ${
+        className={`fixed inset-y-0 left-0 z-50 flex flex-col md:hidden transition-[transform,visibility] duration-200 ${
           mobileOpen ? "translate-x-0" : "-translate-x-full"
         }`}
+        style={{ visibility: mobileOpen ? "visible" : "hidden" }}
       >
         <Sidebar />
       </div>
@@ -194,7 +216,14 @@ export default function SupplierLayout() {
       <div className="flex flex-col flex-1 min-w-0 md:pl-60">
         {/* 手機頂欄 */}
         <header className="flex items-center gap-3 px-4 py-3 bg-white border-b border-gray-200 md:hidden">
-          <Button variant="ghost" size="icon" onClick={() => setMobileOpen((v) => !v)}>
+          <Button
+            ref={menuButtonRef}
+            variant="ghost"
+            size="icon"
+            aria-label={mobileOpen ? "關閉選單" : "開啟選單"}
+            aria-expanded={mobileOpen}
+            onClick={() => setMobileOpen((v) => !v)}
+          >
             {mobileOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
           </Button>
           <span className="font-semibold text-gray-800 truncate">{activeSection.label}</span>
