@@ -2,9 +2,11 @@
 // 金額欄一律 whitespace-nowrap:360px 寬時品名欄會吃掉剩下的寬度,粗體的總額會被拆成「NT$」與數字兩行。
 import { TEMPERATURES, type Temperature } from "@/lib/market/constants";
 import { formatTwd } from "@/lib/market/format";
+import { WithdrawalExemptBadge } from "./WithdrawalNotice";
 
 interface OrderItemsProps {
-  items: Array<{ product_name: string; spec: string; temperature: Temperature; unit_price: number; qty: number; line_total: number }>;
+  /** withdrawal_exempt = true 時標「不適用七日鑑賞期」(查單 RPC 的明細有;沒帶這個欄位的查詢不標) */
+  items: Array<{ product_name: string; spec: string; temperature: Temperature; unit_price: number; qty: number; line_total: number; withdrawal_exempt?: boolean }>;
   subtotal: number;
   shippingFee: number;
   total: number;
@@ -29,6 +31,7 @@ export default function OrderItems({ items, subtotal, shippingFee, total }: Orde
               <span className="block text-xs text-slate-500">
                 {i.spec}・{TEMPERATURES[i.temperature]}・{formatTwd(i.unit_price)} × {i.qty}
               </span>
+              {i.withdrawal_exempt === true ? <WithdrawalExemptBadge /> : null}
             </td>
             <td className="whitespace-nowrap py-2 text-right align-top text-slate-900">{formatTwd(i.line_total)}</td>
           </tr>

@@ -1,6 +1,7 @@
 // /market/orders/:token:token 頁 —— 壞網址 / 找不到、每張訂單的狀態與明細、轉帳資訊只在待匯款時出現、拒單原因、出貨單號、
 // 剛下單的提示(網址與複製)、載入失敗可以重試。
-// 檔尾另外釘住:已收款後被取消、進度照時間排、聯絡店家只有電話(查單 RPC 不給 contact_email)、離線、複製失敗、背景重抓失敗。
+// 檔尾另外釘住:已收款後被取消、進度照時間排、店家的法定資訊(查單 RPC 不給 contact_email)、離線、複製失敗、背景重抓失敗、
+// 七日解除權的說明與不適用商品的標示。
 import { act, cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { onlineManager } from "@tanstack/react-query";
@@ -38,8 +39,19 @@ const base = (over: Partial<LookupOrder>): LookupOrder => ({
   ship_city: "臺北市",
   ship_address: "測試路 1 號 2 樓",
   buyer_note: "請放管理室",
-  store: { supplier_id: "s-a", name: "市集測試 A 店", phone: "02-2345-6789", ship_days: 2, return_policy: null },
-  items: [{ product_name: "有機高麗菜", spec: "1 顆", unit_price: 100, qty: 2, line_total: 200, temperature: "chilled" }],
+  store: {
+    supplier_id: "s-a",
+    name: "市集測試 A 店",
+    phone: "02-2345-6789",
+    ship_days: 2,
+    return_policy: null,
+    legal_name: "市集測試 A 店有限公司",
+    representative: "王大明",
+    business_address: "臺北市大安區測試路 1 號",
+    service_email: "service@store-a.example",
+    food_registration_no: null,
+  },
+  items: [{ product_name: "有機高麗菜", spec: "1 顆", unit_price: 100, qty: 2, line_total: 200, temperature: "chilled", withdrawal_exempt: false }],
   events: [{ to_status: "pending", created_at: "2026-10-09T04:05:00Z", note: null }],
   transfer_info: null,
   ...over,
@@ -108,7 +120,7 @@ describe("MarketOrderLookupPage", () => {
     const b = within(await screen.findByRole("region", { name: `市集測試 B 店 訂單 ${formatOrderNo(B.id)}` }));
     expect(b.getByText("店家已接單,請匯款 NT$ 260:")).toBeInTheDocument();
     expect(b.getByText(/帳號 0001234-5678901/)).toHaveClass("whitespace-pre-line");
-    expect(b.getAllByRole("listitem").map((li) => li.textContent)).toEqual([
+    expect(within(b.getByRole("list", { name: "進度" })).getAllByRole("listitem").map((li) => li.textContent)).toEqual([
       "2026/10/09 12:05 待接單",
       "2026/10/09 13:00 已接單",
       "2026/10/09 13:00 待匯款",
@@ -173,7 +185,7 @@ describe("MarketOrderLookupPage:取消、排序、聯絡店家、離線、複製
     expect(o.getByText("已取消")).toBeInTheDocument();
     expect(o.getByText("原因:臨時缺貨,款項會全額退回")).toBeInTheDocument();
     expect(o.queryByText(/請匯款/)).toBeNull();
-    expect(o.getAllByRole("listitem").map((li) => li.textContent)).toEqual([
+    expect(within(o.getByRole("list", { name: "進度" })).getAllByRole("listitem").map((li) => li.textContent)).toEqual([
       "2026/10/09 12:05 待接單",
       "2026/10/09 13:00 已接單",
       "2026/10/09 13:00 待匯款",
@@ -195,24 +207,31 @@ describe("MarketOrderLookupPage:取消、排序、聯絡店家、離線、複製
     ]);
     renderAt(`/market/orders/${TOKEN}`);
     const b = within(await screen.findByRole("region", { name: `市集測試 B 店 訂單 ${formatOrderNo(B.id)}` }));
-    expect(b.getAllByRole("listitem").map((li) => li.textContent)).toEqual([
+    expect(within(b.getByRole("list", { name: "進度" })).getAllByRole("listitem").map((li) => li.textContent)).toEqual([
       "2026/10/09 12:05 待接單",
       "2026/10/09 13:00 已接單",
       "2026/10/09 13:00 待匯款",
     ]);
   });
 
-  it("聯絡店家只有電話(tel: 連結,查單不給 Email);沒電話就不顯示;頁面上沒有任何外部 http 連結", async () => {
+  it("店家資訊:登記名稱、負責人、營業所地址、電話(tel:)、客服 Email(mailto:);沒電話寫未提供;不給 contact_email;沒有任何外部 http 連結", async () => {
     vi.mocked(fetchOrdersByToken).mockResolvedValue([A, { ...B, store: { ...B.store, phone: null, return_policy: "收到 24 小時內\n拍照聯絡" } }]);
     const { container } = renderAt(`/market/orders/${TOKEN}`);
     const a = within(await screen.findByRole("region", { name: `市集測試 A 店 訂單 ${formatOrderNo(A.id)}` }));
+    expect(
+      within(a.getByRole("list", { name: "店家資訊" }))
+        .getAllByRole("listitem")
+        .map((li) => li.textContent),
+    ).toEqual(["登記名稱:市集測試 A 店有限公司", "負責人:王大明", "營業所地址:臺北市大安區測試路 1 號", "電話:02-2345-6789", "客服 Email:service@store-a.example"]);
     expect(a.getByRole("link", { name: "02-2345-6789" })).toHaveAttribute("href", "tel:02-2345-6789");
+    expect(a.getByRole("link", { name: "service@store-a.example" })).toHaveAttribute("href", "mailto:service@store-a.example");
     const b = within(screen.getByRole("region", { name: `市集測試 B 店 訂單 ${formatOrderNo(B.id)}` }));
-    expect(b.queryByText(/電話/)).toBeNull();
+    expect(b.getByText("電話:")?.parentElement).toHaveTextContent("電話:未提供");
     expect(b.getByText(/收到 24 小時內/)).toHaveClass("whitespace-pre-line");
-    expect(screen.queryByText(/Email:/)).toBeNull();
-    const hrefs = [...container.querySelectorAll("a[href]")].map((el) => el.getAttribute("href"));
-    expect(hrefs).toEqual(["tel:02-2345-6789"]);
+    expect(container.textContent).not.toMatch(/store-a@market-test|contact_email/);
+    const hrefs = [...container.querySelectorAll("a[href]")].map((el) => el.getAttribute("href") ?? "");
+    expect(hrefs.filter((h) => /^(https?:)?\/\//.test(h))).toEqual([]);
+    expect(hrefs.every((h) => /^(tel:|mailto:|\/market\/terms#withdrawal$)/.test(h))).toBe(true);
   });
 
   it("離線時第一次載入:整頁「目前離線」(一個 h1),不說找不到;連線後自動載入", async () => {
@@ -367,7 +386,7 @@ describe("MarketOrderLookupPage:過了自動取消的期限、排程還沒跑到
     const { container } = renderAt(`/market/orders/${TOKEN}`);
     const b = await regionOf(B);
     expect(b.getByText(/已超過匯款期限/)).toHaveTextContent(`${EXPIRED}。`);
-    expect(b.queryByText(/電話/)).toBeNull();
+    expect(b.getByText(/已超過匯款期限/)).not.toHaveTextContent("電話");
     expect(container.textContent).not.toContain("0001234-5678901");
   });
 
@@ -382,5 +401,36 @@ describe("MarketOrderLookupPage:過了自動取消的期限、排程還沒跑到
     });
     expect(b.getByText(/已超過匯款期限/)).toBeInTheDocument();
     expect(container.textContent).not.toContain("0001234-5678901");
+  });
+});
+
+describe("MarketOrderLookupPage:七日解除權的說明與不適用商品的標示", () => {
+  it("每張單都有退貨說明(不適用的商品不能無理由退貨;其他收到隔天起 7 天內可以寄回或書面通知),連到服務條款第六條", async () => {
+    vi.mocked(fetchOrdersByToken).mockResolvedValue([A]);
+    renderAt(`/market/orders/${TOKEN}`);
+    const a = within(await screen.findByRole("region", { name: `市集測試 A 店 訂單 ${formatOrderNo(A.id)}` }));
+    expect(a.getByRole("heading", { level: 3, name: "退貨(七日解除權)" })).toBeInTheDocument();
+    expect(
+      a.getByText(
+        "標示「不適用七日鑑賞期」的商品不能無理由退貨,有瑕疵時仍可以向店家要求處理;其他商品可以在收到的隔天起 7 天內,把商品寄回店家或用書面(例如 Email)通知店家解除契約,退回的運費由店家負擔。",
+      ),
+    ).toBeInTheDocument();
+    expect(a.getByRole("link", { name: "詳見服務條款第六條" })).toHaveAttribute("href", "/market/terms#withdrawal");
+  });
+
+  it("明細裡不適用七日鑑賞期的商品有標示(下單當時的快照);適用的、舊資料沒有這個欄位的都不標", async () => {
+    vi.mocked(fetchOrdersByToken).mockResolvedValue([
+      base({
+        items: [
+          { product_name: "有機高麗菜", spec: "1 顆", unit_price: 100, qty: 2, line_total: 200, temperature: "chilled", withdrawal_exempt: true },
+          { product_name: "牛肉片", spec: "300g", unit_price: 450, qty: 1, line_total: 450, temperature: "frozen", withdrawal_exempt: false },
+          { product_name: "米", spec: "1kg", unit_price: 0, qty: 1, line_total: 0, temperature: "ambient" },
+        ],
+      }),
+    ]);
+    renderAt(`/market/orders/${TOKEN}`);
+    const table = await screen.findByRole("table", { name: "訂單明細" });
+    const rows = within(table).getAllByRole("row").filter((r) => r.closest("tbody"));
+    expect(rows.map((r) => within(r).queryByText("不適用七日鑑賞期") !== null)).toEqual([true, false, false]);
   });
 });

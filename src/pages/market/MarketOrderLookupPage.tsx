@@ -6,22 +6,26 @@
 //    「現在」用 useNow 每分鐘更新的瀏覽器時鐘,頁面開著時一到期就換。
 // ?new=1 = 剛下單:顯示「已送出」與這個網址(提醒加入書籤 —— 寄信閘門沒開時,消費者收不到確認信)。
 //   提示記在 state 裡,接著馬上把網址的 ?new=1 拿掉:消費者照提示加入書籤時,存到的是乾淨的網址(不會每次打開都說「已送出」)。
-// 🔴 這個網址就是查詢權限(token),頁面上不放任何外部連結,避免 token 經 Referer 外流(聯絡店家只有 tel:)。
+// 🔴 這個網址就是查詢權限(token),頁面上不放任何外部連結,避免 token 經 Referer 外流
+//    (店家資訊只有 tel:、mailto:;服務條款是站內連結)。
+// 每張單:店家的法定資訊(StoreLegalInfo)、七日解除權的說明(連到條款第六條);明細標出不適用七日鑑賞期的商品。
 // 還沒有資料時:離線(第一次載入被暫停)、載入中、失敗各自有畫面;查過了而且是 null 才是「找不到」。
 // 已經有訂單時,背景重抓失敗(isRefetchError)照樣顯示,只加一行提示。
 import { useEffect, useRef, useState } from "react";
-import { useParams, useSearchParams } from "react-router-dom";
+import { Link, useParams, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { Skeleton } from "@/components/ui/skeleton";
 import { MARKET_FOCUS_RING, useMarketTitle } from "@/components/market/MarketLayout";
 import { MarketStaleNotice } from "@/components/market/MarketNotices";
 import OrderItems from "@/components/market/OrderItems";
+import StoreLegalInfo from "@/components/market/StoreLegalInfo";
 import { autoCancelDeadline, formatAutoCancelDeadline, isAutoCancelDue, MARKET_AUTO_CANCEL_HOURS } from "@/lib/market/autoCancel";
 import { PAYMENT_METHODS } from "@/lib/market/constants";
 import { formatTaipei, formatTwd } from "@/lib/market/format";
 import { fetchOrdersByToken, sortEvents, TOKEN_PATTERN } from "@/lib/market/lookup";
 import { ORDER_STATUS_LABEL } from "@/lib/market/orders";
 import { useNow } from "@/lib/market/useNow";
+import { WITHDRAWAL_EXEMPT_LABEL, WITHDRAWAL_TERMS_PATH } from "@/lib/market/withdrawal";
 import { formatOrderNo } from "@/lib/order-number";
 import MarketLoadError from "./MarketLoadError";
 import MarketNotFound from "./MarketNotFound";
@@ -189,7 +193,7 @@ export default function MarketOrderLookupPage() {
 
             <div>
               <h3 className="text-sm font-semibold text-slate-900">進度</h3>
-              <ol className="mt-1 space-y-1 text-sm text-slate-700">
+              <ol aria-label="進度" className="mt-1 space-y-1 text-sm text-slate-700">
                 {sortEvents(o.events).map((e, i) => (
                   <li key={`${e.to_status}-${i}`}>
                     {formatTaipei(e.created_at)} {ORDER_STATUS_LABEL[e.to_status]}
@@ -198,17 +202,29 @@ export default function MarketOrderLookupPage() {
               </ol>
             </div>
 
-            <div className="text-sm text-slate-700">
-              <h3 className="font-semibold text-slate-900">聯絡店家</h3>
-              {o.store.phone ? (
-                <p>
-                  電話:
-                  <a href={`tel:${o.store.phone}`} className={`inline-flex min-h-11 items-center text-emerald-800 underline ${MARKET_FOCUS_RING}`}>
-                    {o.store.phone}
-                  </a>
-                </p>
-              ) : null}
+            <div className="space-y-1 text-sm text-slate-700">
+              <h3 className="font-semibold text-slate-900">店家資訊</h3>
+              <StoreLegalInfo
+                info={{
+                  legalName: o.store.legal_name,
+                  representative: o.store.representative,
+                  businessAddress: o.store.business_address,
+                  phone: o.store.phone,
+                  serviceEmail: o.store.service_email,
+                  foodRegistrationNo: o.store.food_registration_no,
+                }}
+              />
               {o.store.return_policy ? <p className="mt-1 whitespace-pre-line break-words text-slate-600">退換貨:{o.store.return_policy}</p> : null}
+            </div>
+
+            <div className="text-sm text-slate-700">
+              <h3 className="font-semibold text-slate-900">退貨(七日解除權)</h3>
+              <p className="mt-1">
+                標示「{WITHDRAWAL_EXEMPT_LABEL}」的商品不能無理由退貨,有瑕疵時仍可以向店家要求處理;其他商品可以在收到的隔天起 7 天內,把商品寄回店家或用書面(例如 Email)通知店家解除契約,退回的運費由店家負擔。
+              </p>
+              <Link to={WITHDRAWAL_TERMS_PATH} className={`inline-flex min-h-11 items-center font-medium text-emerald-800 underline ${MARKET_FOCUS_RING}`}>
+                詳見服務條款第六條
+              </Link>
             </div>
           </section>
         );

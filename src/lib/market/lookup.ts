@@ -1,6 +1,8 @@
 // 訂單查詢頁(/market/orders/:token)的資料:用 token 呼叫 market_get_orders(免登入;anon 不能直接讀 market_orders)。
 // token 格式不對就不打資料庫(跟 RPC 一樣的規則:43 字 base64url)。
-// 店家只給店名、電話、出貨天數、退換貨說明 —— 不給 contact_email(那是店家收新訂單通知的信箱,不是客服信箱)。
+// 店家給店名、電話、出貨天數、退換貨說明與法定資訊(登記名稱、負責人、營業所地址、客服 Email、食品業者登錄字號;
+// migration 20261012110000)—— 不給 contact_email(那是店家收新訂單通知的信箱,不是客服信箱)。
+// 明細多 withdrawal_exempt(下單當時是不是「不適用七日鑑賞期」的快照)。
 import type { PaymentMethod, Temperature, TwCity } from "./constants";
 import { marketRpc } from "./db";
 import { ORDER_STATUSES, type OrderStatus } from "./orders";
@@ -38,8 +40,23 @@ export interface LookupOrder {
     phone: string | null;
     ship_days: number;
     return_policy: string | null;
+    /** 法定資訊(migration 20261012110000 之前的回應沒有這幾個欄位,畫面當成沒填) */
+    legal_name?: string | null;
+    representative?: string | null;
+    business_address?: string | null;
+    service_email?: string | null;
+    food_registration_no?: string | null;
   };
-  items: Array<{ product_name: string; spec: string; unit_price: number; qty: number; line_total: number; temperature: Temperature }>;
+  items: Array<{
+    product_name: string;
+    spec: string;
+    unit_price: number;
+    qty: number;
+    line_total: number;
+    temperature: Temperature;
+    /** 下單當時的「不適用七日鑑賞期」(舊回應沒有 → 當成適用) */
+    withdrawal_exempt?: boolean;
+  }>;
   events: LookupEvent[];
   /** 只有「待匯款」的轉帳訂單才有 */
   transfer_info: string | null;
