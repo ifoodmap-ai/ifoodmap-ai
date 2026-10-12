@@ -243,6 +243,8 @@ describe("店家法定資訊(法規查證 M6:沒填齊不能開放零售)", () =
     // 3 個字:資料庫的 CHECK 會擋(5–200),前端也要擋,不能變成通用的 23514
     expect(validateStoreForm(valid({ businessAddress: rare.repeat(3) })).businessAddress).toBe("營業所地址要 5–200 字");
     expect(validateStoreForm(valid({ businessAddress: rare.repeat(5) })).businessAddress).toBeUndefined();
+    expect(validateStoreForm(valid({ businessAddress: rare.repeat(200) })).businessAddress).toBeUndefined();
+    expect(validateStoreForm(valid({ businessAddress: rare.repeat(201) })).businessAddress).toBe("營業所地址要 5–200 字");
     // 剛好上限:資料庫收,前端也不能擋
     expect(validateStoreForm(valid({ legalName: rare.repeat(100) })).legalName).toBeUndefined();
     expect(validateStoreForm(valid({ legalName: rare.repeat(101) })).legalName).toBe("登記名稱最多 100 字");
@@ -369,21 +371,27 @@ describe("店家法定資訊跟 migration 20261012110000_market_compliance 一�
     for (const col of ["legal_name", "representative", "business_address", "service_email", "food_registration_no", "liability_insurance"]) {
       expect(GUARD, col).toContain(`CASE WHEN public.market_visible(NEW.${col}) THEN public.market_trim(NEW.${col}) END`);
     }
-    // 整個條件一起比:供應商存檔一律檢查(管理員只在建成啟用、重新啟用時),缺四項任一項或電話看不到字就擋
-    expect(GUARD).toContain(
+    // 整個條件一起比:供應商存檔一律檢查(管理員只在建成啟用、重新啟用時),缺四項任一項或電話看不到字就擋;
+    // 擋的方式也要對:RAISE EXCEPTION(不是 NOTICE)、22023、hint store_disclosure_missing(訊息文字不比)
+    const condition =
       "IF NEW.is_enabled AND (NOT v_admin OR TG_OP = 'INSERT' OR NOT OLD.is_enabled) " +
-        "AND (NEW.legal_name IS NULL OR NEW.representative IS NULL OR NEW.business_address IS NULL OR NEW.service_email IS NULL " +
-        "OR NOT EXISTS (SELECT 1 FROM public.suppliers p WHERE p.id = NEW.supplier_id AND public.market_visible(p.phone))) THEN",
+      "AND (NEW.legal_name IS NULL OR NEW.representative IS NULL OR NEW.business_address IS NULL OR NEW.service_email IS NULL " +
+      "OR NOT EXISTS (SELECT 1 FROM public.suppliers p WHERE p.id = NEW.supplier_id AND public.market_visible(p.phone))) THEN ";
+    const at = GUARD.indexOf(condition);
+    expect(at, "guard 的開放零售條件").toBeGreaterThan(-1);
+    expect(GUARD.slice(at + condition.length)).toMatch(
+      /^RAISE EXCEPTION '[^']*' USING ERRCODE = '22023', HINT = 'store_disclosure_missing'; END IF;/,
     );
-    expect(GUARD).toContain("HINT = 'store_disclosure_missing'");
     // missingDisclosures 列的就是這五項(四個欄位 + 電話)
     expect(missingDisclosures({ ...emptyStoreForm() }, null)).toHaveLength(5);
   });
 
   it("market_store_is_open(公開頁面與下單)也要求同一組:四項法定資訊、供應商電話看得到字 —— 供應商商品清單與管理員頁照這個寫", () => {
+    // 整個函式本體一起比(到 $$; 為止):後面多加 OR 條件、條件被拿掉都會不一樣
     const isOpen = fnBody("market_store_is_open");
-    expect(isOpen).toContain(
-      "WHERE s.supplier_id = p_supplier AND s.is_enabled AND p.is_active " +
+    expect(isOpen.slice(isOpen.indexOf("AS $$")).trim()).toBe(
+      "AS $$ SELECT EXISTS ( SELECT 1 FROM public.market_stores s JOIN public.suppliers p ON p.id = s.supplier_id " +
+        "WHERE s.supplier_id = p_supplier AND s.is_enabled AND p.is_active " +
         "AND s.legal_name IS NOT NULL AND s.representative IS NOT NULL AND s.business_address IS NOT NULL " +
         "AND s.service_email IS NOT NULL AND public.market_visible(p.phone) )",
     );
