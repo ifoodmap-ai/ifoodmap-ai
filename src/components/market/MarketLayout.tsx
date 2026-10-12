@@ -91,7 +91,7 @@ export default function MarketLayout() {
 
       <footer className="border-t border-slate-200 bg-white">
         <div className="mx-auto max-w-6xl space-y-2 px-4 py-6 text-sm text-slate-600">
-          <p>iFoodmap 食材市集是媒合平台:商品由各店家販售、出貨與收款,發票由店家開立。</p>
+          <p>iFoodmap 食材市集是媒合平台:商品由各店家販售、出貨與收款,發票或收據由店家開立。</p>
           <p className="flex flex-wrap gap-x-4 gap-y-1">
             <Link to="/market/terms" className={`underline-offset-2 hover:underline ${MARKET_FOCUS_RING}`}>
               服務條款

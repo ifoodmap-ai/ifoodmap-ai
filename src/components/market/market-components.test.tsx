@@ -40,6 +40,8 @@ describe("MarketLayout", () => {
     expect(screen.getByRole("link", { name: /食材市集 首頁/ })).toHaveAttribute("href", "/market");
     expect(screen.getByRole("main")).toHaveAttribute("id", "market-main");
     expect(screen.getByRole("contentinfo")).toHaveTextContent("商品由各店家販售、出貨與收款");
+    // 跟服務條款第十條一致:依法免用統一發票的店家開收據
+    expect(screen.getByRole("contentinfo")).toHaveTextContent("發票或收據由店家開立。");
     expect(document.title).toBe("測試頁｜iFoodmap 食材市集");
   });
 
