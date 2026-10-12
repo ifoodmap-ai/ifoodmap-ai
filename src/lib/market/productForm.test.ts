@@ -166,6 +166,14 @@ describe("七日鑑賞期標示(withdrawal_exempt:true = 不適用)", () => {
   it("已核准商品的提醒寫明:改七日鑑賞期的標示也會重新送審", () => {
     expect(productActions("approved").notice).toMatch(/七日鑑賞期的標示/);
   });
+
+  it("跟 migration 20261012110000 一致:欄位預設 false(適用);已核准的商品改了 withdrawal_exempt 會回到待審", () => {
+    const migration = readFileSync(resolve(__dirname, "../../../supabase/migrations/20261012110000_market_compliance.sql"), "utf8");
+    expect(migration).toContain("ALTER TABLE public.market_products ADD COLUMN IF NOT EXISTS withdrawal_exempt boolean NOT NULL DEFAULT false;");
+    const guard = migration.slice(migration.indexOf("CREATE OR REPLACE FUNCTION public.market_products_guard"));
+    expect(guard).toContain("OR NEW.withdrawal_exempt IS DISTINCT FROM OLD.withdrawal_exempt;");
+    expect(emptyProductForm().withdrawalExempt).toBe(false);
+  });
 });
 
 describe("productActions", () => {

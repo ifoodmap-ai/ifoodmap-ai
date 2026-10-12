@@ -1,4 +1,6 @@
 // store.ts:表單 ↔ 資料列、驗證(上限跟資料庫一樣)、儲存順序(轉帳資訊一定先存)。
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 // 店家法定資訊(登記名稱、負責人、營業所地址、客服 Email 必填,食品業者登錄字號、產品責任險選填):長度、格式跟
 // migration 20261012110000_market_compliance 的 CHECK / market_email_ok 一樣,看不到字也算沒填。
 // 測試字串裡看不見的字元一律寫成 \u{…}。
@@ -276,6 +278,42 @@ describe("資料列 ↔ 表單", () => {
 });
 
 // 讀取出錯一定要丟錯:回 null 的話頁面會當成「還沒建店」顯示空白表單,一儲存就把原本的設定蓋掉。
+describe("店家法定資訊跟 migration 20261012110000_market_compliance 一致", () => {
+  const MIGRATION = readFileSync(resolve(__dirname, "../../../supabase/migrations/20261012110000_market_compliance.sql"), "utf8");
+  const GUARD = MIGRATION.slice(MIGRATION.indexOf("CREATE OR REPLACE FUNCTION public.market_stores_guard"));
+  const between = (col: string): [number, number] => {
+    const all = [...MIGRATION.matchAll(new RegExp(`char_length\\(${col}\\) BETWEEN (\\d+) AND (\\d+)`, "g"))];
+    expect(all, `${col} 的 CHECK 要剛好一處`).toHaveLength(1);
+    return [Number(all[0][1]), Number(all[0][2])];
+  };
+
+  it("長度:market_stores_disclosure_lengths 每一個 BETWEEN 都等於 DISCLOSURE_LIMITS", () => {
+    expect(between("legal_name")).toEqual([1, DISCLOSURE_LIMITS.legalName]);
+    expect(between("representative")).toEqual([1, DISCLOSURE_LIMITS.representative]);
+    expect(between("business_address")).toEqual([DISCLOSURE_LIMITS.businessAddressMin, DISCLOSURE_LIMITS.businessAddress]);
+    expect(between("food_registration_no")).toEqual([1, DISCLOSURE_LIMITS.foodRegistrationNo]);
+    expect(between("liability_insurance")).toEqual([1, DISCLOSURE_LIMITS.liabilityInsurance]);
+  });
+
+  it("客服 Email 照 market_email_ok(130000:254 字以內 + 跟 EMAIL_PATTERN 同一組正規式)", () => {
+    expect(MIGRATION).toContain("CHECK (service_email IS NULL OR public.market_email_ok(service_email))");
+    const orders = readFileSync(resolve(__dirname, "../../../supabase/migrations/20261009130000_market_orders.sql"), "utf8");
+    const fn = orders.slice(orders.indexOf("CREATE OR REPLACE FUNCTION public.market_email_ok"));
+    expect(fn.slice(0, fn.indexOf("$$;"))).toContain(`char_length(p) <= ${DISCLOSURE_LIMITS.serviceEmail}`);
+  });
+
+  it("guard:六個欄位都用 market_visible / market_trim(看不到字 = 沒填);開放零售要四項加上供應商電話,hint 是 store_disclosure_missing", () => {
+    for (const col of ["legal_name", "representative", "business_address", "service_email", "food_registration_no", "liability_insurance"]) {
+      expect(GUARD, col).toContain(`CASE WHEN public.market_visible(NEW.${col}) THEN public.market_trim(NEW.${col}) END`);
+    }
+    expect(GUARD).toContain("NEW.legal_name IS NULL OR NEW.representative IS NULL OR NEW.business_address IS NULL OR NEW.service_email IS NULL");
+    expect(GUARD).toContain("public.market_visible(p.phone)");
+    expect(GUARD).toContain("HINT = 'store_disclosure_missing'");
+    // missingDisclosures 列的就是這五項(四個欄位 + 電話)
+    expect(missingDisclosures({ ...emptyStoreForm() }, null)).toHaveLength(5);
+  });
+});
+
 describe("fetchOwnStore", () => {
   it("讀到店家、轉帳資訊與供應商電話:只查自家、欄位是 STORE_OWNER_COLUMNS", async () => {
     queue["market_stores.select"] = [{ data: STORE_A, error: null }];
