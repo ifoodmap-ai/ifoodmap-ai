@@ -680,6 +680,15 @@ describe("AdminMarketStoresPage — 店家法定資訊(法規查證 M6)", () => 
     expect(within(row).queryByText(/法定資訊沒填齊/)).toBeNull();
   });
 
+  it("供應商電話只有零寬字元:顯示「—」,跟缺的項目一致(同資料庫的 market_visible)", async () => {
+    vi.mocked(fetchAdminStores).mockResolvedValue([{ ...FILLED, suppliers: { ...STORE_A.suppliers!, phone: "\u{200B}" } }]);
+    render(<AdminMarketStoresPage />);
+    const row = (await screen.findByText("市集測試 A 店")).closest("li") as HTMLElement;
+    const legal = within(row).getByRole("group", { name: "市集測試 A 店的法定資訊" });
+    expect(legal).toHaveTextContent("電話:—");
+    expect(within(row).getByText("法定資訊沒填齊(缺:店家電話),消費者看不到這家店、也不能開放零售")).toBeInTheDocument();
+  });
+
   it("缺法定資訊(含供應商電話)→ 標出缺哪幾項、不能開放零售;恢復時資料庫擋下顯示中文", async () => {
     vi.mocked(fetchAdminStores).mockResolvedValue([{ ...STORE_A, is_enabled: false, disabled_reason: "資料待補", suppliers: { ...STORE_A.suppliers!, phone: null } }]);
     vi.mocked(setStoreEnabled).mockRejectedValue(new MarketDbError({ message: "x", code: "22023", hint: "store_disclosure_missing" }));

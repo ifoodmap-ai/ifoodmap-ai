@@ -10,7 +10,8 @@
 // 店家法定資訊(食材市集法規查證 M6;migration 20261012110000_market_compliance):登記名稱、負責人、營業所地址、
 // 客服 Email 必填,食品業者登錄字號、產品責任險選填。開放中(或剛建立)的店家缺任何一項、或供應商資料(suppliers.phone)
 // 沒有電話,資料庫擋成 22023 store_disclosure_missing;店家被管理員停用時不檢查。表單一律當必填(做成必填是業主的決定),
-// 長度與 Email 格式跟資料庫一樣(DISCLOSURE_LIMITS、market_email_ok = checkout.ts 的 EMAIL_PATTERN),看不到字也算沒填。
+// 長度與 Email 格式跟資料庫一樣(DISCLOSURE_LIMITS、market_email_ok = checkout.ts 的 EMAIL_PATTERN;先 market_trim,
+// 字數照碼位算 = char_length),看不到字也算沒填。
 //
 // 不蓋掉別人的修改:更新既有店家時只更新 updated_at 還是「讀到的那個值」的列(兩個分頁、兩位同事同時改,
 // 後存的人更新不到任何一列 → MarketStaleError,什麼都不覆寫)。updated_at 一定用讀到的原字串比對:
@@ -30,6 +31,12 @@ import type { MarketStoreRow } from "./types";
 export const MARKET_TRIM_CHARS = "\\s\\u0085\\u00a0\\u1680\\u180e\\u2000-\\u200d\\u2028\\u2029\\u202f\\u205f\\u2060\\u3000\\ufeff";
 const MARKET_TRIM_RE = new RegExp(`^[${MARKET_TRIM_CHARS}]+|[${MARKET_TRIM_CHARS}]+$`, "gu");
 export const marketTrim = (s: string): string => s.replace(MARKET_TRIM_RE, "");
+
+/**
+ * 法定資訊的字數照碼位算,同資料庫的 char_length:補充平面的罕用字(例如 U+20BB7)JS 的 .length 算 2、資料庫算 1。
+ * 用 .length 的話,3 個罕用字的地址前端算 6 字放行、資料庫擋成通用的 23514;剛好 100 個罕用字的登記名稱前端反而擋下。
+ */
+const charLength = (s: string): number => Array.from(s).length;
 
 /** 店家法定資訊的長度上限(跟 migration 20261012110000 的 CHECK 一樣;客服 Email 照 market_email_ok 的 254 字) */
 export const DISCLOSURE_LIMITS = {
@@ -190,25 +197,26 @@ export const missingDisclosures = (f: DisclosureValues, supplierPhone: string | 
 export const validateStoreForm = (f: StoreForm): StoreFormErrors => {
   const e: StoreFormErrors = {};
   // 法定資訊放最前面:畫面上這一區在最上面,頁面的 toast 顯示第一個錯誤
-  // 跟資料庫一樣先 market_trim(連零寬字元一起去頭尾)再看長度與格式
+  // 跟資料庫一樣先 market_trim(連零寬字元一起去頭尾)再看長度與格式;字數照碼位算(char_length)
   const legalName = marketTrim(f.legalName);
   if (!hasVisibleText(legalName)) e.legalName = "請填登記名稱(公司或商號登記的名稱)";
-  else if (legalName.length > DISCLOSURE_LIMITS.legalName) e.legalName = `登記名稱最多 ${DISCLOSURE_LIMITS.legalName} 字`;
+  else if (charLength(legalName) > DISCLOSURE_LIMITS.legalName) e.legalName = `登記名稱最多 ${DISCLOSURE_LIMITS.legalName} 字`;
   const representative = marketTrim(f.representative);
   if (!hasVisibleText(representative)) e.representative = "請填負責人";
-  else if (representative.length > DISCLOSURE_LIMITS.representative) e.representative = `負責人最多 ${DISCLOSURE_LIMITS.representative} 字`;
+  else if (charLength(representative) > DISCLOSURE_LIMITS.representative) e.representative = `負責人最多 ${DISCLOSURE_LIMITS.representative} 字`;
   const address = marketTrim(f.businessAddress);
+  const addressLength = charLength(address);
   if (!hasVisibleText(address)) e.businessAddress = "請填營業所地址";
-  else if (address.length < DISCLOSURE_LIMITS.businessAddressMin || address.length > DISCLOSURE_LIMITS.businessAddress) {
+  else if (addressLength < DISCLOSURE_LIMITS.businessAddressMin || addressLength > DISCLOSURE_LIMITS.businessAddress) {
     e.businessAddress = `營業所地址要 ${DISCLOSURE_LIMITS.businessAddressMin}–${DISCLOSURE_LIMITS.businessAddress} 字`;
   }
   const email = marketTrim(f.serviceEmail);
   if (!hasVisibleText(email)) e.serviceEmail = "請填客服 Email(會公開在店家頁,消費者用來聯絡你)";
-  else if (!EMAIL_PATTERN.test(email) || email.length > DISCLOSURE_LIMITS.serviceEmail) e.serviceEmail = "客服 Email 格式不對";
-  if (marketTrim(f.foodRegistrationNo).length > DISCLOSURE_LIMITS.foodRegistrationNo) {
+  else if (!EMAIL_PATTERN.test(email) || charLength(email) > DISCLOSURE_LIMITS.serviceEmail) e.serviceEmail = "客服 Email 格式不對";
+  if (charLength(marketTrim(f.foodRegistrationNo)) > DISCLOSURE_LIMITS.foodRegistrationNo) {
     e.foodRegistrationNo = `食品業者登錄字號最多 ${DISCLOSURE_LIMITS.foodRegistrationNo} 字`;
   }
-  if (marketTrim(f.liabilityInsurance).length > DISCLOSURE_LIMITS.liabilityInsurance) {
+  if (charLength(marketTrim(f.liabilityInsurance)) > DISCLOSURE_LIMITS.liabilityInsurance) {
     e.liabilityInsurance = `產品責任險最多 ${DISCLOSURE_LIMITS.liabilityInsurance} 字`;
   }
   if (f.deliveryCities.length === 0) e.deliveryCities = "至少選一個配送縣市";

@@ -4,7 +4,11 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 type Res = { data: unknown; error: { message: string; code?: string; hint?: string } | null };
-const { queue } = vi.hoisted(() => ({ queue: [] as Array<{ table: string; resolve: (r: Res) => void }> }));
+const { queue, selects } = vi.hoisted(() => ({
+  queue: [] as Array<{ table: string; resolve: (r: Res) => void }>,
+  /** 每個查詢 select 的欄位(釘住店家查詢一定帶法定資訊與電話) */
+  selects: [] as Array<{ table: string; columns: string }>,
+}));
 
 vi.mock("@/integrations/supabase/client", () => ({
   supabase: {
@@ -12,7 +16,10 @@ vi.mock("@/integrations/supabase/client", () => ({
       let pending: Promise<Res> | null = null;
       const respond = () => (pending ??= new Promise<Res>((resolve) => queue.push({ table, resolve })));
       const b = {
-        select: () => b,
+        select: (columns?: string) => {
+          selects.push({ table, columns: columns ?? "*" });
+          return b;
+        },
         eq: () => b,
         order: () => b,
         maybeSingle: () => respond(),
@@ -37,6 +44,7 @@ const OFFLINE: Res = { data: null, error: { message: "TypeError: Failed to fetch
 
 beforeEach(() => {
   queue.length = 0;
+  selects.length = 0;
 });
 
 describe("useSupplierMarketProducts", () => {
@@ -187,6 +195,29 @@ describe("useSupplierMarketProducts — 店家法定資訊(同 migration 2026101
       storeOpen: false,
       storeClosedReason: "disclosure",
     });
+  });
+
+  it("四項法定資訊任一項沒填(null、全形空白、零寬字元)都算缺,原因是 disclosure", async () => {
+    for (const key of ["legal_name", "representative", "business_address", "service_email"]) {
+      for (const v of [null, "\u{3000}", "\u{200B}"]) {
+        expect(await loadWith({ ...OPEN, [key]: v }), `${key} = ${JSON.stringify(v)}`).toMatchObject({
+          storeOpen: false,
+          storeClosedReason: "disclosure",
+        });
+      }
+    }
+  });
+
+  it("店家查詢帶四項法定資訊與供應商的 is_active、phone(沒讀到的欄位不算缺:欄位被拿掉,每家店都會又寫成已上架)", async () => {
+    await loadWith(OPEN);
+    const store = selects.find((s) => s.table === "market_stores");
+    expect(store).toBeDefined();
+    const columns = (store?.columns ?? "").replace(/\s+/g, "");
+    for (const col of ["is_enabled", "legal_name", "representative", "business_address", "service_email"]) {
+      expect(columns.split(","), col).toContain(col);
+    }
+    const supplierColumns = /suppliers\(([^)]*)\)/.exec(columns)?.[1]?.split(",") ?? [];
+    expect(supplierColumns).toEqual(expect.arrayContaining(["is_active", "phone"]));
   });
 
   it("被停用(零售或供應商帳號)優先寫停用;沒建店沒有原因", async () => {

@@ -26,8 +26,8 @@ import { citiesSummary, shippingSummary } from '@/lib/market/format';
 import { hasVisibleText } from '@/lib/market/productForm';
 
 const storeName = (s: AdminStoreRow) => s.suppliers?.name ?? s.supplier_id;
-/** 必填的空著寫「—」,選填的空著寫「未填」 */
-const shown = (v: string | null | undefined, empty = '—') => (v && v.trim() ? v : empty);
+/** 必填的空著寫「—」,選填的空著寫「未填」;看不到字(零寬字元等,同資料庫的 market_visible)也算空著,跟缺的項目一致 */
+const shown = (v: string | null | undefined, empty = '—') => (v && hasVisibleText(v) ? v : empty);
 
 const AdminMarketStoresPage = () => {
   const [stores, setStores] = useState<AdminStoreRow[]>([]);

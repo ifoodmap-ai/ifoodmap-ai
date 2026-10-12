@@ -222,6 +222,34 @@ describe("店家法定資訊(法規查證 M6:沒填齊不能開放零售)", () =
     expect(validateStoreForm(valid({ businessAddress: "臺北市\u{200B}\u{200B}" })).businessAddress).toBe("營業所地址要 5–200 字");
     expect(storePayload("s", valid({ legalName: "\u{200B}市集測試 A 店有限公司\u{2060}" })).legal_name).toBe("市集測試 A 店有限公司");
   });
+
+  it("六個欄位都先 market_trim 再算長度:剛好上限的值,頭尾再帶零寬字元、WORD JOINER、BOM 也不算超過", () => {
+    const pad = (s: string) => `\u{200B}${s}\u{2060}\u{FEFF}`;
+    const e = validateStoreForm(
+      valid({
+        legalName: pad("名".repeat(100)),
+        representative: pad("人".repeat(50)),
+        businessAddress: pad("址".repeat(200)),
+        serviceEmail: pad(`${"a".repeat(242)}@example.com`),
+        foodRegistrationNo: pad("A".repeat(40)),
+        liabilityInsurance: pad("保".repeat(100)),
+      }),
+    );
+    expect(e).toEqual({});
+  });
+
+  it("字數照碼位算(同資料庫的 char_length):補充平面的罕用字一個算 1 字(JS 的 .length 算 2)", () => {
+    const rare = "\u{20BB7}";
+    // 3 個字:資料庫的 CHECK 會擋(5–200),前端也要擋,不能變成通用的 23514
+    expect(validateStoreForm(valid({ businessAddress: rare.repeat(3) })).businessAddress).toBe("營業所地址要 5–200 字");
+    expect(validateStoreForm(valid({ businessAddress: rare.repeat(5) })).businessAddress).toBeUndefined();
+    // 剛好上限:資料庫收,前端也不能擋
+    expect(validateStoreForm(valid({ legalName: rare.repeat(100) })).legalName).toBeUndefined();
+    expect(validateStoreForm(valid({ legalName: rare.repeat(101) })).legalName).toBe("登記名稱最多 100 字");
+    expect(validateStoreForm(valid({ representative: rare.repeat(50) })).representative).toBeUndefined();
+    expect(validateStoreForm(valid({ foodRegistrationNo: rare.repeat(40) })).foodRegistrationNo).toBeUndefined();
+    expect(validateStoreForm(valid({ liabilityInsurance: rare.repeat(100) })).liabilityInsurance).toBeUndefined();
+  });
 });
 
 describe("資料列 ↔ 表單", () => {
@@ -302,7 +330,13 @@ describe("資料列 ↔ 表單", () => {
 
 // 讀取出錯一定要丟錯:回 null 的話頁面會當成「還沒建店」顯示空白表單,一儲存就把原本的設定蓋掉。
 describe("店家法定資訊跟 migration 20261012110000_market_compliance 一致", () => {
-  const MIGRATION = readFileSync(resolve(__dirname, "../../../supabase/migrations/20261012110000_market_compliance.sql"), "utf8");
+  /** 比對前先拿掉 SQL 註解、空白壓成一格:註解掉的條件不算數,換行與縮排不影響比對 */
+  const sqlOf = (file: string) =>
+    readFileSync(resolve(__dirname, `../../../supabase/migrations/${file}`), "utf8")
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/--[^\n]*/g, "")
+      .replace(/\s+/g, " ");
+  const MIGRATION = sqlOf("20261012110000_market_compliance.sql");
   /** 只切 guard 這一支函式(到它自己的 $$; 為止),不會連到後面 market_store_is_open 的同一段條件 */
   const fnBody = (name: string) => {
     const start = MIGRATION.indexOf(`CREATE OR REPLACE FUNCTION public.${name}`);
@@ -326,7 +360,7 @@ describe("店家法定資訊跟 migration 20261012110000_market_compliance 一�
 
   it("客服 Email 照 market_email_ok(130000:254 字以內 + 跟 EMAIL_PATTERN 同一組正規式)", () => {
     expect(MIGRATION).toContain("CHECK (service_email IS NULL OR public.market_email_ok(service_email))");
-    const orders = readFileSync(resolve(__dirname, "../../../supabase/migrations/20261009130000_market_orders.sql"), "utf8");
+    const orders = sqlOf("20261009130000_market_orders.sql");
     const fn = orders.slice(orders.indexOf("CREATE OR REPLACE FUNCTION public.market_email_ok"));
     expect(fn.slice(0, fn.indexOf("$$;"))).toContain(`char_length(p) <= ${DISCLOSURE_LIMITS.serviceEmail}`);
   });
@@ -335,8 +369,12 @@ describe("店家法定資訊跟 migration 20261012110000_market_compliance 一�
     for (const col of ["legal_name", "representative", "business_address", "service_email", "food_registration_no", "liability_insurance"]) {
       expect(GUARD, col).toContain(`CASE WHEN public.market_visible(NEW.${col}) THEN public.market_trim(NEW.${col}) END`);
     }
-    expect(GUARD).toContain("NEW.legal_name IS NULL OR NEW.representative IS NULL OR NEW.business_address IS NULL OR NEW.service_email IS NULL");
-    expect(GUARD).toContain("public.market_visible(p.phone)");
+    // 整個條件一起比:供應商存檔一律檢查(管理員只在建成啟用、重新啟用時),缺四項任一項或電話看不到字就擋
+    expect(GUARD).toContain(
+      "IF NEW.is_enabled AND (NOT v_admin OR TG_OP = 'INSERT' OR NOT OLD.is_enabled) " +
+        "AND (NEW.legal_name IS NULL OR NEW.representative IS NULL OR NEW.business_address IS NULL OR NEW.service_email IS NULL " +
+        "OR NOT EXISTS (SELECT 1 FROM public.suppliers p WHERE p.id = NEW.supplier_id AND public.market_visible(p.phone))) THEN",
+    );
     expect(GUARD).toContain("HINT = 'store_disclosure_missing'");
     // missingDisclosures 列的就是這五項(四個欄位 + 電話)
     expect(missingDisclosures({ ...emptyStoreForm() }, null)).toHaveLength(5);
@@ -344,12 +382,15 @@ describe("店家法定資訊跟 migration 20261012110000_market_compliance 一�
 
   it("market_store_is_open(公開頁面與下單)也要求同一組:四項法定資訊、供應商電話看得到字 —— 供應商商品清單與管理員頁照這個寫", () => {
     const isOpen = fnBody("market_store_is_open");
-    expect(isOpen).toContain("s.legal_name IS NOT NULL AND s.representative IS NOT NULL AND s.business_address IS NOT NULL");
-    expect(isOpen).toContain("s.service_email IS NOT NULL AND public.market_visible(p.phone)");
+    expect(isOpen).toContain(
+      "WHERE s.supplier_id = p_supplier AND s.is_enabled AND p.is_active " +
+        "AND s.legal_name IS NOT NULL AND s.representative IS NOT NULL AND s.business_address IS NOT NULL " +
+        "AND s.service_email IS NOT NULL AND public.market_visible(p.phone) )",
+    );
   });
 
   it("market_trim 的字元組跟 MARKET_TRIM_CHARS 一字不差(120000)", () => {
-    const catalog = readFileSync(resolve(__dirname, "../../../supabase/migrations/20261009120000_market_catalog.sql"), "utf8");
+    const catalog = sqlOf("20261009120000_market_catalog.sql");
     const fn = catalog.slice(catalog.indexOf("CREATE OR REPLACE FUNCTION public.market_trim"));
     const set = /VALUES \('\[([^\]]+)\]'\)/.exec(fn.slice(0, fn.indexOf("$$;")))?.[1];
     expect(set).toBe(MARKET_TRIM_CHARS);

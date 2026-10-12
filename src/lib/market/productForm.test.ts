@@ -168,10 +168,18 @@ describe("七日鑑賞期標示(withdrawal_exempt:true = 不適用)", () => {
   });
 
   it("跟 migration 20261012110000 一致:欄位預設 false(適用);已核准的商品改了 withdrawal_exempt 會回到待審", () => {
-    const migration = readFileSync(resolve(__dirname, "../../../supabase/migrations/20261012110000_market_compliance.sql"), "utf8");
+    // 比對前先拿掉 SQL 註解、空白壓成一格(註解掉的條件不算數);guard 只切到它自己的 $$; 為止
+    const migration = readFileSync(resolve(__dirname, "../../../supabase/migrations/20261012110000_market_compliance.sql"), "utf8")
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/--[^\n]*/g, "")
+      .replace(/\s+/g, " ");
     expect(migration).toContain("ALTER TABLE public.market_products ADD COLUMN IF NOT EXISTS withdrawal_exempt boolean NOT NULL DEFAULT false;");
-    const guard = migration.slice(migration.indexOf("CREATE OR REPLACE FUNCTION public.market_products_guard"));
-    expect(guard).toContain("OR NEW.withdrawal_exempt IS DISTINCT FROM OLD.withdrawal_exempt;");
+    const start = migration.indexOf("CREATE OR REPLACE FUNCTION public.market_products_guard");
+    expect(start).toBeGreaterThan(-1);
+    const guard = migration.slice(start, migration.indexOf("$$;", start));
+    expect(guard).toContain(
+      "OR NEW.withdrawal_exempt IS DISTINCT FROM OLD.withdrawal_exempt; IF OLD.review_status = 'approved' AND v_content THEN NEW.review_status := 'pending';",
+    );
     expect(emptyProductForm().withdrawalExempt).toBe(false);
   });
 });
