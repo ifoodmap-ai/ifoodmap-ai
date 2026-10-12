@@ -16,13 +16,17 @@ import type { MarketProductRow, MarketStoreRow } from "./types";
 
 // 公開欄位一律明列(不用 *):不抓 disabled_reason、reject_reason、supply_id、reviewed_by;
 // 供應商只抓 name / phone / is_active —— contact_email 是新訂單通知信箱,市集頁面用不到,不送到瀏覽器(catalog.test.ts 釘住)。
+// 店家的法定資訊(登記名稱、負責人、營業所地址、客服 Email、食品業者登錄字號、產品責任險)與商品的 withdrawal_exempt
+// (不適用七日鑑賞期)是公開資訊:店家頁、商品頁、購物車、結帳要顯示(migration 20261012110000_market_compliance.sql)。
 export const STORE_PUBLIC_COLUMNS =
   "supplier_id, is_enabled, logo_path, cover_path, intro, return_policy, delivery_cities, shipping_fee, " +
-  "free_shipping_threshold, min_order_amount, ship_days, payment_methods, suppliers(name, phone, is_active)";
+  "free_shipping_threshold, min_order_amount, ship_days, payment_methods, " +
+  "legal_name, representative, business_address, service_email, food_registration_no, liability_insurance, " +
+  "suppliers(name, phone, is_active)";
 
 export const PRODUCT_PUBLIC_COLUMNS =
   "id, supplier_id, name, category, spec, price, stock, temperature, origin, storage_method, shelf_life, " +
-  "description, photos, review_status, is_listed, created_at";
+  "description, photos, withdrawal_exempt, review_status, is_listed, created_at";
 
 const PRODUCT_WITH_STORE = `${PRODUCT_PUBLIC_COLUMNS}, market_stores(${STORE_PUBLIC_COLUMNS})`;
 

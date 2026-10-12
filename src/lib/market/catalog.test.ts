@@ -1,4 +1,6 @@
 // catalog.ts:公開查詢帶對篩選條件、再篩一次可見性;首頁篩選、精選店家。supabase 換成記錄查詢的假物件。
+import { existsSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const { calls, rows, failWith } = vi.hoisted(() => ({
@@ -159,6 +161,21 @@ describe("公開欄位", () => {
       expect(columns).not.toContain("*");
       for (const name of HIDDEN) expect(columns).not.toMatch(new RegExp(`\\b${name}\\b`));
     }
+  });
+
+  // 店家的法定資訊(消保法 §18、應記載事項第 1 點)與商品的七日鑑賞期標示(準則 §2:要逐項告知):店家頁、商品頁、購物車、結帳要顯示
+  const STORE_LEGAL = ["legal_name", "representative", "business_address", "service_email", "food_registration_no", "liability_insurance"];
+  const COMPLIANCE = resolve(__dirname, "../../../supabase/migrations/20261012110000_market_compliance.sql");
+
+  it("店家的法定資訊、商品的七日鑑賞期標示都在公開欄位裡;店家聯絡信箱(contact_email)仍然不抓", () => {
+    for (const name of STORE_LEGAL) expect(STORE_PUBLIC_COLUMNS).toMatch(new RegExp(`\\b${name}\\b`));
+    expect(PRODUCT_PUBLIC_COLUMNS).toMatch(/\bwithdrawal_exempt\b/);
+    expect(`${STORE_PUBLIC_COLUMNS} ${PRODUCT_PUBLIC_COLUMNS}`).not.toMatch(/contact_email/);
+  });
+
+  it.skipIf(!existsSync(COMPLIANCE))("新欄位的名稱跟 migration 20261012110000_market_compliance.sql 一樣", () => {
+    const sql = readFileSync(COMPLIANCE, "utf8");
+    for (const name of [...STORE_LEGAL, "withdrawal_exempt"]) expect(sql, name).toMatch(new RegExp(`\\b${name}\\b`));
   });
 
   it("四支公開查詢實際送出的 select 都是這兩組欄位", async () => {
