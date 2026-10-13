@@ -335,6 +335,20 @@ test('home links to the consumer food market on the product site (/market)', () 
   assert.equal(dict('en').home.marketCta, 'Buying for home? Visit the Food Market →');
 });
 
+test('footer SERVICE column links to the consumer food market in both languages', () => {
+  // 跟首頁入口共用同一個 marketUrl(由 IFM_PRODUCT_BASE_URL 推出),不另寫死網址
+  const service = (html) => {
+    const start = html.indexOf('<!-- ============ FOOTER ============ -->');
+    const foot = html.slice(start, html.indexOf('</footer>', start));
+    const col = foot.slice(foot.indexOf('>SERVICE<'));
+    return col.slice(0, col.indexOf('</ul>'));
+  };
+  assert.match(service(source), /<li><a href="\{\{ marketUrl \}\}" class="mc-footlink"[^>]*>食材市集（個人也能買）<\/a><\/li>/);
+  assert.match(service(renderMarkup('en')), /<li><a href="\{\{ marketUrl \}\}" class="mc-footlink"[^>]*>Food Market \(for individuals\)<\/a><\/li>/);
+  assert.equal((footer.match(/href="\{\{ marketUrl \}\}"/g) || []).length, 1);
+  assert.doesNotMatch(footer, /app\.ifoodmap\.ai\/market/);
+});
+
 test('market entry sits right under the categories subtitle above 560px, on its own line on phones', () => {
   // >560px(含 561–768 的手機橫拿 / 平板直拿):副標跟正式站一樣的位置,入口疊在副標正下方、一起靠右。
   // ≤560px(手機直拿):副標照舊,入口在標題下方另起一行 —— 用 .mc-catmarketrow 佔滿一行來換行,
