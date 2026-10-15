@@ -938,7 +938,7 @@
       <div class="mc-sec" style="max-width:1240px;margin:0 auto;padding:clamp(48px,7vw,80px) 20px">
         <div style="text-align:center">
           <div class="mc-eyebrow" style="font-family:'Space Grotesk',sans-serif;font-size:11.5px;letter-spacing:.2em;color:#5E6E65">HOW IT WORKS</div>
-          <h2 style="margin-top:14px;font-size:clamp(26px,3.4vw,38px)">{{ L.home.flowTitlePre }}<span style="color:#0B6B40">{{ L.home.flowTitleHighlight }}</span></h2>
+          <h2 style="margin-top:14px;font-size:clamp(26px,3.4vw,38px)">{{ L.home.flowTitlePre }}<span class="mc-flowhl" style="color:#0B6B40">{{ L.home.flowTitleHighlight }}</span></h2>
         </div>
         <div class="mc-flowpanel" style="margin-top:44px;background:#F3FAF6;border-radius:32px;padding:clamp(24px,4vw,48px)">
           <div class="mc-flowgrid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:24px">
@@ -3118,10 +3118,13 @@ class Component extends DCLogic {
   .mc-cardtitle  { margin-top: 10px !important; font-size: 17px !important; line-height: 1.35 !important; }
   .mc-cardp      { margin-top: 6px !important; line-height: 1.6 !important; }
 
-  /* 「從需求到進貨，一條龍」：六步各配一張 130px 高的插圖，1 欄排下來 2.4 螢幕。
+  /* 「從媒合到採購，完整的數位解決方案」：六步各配一張 130px 高的插圖，1 欄排下來 2.4 螢幕。
      改 2 欄 + 插圖框 130 -> 74px。插圖還在，只是不再主宰版面。 */
   .mc-flowpanel  { margin-top: 14px !important; padding: 10px !important; border-radius: 18px !important; }
   .mc-flowgrid   { grid-template-columns: 1fr 1fr !important; gap: 10px !important; }
+  /* 中文標題整段放第二行,不從「解決方案」中間斷;步驟標題換行時兩行等長,不留單獨一個字 */
+  .mc-flowhl:lang(zh) { white-space: nowrap; }
+  .mc-flowtitle  { text-wrap: balance; }
   /* 每組三步排成 2 欄會剩一格空的；讓落單的第三張橫跨整列，右下角就不會開天窗 */
   .mc-flowgrid > *:nth-child(3):last-child { grid-column: 1 / -1 !important; }
   .mc-flowcard   { padding: 10px !important; border-radius: 14px !important; }

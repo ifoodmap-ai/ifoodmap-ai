@@ -385,7 +385,7 @@ test('homepage retains design metrics and explains the six-step workflow', () =>
   assertHomeMetricsAndWorkflow(component, homeData);
   assert.match(home, /<sc-for list="\{\{\s*flowA\s*\}\}"/);
   assert.match(home, /<sc-for list="\{\{\s*flowB\s*\}\}"/);
-  assert.match(home, /從需求到進貨，<span[^>]*>一條龍<\/span>/);
+  assert.match(home, /從媒合到採購，<span[^>]*>完整的數位解決方案<\/span>/);
 });
 
 test('homepage names four audiences, twelve categories and three trust features from the design', () => {
