@@ -71,7 +71,7 @@ function assertHomeMetricsAndWorkflow(fragment, data) {
   assert.ok(!data.stats.some((l) => /示意/.test(l)), '數字已是實際數據,標籤不該再標示意');
   assert.deepEqual(
     data.flow.map((step) => step.title),
-    ['填需求', '系統媒合', '收到報價', '比較洽談', '下單進貨', '雙邊評價'],
+    ['AI 對話收集需求', '買賣雙邊媒合', '聯繫報價', '試用洽談', '下單進貨', '雙邊評價'],
   );
 }
 
@@ -468,7 +468,7 @@ test('content guards fail when home metrics or home workflow are removed', () =>
   assert.throws(() => assertHomeMetricsAndWorkflow(component, { ...homeData, statsUnits: undefined }));
   const renamedStep = {
     ...homeData,
-    flow: homeData.flow.map((step) => (step.title === '系統媒合' ? { ...step, title: '媒合' } : step)),
+    flow: homeData.flow.map((step) => (step.title === '買賣雙邊媒合' ? { ...step, title: '媒合' } : step)),
   };
   assert.throws(() => assertHomeMetricsAndWorkflow(component, renamedStep));
   assert.throws(() => assertMobileLogin(footer.replace(/href="\{\{\s*loginUrl\s*\}\}"/, 'href="/"')));

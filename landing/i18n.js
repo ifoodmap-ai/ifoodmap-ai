@@ -171,20 +171,20 @@
           ],
           "flow": [
             {
-              "title": "填需求",
-              "desc": "品項、數量、配送區域，2 分鐘。"
+              "title": "AI 對話收集需求",
+              "desc": "告知品項、數量、配送區域。"
             },
             {
-              "title": "系統媒合",
-              "desc": "只發給供得起、送得到的廠商。"
+              "title": "買賣雙邊媒合",
+              "desc": "比對供應商資料庫條件精準媒合。"
             },
             {
-              "title": "收到報價",
+              "title": "聯繫報價",
               "desc": "平均 4 小時開始收到回覆。"
             },
             {
-              "title": "比較洽談",
-              "desc": "價格、配送、標章一次比。"
+              "title": "試用洽談",
+              "desc": "索取試用，比價、議價與確立合作。"
             },
             {
               "title": "下單進貨",
@@ -875,20 +875,20 @@
           ],
           "flow": [
             {
-              "title": "Submit a request",
-              "desc": "Items, volume, delivery area — 2 minutes."
+              "title": "AI chat to capture your request",
+              "desc": "Tell us the items, volume, and delivery area."
             },
             {
-              "title": "We match",
-              "desc": "Sent only to suppliers who can stock it and deliver it."
+              "title": "Two-sided matching",
+              "desc": "Matched precisely against our supplier database criteria."
             },
             {
-              "title": "Get quotes",
+              "title": "Contact & quote",
               "desc": "Replies start arriving in about 4 hours."
             },
             {
-              "title": "Compare & negotiate",
-              "desc": "Weigh price, delivery, and certifications side by side."
+              "title": "Trial & negotiate",
+              "desc": "Request a trial, compare prices, negotiate, and confirm the partnership."
             },
             {
               "title": "Order & restock",
