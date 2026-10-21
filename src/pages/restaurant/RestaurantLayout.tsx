@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, Navigate, Outlet, useLocation, useNavigate } from "react-router-dom";
 import {
-  LayoutDashboard, Sparkles, PackageCheck, UtensilsCrossed, Settings,
+  LayoutDashboard, Sparkles, PackageCheck, UtensilsCrossed, BarChart3, Settings,
   LogOut, Menu, X, type LucideIcon,
 } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
@@ -74,6 +74,15 @@ const sections: RestaurantSection[] = [
       { label: "食材行情", path: "/restaurant/costs" },
       { label: "新菜實驗室", path: "/restaurant/lab" },
     ],
+  },
+  {
+    // 依日期區間看採購明細與彙總、下載 CSV;有金額,跟「菜單與成本」一樣只給老闆/店長
+    key: "reports",
+    to: "/restaurant/reports",
+    label: "報表",
+    icon: BarChart3,
+    costOnly: true,
+    match: startsWithAny(["/restaurant/reports"]),
   },
   {
     key: "settings",

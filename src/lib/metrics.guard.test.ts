@@ -33,6 +33,7 @@ const PAGES = [
   'src/pages/supplier/SupplierDashboard.tsx',
   'src/pages/supplier/SupplierCustomersPage.tsx',
   'src/pages/restaurant/RestaurantDashboard.tsx',
+  'src/pages/restaurant/RestaurantReportsPage.tsx',
   'src/pages/restaurant/RestaurantSuppliersPage.tsx',
 ];
 

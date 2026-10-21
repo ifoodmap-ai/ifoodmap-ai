@@ -1,5 +1,5 @@
 // 後台精簡第一期:餐廳後台選單 10 → 5 個分區(採購員 4 個),分區裡用分頁。
-// 這裡驗證:①老闆/店長側欄 5 項、採購員 4 項(桌機與手機抽屜都是)②原本 10 條網址全部還能開,
+// 這裡驗證:①老闆/店長側欄 6 項、採購員 4 項(桌機與手機抽屜都是)②原本 10 條網址加上報表頁全部還能開,
 // 落在正確的分區與分頁 ③「菜單與成本」對採購員不只藏選單,打網址也會被導回總覽
 // ④AI 泡泡與內容區底部留白保留。
 //
@@ -45,6 +45,7 @@ const ROUTES: [string, string][] = [
   ["purchase", "智慧採購頁"],
   ["orders", "訂單與收貨頁"],
   ["costs", "成本與省錢頁"],
+  ["reports", "採購報表頁"],
   ["suppliers", "我的供應商頁"],
   ["lab", "菜色實驗室頁"],
   ["team", "分店與成員頁"],
@@ -89,22 +90,22 @@ afterEach(() => {
   expect(fetchGuard).not.toHaveBeenCalled();
 });
 
-describe("RestaurantLayout — 選單 10 項收成 5 個分區", () => {
-  it.each<Role>(["owner", "manager"])("%s:桌機側欄 5 個分區,依序為總覽、AI 菜單分析、叫貨與訂單、菜單與成本、設定", (role) => {
+describe("RestaurantLayout — 選單收成分區", () => {
+  it.each<Role>(["owner", "manager"])("%s:桌機側欄 6 個分區,依序為總覽、AI 菜單分析、叫貨與訂單、菜單與成本、報表、設定", (role) => {
     roleRef.current = role;
     renderLayout("/restaurant");
 
-    expect(sectionLabels(desktopNav())).toEqual(["總覽", "AI 菜單分析", "叫貨與訂單", "菜單與成本", "設定"]);
+    expect(sectionLabels(desktopNav())).toEqual(["總覽", "AI 菜單分析", "叫貨與訂單", "菜單與成本", "報表", "設定"]);
   });
 
-  it("採購員:桌機側欄 4 個分區(沒有「菜單與成本」)", () => {
+  it("採購員:桌機側欄 4 個分區(沒有「菜單與成本」與「報表」)", () => {
     roleRef.current = "purchaser";
     renderLayout("/restaurant");
 
     expect(sectionLabels(desktopNav())).toEqual(["總覽", "AI 菜單分析", "叫貨與訂單", "設定"]);
   });
 
-  it.each<[Role, number]>([["owner", 5], ["manager", 5], ["purchaser", 4]])(
+  it.each<[Role, number]>([["owner", 6], ["manager", 6], ["purchaser", 4]])(
     "%s:手機抽屜打開也是 %i 項,點分區會關掉抽屜",
     async (role, count) => {
       roleRef.current = role;
@@ -134,7 +135,7 @@ describe("RestaurantLayout — 選單 10 項收成 5 個分區", () => {
   });
 });
 
-describe("RestaurantLayout — 原本 10 條網址都還能開,落在正確的分區與分頁", () => {
+describe("RestaurantLayout — 全部網址都還能開,落在正確的分區與分頁", () => {
   // [網址, 頁面, 側欄分區, 分頁(沒有分頁列為 null), 同分區的分頁依序]
   const CASES: [string, string, string, string | null, string[] | null][] = [
     ["/restaurant", "營運總覽頁", "總覽", null, null],
@@ -145,6 +146,7 @@ describe("RestaurantLayout — 原本 10 條網址都還能開,落在正確的�
     ["/restaurant/menu", "我的菜單頁", "菜單與成本", "我的菜單", ["我的菜單", "食材行情", "新菜實驗室"]],
     ["/restaurant/costs", "成本與省錢頁", "菜單與成本", "食材行情", ["我的菜單", "食材行情", "新菜實驗室"]],
     ["/restaurant/lab", "菜色實驗室頁", "菜單與成本", "新菜實驗室", ["我的菜單", "食材行情", "新菜實驗室"]],
+    ["/restaurant/reports", "採購報表頁", "報表", null, null],
     ["/restaurant/settings", "店家設定頁", "設定", "店家資料", ["店家資料", "分店與成員"]],
     ["/restaurant/team", "分店與成員頁", "設定", "分店與成員", ["店家資料", "分店與成員"]],
   ];
@@ -188,7 +190,7 @@ describe("RestaurantLayout — 原本 10 條網址都還能開,落在正確的�
 });
 
 describe("RestaurantLayout — 採購員", () => {
-  it.each(["/restaurant/menu", "/restaurant/costs", "/restaurant/lab"])(
+  it.each(["/restaurant/menu", "/restaurant/costs", "/restaurant/lab", "/restaurant/reports"])(
     "打 %s 會被導回總覽(不只藏選單,路由也擋)",
     (path) => {
       roleRef.current = "purchaser";

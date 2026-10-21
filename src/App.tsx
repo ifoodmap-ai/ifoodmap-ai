@@ -96,6 +96,7 @@ import RestaurantMenuPage from "./pages/restaurant/RestaurantMenuPage";
 import RestaurantPurchasePage from "./pages/restaurant/RestaurantPurchasePage";
 import RestaurantOrdersPage from "./pages/restaurant/RestaurantOrdersPage";
 import RestaurantCostsPage from "./pages/restaurant/RestaurantCostsPage";
+import RestaurantReportsPage from "./pages/restaurant/RestaurantReportsPage";
 import RestaurantSuppliersPage from "./pages/restaurant/RestaurantSuppliersPage";
 import RestaurantLabPage from "./pages/restaurant/RestaurantLabPage";
 import RestaurantTeamPage from "./pages/restaurant/RestaurantTeamPage";
@@ -188,6 +189,7 @@ const MainRoutes = () => (
       <Route path="purchase" element={<RestaurantPurchasePage />} />
       <Route path="orders" element={<RestaurantOrdersPage />} />
       <Route path="costs" element={<RestaurantCostsPage />} />
+      <Route path="reports" element={<RestaurantReportsPage />} />
       <Route path="suppliers" element={<RestaurantSuppliersPage />} />
       <Route path="lab" element={<RestaurantLabPage />} />
       <Route path="team" element={<RestaurantTeamPage />} />
