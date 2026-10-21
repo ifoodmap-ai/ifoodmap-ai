@@ -2,14 +2,13 @@ import { useEffect, useMemo, useState } from "react";
 import { useLocation } from "react-router-dom";
 import {
   Sparkles, Plus, Trash2, Loader2, ShoppingCart, ClipboardCheck,
-  History, Send, PackagePlus, Hourglass, Undo2,
+  History, Send, PackagePlus, Hourglass, Undo2, Minus,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
-import { Checkbox } from "@/components/ui/checkbox";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -50,6 +49,7 @@ interface RawIngredient {
   quantity?: string | number;
   unit?: string;
   category?: string;
+  reference_price?: string | number;
 }
 
 interface OrderRow {
@@ -62,14 +62,17 @@ interface OrderRow {
   notes: string | null;
 }
 
-interface Suggestion {
+/** 過往叫過的品項:進頁就全部列出,預設都在這張單裡,不要的刪掉、數量與參考價自己調 */
+interface HistoryItem {
   name: string;
   unit: string;
   quantity: string;
+  referencePrice: string;
   times: number;
   daysSince: number;
+  /** 叫過兩次以上才算得出週期;只叫過一次是 0 */
   avgCycle: number;
-  checked: boolean;
+  due: boolean;
 }
 
 interface ManualItem {
@@ -77,10 +80,88 @@ interface ManualItem {
   name: string;
   quantity: string;
   unit: string;
+  referencePrice: string;
 }
 
 const DAY = 86_400_000;
 const dayDiff = (a: number, b: number) => Math.max(0, Math.round((a - b) / DAY));
+
+/** 數量 / 參考價欄只收數字與一個小數點 */
+const numericOnly = (v: string) => /^\d*\.?\d*$/.test(v);
+
+/** ± 按鈕:數量不是數字(例如舊單寫「3箱」)就從 0 起算;最少停在 1,要拿掉請按刪除 */
+const stepQuantity = (current: string, delta: 1 | -1) => {
+  const n = Number.parseFloat(current);
+  const base = Number.isFinite(n) ? n : 0;
+  const next = Math.max(1, Math.round((base + delta) * 100) / 100);
+  return String(next);
+};
+
+const toPrice = (v: string) => {
+  const n = Number.parseFloat(v);
+  return Number.isFinite(n) && n > 0 ? n : undefined;
+};
+
+interface QtyStepperProps {
+  value: string;
+  name: string;
+  onChange: (v: string) => void;
+}
+
+const QtyStepper = ({ value, name, onChange }: QtyStepperProps) => (
+  <div className="flex items-center">
+    <Button
+      type="button"
+      variant="outline"
+      size="icon"
+      className="h-9 w-9 rounded-r-none shrink-0"
+      aria-label={`${name} 數量減 1`}
+      onClick={() => onChange(stepQuantity(value, -1))}
+    >
+      <Minus className="h-3.5 w-3.5" />
+    </Button>
+    <Input
+      value={value}
+      inputMode="decimal"
+      onChange={(e) => { if (numericOnly(e.target.value)) onChange(e.target.value); }}
+      className="h-9 w-16 rounded-none text-center border-x-0"
+      placeholder="數量"
+      aria-label={`${name} 數量`}
+    />
+    <Button
+      type="button"
+      variant="outline"
+      size="icon"
+      className="h-9 w-9 rounded-l-none shrink-0"
+      aria-label={`${name} 數量加 1`}
+      onClick={() => onChange(stepQuantity(value, 1))}
+    >
+      <Plus className="h-3.5 w-3.5" />
+    </Button>
+  </div>
+);
+
+interface PriceInputProps {
+  value: string;
+  name: string;
+  unit: string;
+  onChange: (v: string) => void;
+}
+
+const PriceInput = ({ value, name, unit, onChange }: PriceInputProps) => (
+  <div className="flex items-center gap-1 shrink-0">
+    <span className="text-xs text-slate-400">參考價 $</span>
+    <Input
+      value={value}
+      inputMode="decimal"
+      onChange={(e) => { if (numericOnly(e.target.value)) onChange(e.target.value); }}
+      className="h-9 w-20"
+      placeholder="選填"
+      aria-label={`${name} 參考價`}
+    />
+    <span className="text-xs text-slate-400 w-9 truncate">{unit ? `/ ${unit}` : ""}</span>
+  </div>
+);
 
 const RestaurantPurchasePage = () => {
   const account = useRestaurant();
@@ -91,8 +172,9 @@ const RestaurantPurchasePage = () => {
 
   const [loading, setLoading] = useState(true);
   const [userId, setUserId] = useState<string | null>(null);
-  const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
-  const [frequent, setFrequent] = useState<{ name: string; unit: string; quantity: string }[]>([]);
+  const [items, setItems] = useState<HistoryItem[]>([]);
+  const [removed, setRemoved] = useState<HistoryItem[]>([]);
+  const [reloadKey, setReloadKey] = useState(0);
   // AI 菜單分析頁按「帶到智慧採購」時暫存的食材,進頁時接手
   const [manual, setManual] = useState<ManualItem[]>(() => {
     try {
@@ -103,12 +185,12 @@ const RestaurantPurchasePage = () => {
       if (!Array.isArray(names)) return [];
       return names
         .filter((n): n is string => typeof n === "string" && n.trim().length > 0)
-        .map((name, i) => ({ key: `handoff-${i}`, name: name.trim(), quantity: "", unit: "kg" }));
+        .map((name, i) => ({ key: `handoff-${i}`, name: name.trim(), quantity: "", unit: "kg", referencePrice: "" }));
     } catch {
       return [];
     }
   });
-  const [form, setForm] = useState({ name: "", quantity: "", unit: "" });
+  const [form, setForm] = useState({ name: "", quantity: "", unit: "", referencePrice: "" });
   const [notes, setNotes] = useState("");
   const [drafts, setDrafts] = useState<OrderRow[]>([]);
   const [submitting, setSubmitting] = useState(false);
@@ -128,7 +210,8 @@ const RestaurantPurchasePage = () => {
     let cancelled = false;
 
     const load = async () => {
-      setLoading(true);
+      if (reloadKey === 0) setLoading(true);
+      setRemoved([]);
       const { data: { user } } = await supabase.auth.getUser();
       if (!cancelled) setUserId(user?.id ?? null);
 
@@ -138,7 +221,8 @@ const RestaurantPurchasePage = () => {
         .order("created_at", { ascending: false })
         .limit(300);
 
-      const history = new Map<string, { dates: number[]; unit: string; quantity: string; times: number }>();
+      // orders 由新到舊:每個品項的單位 / 數量 / 參考價取「最近一次」叫貨時的
+      const history = new Map<string, { dates: number[]; unit: string; quantity: string; price: string; times: number }>();
       (orders ?? [])
         .filter((o) => o.status !== "cancelled" && o.status !== "draft")
         .forEach((o) => {
@@ -152,46 +236,47 @@ const RestaurantPurchasePage = () => {
             seen.add(name);
             const prev = history.get(name);
             const qty = raw?.quantity != null ? String(raw.quantity) : "";
+            const price = raw?.reference_price != null ? String(raw.reference_price) : "";
             if (prev) {
               prev.dates.push(at);
               prev.times += 1;
+              if (!prev.price && price) prev.price = price;
             } else {
-              history.set(name, { dates: [at], unit: raw?.unit ?? "", quantity: qty, times: 1 });
+              history.set(name, { dates: [at], unit: raw?.unit ?? "", quantity: qty, price, times: 1 });
             }
           });
         });
 
       const now = Date.now();
-      const suggested: Suggestion[] = [];
-      const freq: { name: string; unit: string; quantity: string; times: number }[] = [];
+      const list: HistoryItem[] = [];
 
       history.forEach((v, name) => {
-        const dates = [...v.dates].sort((a, b) => a - b);
+        const dates = [...v.dates].sort((x, y) => x - y);
         const last = dates[dates.length - 1];
         const daysSince = dayDiff(now, last);
-        freq.push({ name, unit: v.unit, quantity: v.quantity, times: v.times });
-        if (dates.length < 2) return;
-        const avgCycle = Math.max(1, Math.round((last - dates[0]) / (dates.length - 1) / DAY));
-        if (daysSince >= avgCycle) {
-          suggested.push({
-            name,
-            unit: v.unit,
-            quantity: v.quantity || "1",
-            times: v.times,
-            daysSince,
-            avgCycle,
-            checked: true,
-          });
-        }
+        const avgCycle = dates.length >= 2
+          ? Math.max(1, Math.round((last - dates[0]) / (dates.length - 1) / DAY))
+          : 0;
+        list.push({
+          name,
+          unit: v.unit,
+          quantity: v.quantity || "1",
+          referencePrice: v.price,
+          times: v.times,
+          daysSince,
+          avgCycle,
+          due: avgCycle > 0 && daysSince >= avgCycle,
+        });
       });
 
-      suggested.sort((a, b) => b.daysSince / b.avgCycle - a.daysSince / a.avgCycle);
-      freq.sort((a, b) => b.times - a.times);
+      // 該補貨的排前面(越超期越前面),其餘依叫過的次數
+      list.sort((x, y) => {
+        if (x.due !== y.due) return x.due ? -1 : 1;
+        if (x.due && y.due) return y.daysSince / y.avgCycle - x.daysSince / x.avgCycle;
+        return y.times - x.times;
+      });
 
-      if (!cancelled) {
-        setSuggestions(suggested);
-        setFrequent(freq.slice(0, 12).map(({ name, unit, quantity }) => ({ name, unit, quantity })));
-      }
+      if (!cancelled) setItems(list);
 
       await loadDrafts();
       if (!cancelled) setLoading(false);
@@ -200,7 +285,7 @@ const RestaurantPurchasePage = () => {
     load();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [account.restaurant_id]);
+  }, [account.restaurant_id, reloadKey]);
 
   // 本來就停在這一頁時才認領完成(直接打 /restaurant/purchase 進來):第一次載入可能早於草稿建立,
   // 收到 claimedOrderId 就再抓一次待簽核清單,剛建好的 AI 草稿才看得到
@@ -210,21 +295,44 @@ const RestaurantPurchasePage = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [claimedOrderId]);
 
+  interface CartItem {
+    name: string;
+    quantity: string;
+    unit: string;
+    reference_price?: number;
+    source: "ai" | "manual";
+  }
+
   const cart = useMemo(() => {
-    const picked = suggestions
-      .filter((s) => s.checked)
-      .map((s) => ({ name: s.name, quantity: s.quantity, unit: s.unit, source: "ai" as const }));
-    const extra = manual.map((m) => ({
-      name: m.name, quantity: m.quantity, unit: m.unit, source: "manual" as const,
+    const picked: CartItem[] = items.map((i) => ({
+      name: i.name, quantity: i.quantity, unit: i.unit, reference_price: toPrice(i.referencePrice), source: "ai",
+    }));
+    const extra: CartItem[] = manual.map((m) => ({
+      name: m.name, quantity: m.quantity, unit: m.unit, reference_price: toPrice(m.referencePrice), source: "manual",
     }));
     // 同名只留一筆(手動輸入優先)
-    const merged = new Map<string, { name: string; quantity: string; unit: string; source: "ai" | "manual" }>();
+    const merged = new Map<string, CartItem>();
     [...picked, ...extra].forEach((i) => {
       const name = i.name.trim();
-      if (name) merged.set(name, { ...i, name });
+      if (!name) return;
+      const { reference_price, ...rest } = i;
+      merged.set(name, { ...rest, name, ...(reference_price !== undefined ? { reference_price } : {}) });
     });
     return [...merged.values()];
-  }, [suggestions, manual]);
+  }, [items, manual]);
+
+  const updateItem = (name: string, patch: Partial<HistoryItem>) =>
+    setItems((prev) => prev.map((x) => (x.name === name ? { ...x, ...patch } : x)));
+
+  const removeItem = (item: HistoryItem) => {
+    setItems((prev) => prev.filter((x) => x.name !== item.name));
+    setRemoved((prev) => (prev.some((x) => x.name === item.name) ? prev : [...prev, item]));
+  };
+
+  const restoreItem = (item: HistoryItem) => {
+    setRemoved((prev) => prev.filter((x) => x.name !== item.name));
+    setItems((prev) => (prev.some((x) => x.name === item.name) ? prev : [...prev, item]));
+  };
 
   const addManual = (name?: string, quantity?: string, unit?: string) => {
     const n = (name ?? form.name).trim();
@@ -237,14 +345,23 @@ const RestaurantPurchasePage = () => {
             name: n,
             quantity: (quantity ?? form.quantity).trim() || "1",
             unit: (unit ?? form.unit).trim(),
+            referencePrice: form.referencePrice.trim(),
           }],
     );
-    if (!name) setForm({ name: "", quantity: "", unit: "" });
+    if (!name) setForm({ name: "", quantity: "", unit: "", referencePrice: "" });
   };
 
   const submit = async () => {
     if (cart.length === 0) {
-      toast.error("請先勾選或加入至少一項食材");
+      toast.error("請先加入至少一項食材");
+      return;
+    }
+    const noQty = cart.find((i) => {
+      const q = i.quantity.trim();
+      return q === "" || !(Number.parseFloat(q) > 0);
+    });
+    if (noQty) {
+      toast.error("請確認每一項的數量", { description: `「${noQty.name}」還沒有填數量,或數量不是大於 0 的數字` });
       return;
     }
     setSubmitting(true);
@@ -278,7 +395,8 @@ const RestaurantPurchasePage = () => {
         toast.success("採購需求已送出,ifoodmap 將盡快媒合供應商");
       }
 
-      setSuggestions((prev) => prev.map((s) => ({ ...s, checked: false })));
+      // 剛送出的品項會變成「最近一次叫貨」:重抓一次,清單回到乾淨的起點
+      setReloadKey((k) => k + 1);
       setManual([]);
       setNotes("");
       await loadDrafts();
@@ -386,7 +504,7 @@ const RestaurantPurchasePage = () => {
           智慧採購
         </h1>
         <p className="text-sm text-slate-500 mt-1">
-          依照過往叫貨週期自動提醒該補的品項,勾一勾就能送出採購需求
+          叫過的品項會自動列在下面,調整數量、刪掉不需要的,就能送出採購需求
         </p>
       </div>
 
@@ -486,72 +604,104 @@ const RestaurantPurchasePage = () => {
         </AlertDialogContent>
       </AlertDialog>
 
-      {/* AI 建議採購清單 */}
+      {/* 過往叫貨品項:全部列出,預設都在這張單裡 */}
       <Card>
         <CardHeader className="pb-3">
           <CardTitle className="text-base flex items-center gap-2">
             <Sparkles className="h-4 w-4 text-emerald-600" />
-            AI 建議採購清單
+            過往叫貨品項
+            {items.length > 0 && <span className="text-xs font-normal text-slate-400">共 {items.length} 項</span>}
           </CardTitle>
+          {items.length > 0 && (
+            <p className="text-xs text-slate-400">
+              用 + − 或直接輸入數字調整數量,不需要的按垃圾桶移除;參考價是你預期的單價,選填
+            </p>
+          )}
         </CardHeader>
         <CardContent>
-          {suggestions.length === 0 ? (
+          {items.length === 0 ? (
             <div className="text-center py-10 text-slate-400">
               <History className="h-9 w-9 mx-auto mb-3 opacity-40" />
-              <p className="text-sm">還沒有足夠的叫貨紀錄可以推算週期</p>
-              <p className="text-xs mt-1">同一項食材叫過兩次以上,系統就會開始提醒你補貨</p>
+              <p className="text-sm">{removed.length > 0 ? "叫過的品項都已移除" : "還沒有叫過貨的品項"}</p>
+              <p className="text-xs mt-1">
+                {removed.length > 0
+                  ? "可以從下方「已移除的品項」加回來,或手動加入新品項"
+                  : "送出第一張採購單之後,叫過的品項會自動列在這裡,下次不用再一個個加入"}
+              </p>
             </div>
           ) : (
-            <div className="divide-y divide-slate-100">
-              {suggestions.map((s, idx) => {
-                const overdue = s.daysSince >= s.avgCycle * 1.5;
+            <div className="divide-y divide-slate-100" data-testid="history-items">
+              {items.map((i) => {
+                const overdue = i.due && i.daysSince >= i.avgCycle * 1.5;
                 return (
-                  <div key={s.name} className="flex flex-wrap items-center gap-3 py-3">
-                    <Checkbox
-                      checked={s.checked}
-                      onCheckedChange={(v) =>
-                        setSuggestions((prev) =>
-                          prev.map((x, i) => (i === idx ? { ...x, checked: v === true } : x)),
-                        )
-                      }
-                    />
+                  <div key={i.name} data-testid="history-item" className="flex flex-wrap items-center gap-x-3 gap-y-2 py-3">
                     <div className="flex-1 min-w-[140px]">
-                      <p className="text-sm font-medium text-slate-800">{s.name}</p>
+                      <div className="text-sm font-medium text-slate-800 flex items-center gap-2 flex-wrap">
+                        {i.name}
+                        {i.due && (
+                          <Badge
+                            variant="outline"
+                            className={overdue
+                              ? "bg-red-50 text-red-700 border-red-200"
+                              : "bg-amber-50 text-amber-700 border-amber-200"}
+                          >
+                            {overdue ? "嚴重超期" : "該補貨了"}
+                          </Badge>
+                        )}
+                      </div>
                       <p className="text-xs text-slate-400">
-                        上次叫貨 {s.daysSince} 天前 · 平均週期 {s.avgCycle} 天 · 共叫過 {s.times} 次
+                        上次叫貨 {i.daysSince} 天前
+                        {i.avgCycle > 0 && ` · 平均週期 ${i.avgCycle} 天`} · 共叫過 {i.times} 次
                       </p>
                     </div>
-                    <Badge
-                      variant="outline"
-                      className={overdue
-                        ? "bg-red-50 text-red-700 border-red-200"
-                        : "bg-amber-50 text-amber-700 border-amber-200"}
-                    >
-                      {overdue ? "嚴重超期" : "該補貨了"}
-                    </Badge>
-                    <Input
-                      value={s.quantity}
-                      onChange={(e) =>
-                        setSuggestions((prev) =>
-                          prev.map((x, i) => (i === idx ? { ...x, quantity: e.target.value } : x)),
-                        )
-                      }
-                      className="w-24 h-9"
-                      placeholder="數量"
+                    <QtyStepper
+                      name={i.name}
+                      value={i.quantity}
+                      onChange={(v) => updateItem(i.name, { quantity: v })}
                     />
                     <Input
-                      value={s.unit}
-                      onChange={(e) =>
-                        setSuggestions((prev) =>
-                          prev.map((x, i) => (i === idx ? { ...x, unit: e.target.value } : x)),
-                        )
-                      }
+                      value={i.unit}
+                      onChange={(e) => updateItem(i.name, { unit: e.target.value })}
                       className="w-20 h-9"
                       placeholder="單位"
+                      aria-label={`${i.name} 單位`}
                     />
+                    <PriceInput
+                      name={i.name}
+                      unit={i.unit}
+                      value={i.referencePrice}
+                      onChange={(v) => updateItem(i.name, { referencePrice: v })}
+                    />
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8 shrink-0 text-slate-400 hover:text-red-600 hover:bg-red-50"
+                      onClick={() => removeItem(i)}
+                      aria-label={`移除 ${i.name}`}
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
                   </div>
                 );
               })}
+            </div>
+          )}
+
+          {removed.length > 0 && (
+            <div className="mt-4 border-t border-slate-100 pt-3">
+              <p className="text-xs text-slate-400 mb-2">已移除的品項,點一下加回</p>
+              <div className="flex flex-wrap gap-1.5">
+                {removed.map((r) => (
+                  <button
+                    key={r.name}
+                    type="button"
+                    onClick={() => restoreItem(r)}
+                    className="text-xs px-2.5 py-1 rounded-full bg-slate-100 text-slate-600 hover:bg-emerald-50 hover:text-emerald-700 transition-colors"
+                  >
+                    + {r.name}
+                  </button>
+                ))}
+              </div>
             </div>
           )}
         </CardContent>
@@ -588,6 +738,15 @@ const RestaurantPurchasePage = () => {
               className="w-32"
               onKeyDown={(e) => { if (e.key === "Enter") addManual(); }}
             />
+            <Input
+              value={form.referencePrice}
+              inputMode="decimal"
+              onChange={(e) => { if (numericOnly(e.target.value)) setForm((f) => ({ ...f, referencePrice: e.target.value })); }}
+              placeholder="參考價(選填)"
+              aria-label="參考價"
+              className="w-32"
+              onKeyDown={(e) => { if (e.key === "Enter") addManual(); }}
+            />
             <Button
               variant="outline"
               onClick={() => addManual()}
@@ -599,38 +758,17 @@ const RestaurantPurchasePage = () => {
             </Button>
           </div>
 
-          {frequent.length > 0 && (
-            <div>
-              <p className="text-xs text-slate-400 mb-2">常叫的品項,點一下快速加入</p>
-              <div className="flex flex-wrap gap-1.5">
-                {frequent.map((f) => (
-                  <button
-                    key={f.name}
-                    type="button"
-                    onClick={() => addManual(f.name, f.quantity, f.unit)}
-                    className="text-xs px-2.5 py-1 rounded-full bg-slate-100 text-slate-600 hover:bg-emerald-50 hover:text-emerald-700 transition-colors"
-                  >
-                    + {f.name}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-
           {manual.length > 0 && (
             <div className="divide-y divide-slate-100 border-t border-slate-100">
               {manual.map((m) => (
-                <div key={m.key} className="flex items-center gap-3 py-2.5">
-                  <div className="flex-1 min-w-0">
+                <div key={m.key} className="flex flex-wrap items-center gap-x-3 gap-y-2 py-2.5">
+                  <div className="flex-1 min-w-[120px]">
                     <p className="text-sm text-slate-800 truncate">{m.name}</p>
                   </div>
-                  <Input
+                  <QtyStepper
+                    name={m.name}
                     value={m.quantity}
-                    onChange={(e) =>
-                      setManual((prev) => prev.map((x) => (x.key === m.key ? { ...x, quantity: e.target.value } : x)))
-                    }
-                    className="w-24 h-9"
-                    placeholder="數量"
+                    onChange={(v) => setManual((prev) => prev.map((x) => (x.key === m.key ? { ...x, quantity: v } : x)))}
                   />
                   <Input
                     value={m.unit}
@@ -639,6 +777,13 @@ const RestaurantPurchasePage = () => {
                     }
                     className="w-20 h-9"
                     placeholder="單位"
+                    aria-label={`${m.name} 單位`}
+                  />
+                  <PriceInput
+                    name={m.name}
+                    unit={m.unit}
+                    value={m.referencePrice}
+                    onChange={(v) => setManual((prev) => prev.map((x) => (x.key === m.key ? { ...x, referencePrice: v } : x)))}
                   />
                   <Button
                     variant="ghost"
