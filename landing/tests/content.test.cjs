@@ -982,19 +982,10 @@ test('the FAQ nav entries all point at /qa, and 平台功能 is gone from the me
   assert.match(footer, /<a href="\{\{ hrefHow \}\}" onClick="\{\{ goHow \}\}"/);
 });
 
-test('the language switch shows the flag of the language it switches to, as an image', () => {
-  // 🔴 絕對不可以用 emoji 國旗:Windows 的 Chrome / Edge 不畫 regional indicator,
-  //    🇹🇼 會顯示成「TW」兩個字母。
-  assert.doesNotMatch(source, /[\u{1F1E6}-\u{1F1FF}]/u);   // 連註解都不要放,免得有人複製貼上
-  // 旗子純裝飾:旁邊有文字,外層 <a> 又有 aria-label,所以 alt 留空
-  assert.equal((source.match(/<img src="\{\{ langFlag \}\}" alt="" width="20" height="14"/g) || []).length, 2);
-  // loading="lazy":瀏覽器的 preload scanner 在框架換掉 src 之前會照字面去抓 "{{ langFlag }}",
-  // 每次開頁都多兩發 404。標成 lazy 之後改由版面階段載入,那時 src 已經是真的檔名了。
-  assert.equal((source.match(/<img src="\{\{ langFlag \}\}"[^>]*loading="lazy"/g) || []).length, 2);
-  assert.match(component, /langFlag: otherLang === 'en' \? '\/assets\/flag-gb\.svg' : '\/assets\/flag-tw\.svg',/);
-  for (const file of ['flag-gb.svg', 'flag-tw.svg']) {
-    assert.ok(fs.existsSync(path.join(__dirname, '..', 'assets', file)), `缺少 assets/${file}`);
-  }
+test('the language switch is text only, without a flag', () => {
+  // 語言切換只放文字(English / 中文),不放國旗;也不要退回 emoji 國旗(Windows 的 Chrome / Edge 會顯示成「TW」)
+  assert.doesNotMatch(source, /[\u{1F1E6}-\u{1F1FF}]/u);
+  assert.doesNotMatch(source, /langFlag|flag-gb|flag-tw/);
 });
 
 test('the AI bubble carries a label so people can tell what it is', () => {

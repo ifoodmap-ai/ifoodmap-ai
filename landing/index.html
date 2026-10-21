@@ -741,7 +741,7 @@
         </nav>
         <!-- 語言切換:指向同一頁的另一個語系網址(中文 /xxx、英文 /en/xxx),
              用真的 <a href> 而不是 button —— 右鍵複製連結、新分頁開啟、爬蟲都正常。 -->
-        <a href="{{ langHref }}" onClick="{{ switchLang }}" lang="{{ langTag }}" aria-label="{{ langAria }}" class="mc-langpill" style="display:inline-flex;align-items:center;gap:7px;padding:7px 14px;border-radius:999px;font-size:13px;font-weight:600;text-decoration:none;cursor:pointer;white-space:nowrap"><img src="{{ langFlag }}" alt="" width="20" height="14" loading="lazy" decoding="async" style="display:block;width:20px;height:14px;border-radius:2px;flex:0 0 auto">{{ langLabel }}</a>
+        <a href="{{ langHref }}" onClick="{{ switchLang }}" lang="{{ langTag }}" aria-label="{{ langAria }}" class="mc-langpill" style="display:inline-flex;align-items:center;gap:7px;padding:7px 14px;border-radius:999px;font-size:13px;font-weight:600;text-decoration:none;cursor:pointer;white-space:nowrap">{{ langLabel }}</a>
         <a href="{{ hrefContact }}" onClick="{{ openAI }}" class="mc-navcta" style="color:#fff;padding:11px 20px;border-radius:999px;font-size:14px;font-weight:700;text-decoration:none;cursor:pointer;box-shadow:0 6px 14px rgba(14,26,20,.18)">{{ L.nav.cta }}</a>
       </sc-if>
       <sc-if value="{{ isMobile }}">
@@ -760,7 +760,7 @@
         <a href="{{ hrefAbout }}" onClick="{{ goAboutMobile }}" aria-current="{{ ariaCurrentAbout }}" class="mc-drawerlink" style="display:block;text-align:left;padding:14px 8px;font-size:16px;color:#0E1A14;text-decoration:none;border-radius:12px;min-height:48px;line-height:20px">{{ L.nav.about }}</a>
         <a href="{{ hrefNews }}" onClick="{{ goNewsMobile }}" class="mc-drawerlink" style="display:block;text-align:left;padding:14px 8px;font-size:16px;color:#0E1A14;text-decoration:none;border-radius:12px;min-height:48px;line-height:20px">{{ L.nav.news }}</a>
         <a href="{{ hrefContact }}" onClick="{{ goContactMobile }}" aria-current="{{ ariaCurrentContact }}" class="mc-drawerlink" style="display:block;text-align:left;padding:14px 8px;font-size:16px;color:#0E1A14;text-decoration:none;border-radius:12px;min-height:48px;line-height:20px">{{ L.nav.contact }}</a>
-        <a href="{{ langHref }}" onClick="{{ switchLangMobile }}" lang="{{ langTag }}" aria-label="{{ langAria }}" class="mc-drawerlink" style="display:flex;align-items:center;gap:10px;text-align:left;padding:14px 8px;font-size:16px;font-weight:600;color:#0B6B40;text-decoration:none;border-radius:12px;min-height:48px;line-height:20px;border-top:1px solid #E6EAE7;margin-top:6px"><img src="{{ langFlag }}" alt="" width="20" height="14" loading="lazy" decoding="async" style="display:block;width:20px;height:14px;border-radius:2px;flex:0 0 auto">{{ langLabel }}</a>
+        <a href="{{ langHref }}" onClick="{{ switchLangMobile }}" lang="{{ langTag }}" aria-label="{{ langAria }}" class="mc-drawerlink" style="display:flex;align-items:center;gap:10px;text-align:left;padding:14px 8px;font-size:16px;font-weight:600;color:#0B6B40;text-decoration:none;border-radius:12px;min-height:48px;line-height:20px;border-top:1px solid #E6EAE7;margin-top:6px">{{ langLabel }}</a>
         <a href="{{ hrefContact }}" onClick="{{ openAI }}" style="margin-top:8px;display:block;text-align:center;background:#0B6B40;color:#fff;padding:16px;border-radius:999px;font-size:16px;font-weight:700;text-decoration:none;box-shadow:0 10px 22px rgba(18,138,84,.26)">{{ L.nav.cta }}</a>
       </div>
     </sc-if>
@@ -2821,7 +2821,6 @@ class Component extends DCLogic {
       langTag: otherLang === 'en' ? 'en' : 'zh-Hant',
       // 旗子畫的是「按下去會切到的語言」。用 SVG 檔不用 emoji 國旗 ——
       // Windows 的 Chrome/Edge 不畫 regional indicator,台灣那面會顯示成「TW」兩個字母。
-      langFlag: otherLang === 'en' ? '/assets/flag-gb.svg' : '/assets/flag-tw.svg',
       switchLang: this.switchLang(otherLang),
       switchLangMobile: closeMenuThen(this.switchLang(otherLang)),
 
