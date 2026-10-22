@@ -2042,3 +2042,23 @@ Expected:`market_mails_15m` = `{"sent": 4}`(**通知紀錄 4 筆 sent**,沒有 `
    只是要停止接單的話做第 1 步就好,信件本身出問題才做這一步。
 3. (需要時)**形象站入口退掉**:`git -C /Users/aimand/.gemini/File/ifoodmap revert -m 1 --no-edit <「部署與開放的順序」第 9 步記下的合併 commit>` 再 push main
    (會觸發形象站部署);或 Vercel → `ifoodmap-landing` 專案 → Instant Rollback 到合併之前那一版。
+
+## 供應商請款單(2026-10-22)
+
+供應商可依帳期(日結、月結、自訂區間)向餐廳請款,餐廳端在「報表與帳款 › 應付帳款」確認或提出異議。平台只做記錄與通知,不經手金流。
+
+| 項目 | 位置 |
+| --- | --- |
+| SQL(兩張表 + 4 支 RPC + RLS) | `supabase/migrations/20261022100000_supplier_invoices.sql`(rollback:`supabase/rollbacks/20261022100000_supplier_invoices.down.sql`) |
+| 資料庫測試(PGlite 真的跑 migration、RLS 與每支 RPC) | `supabase/tests/supplier_invoices.test.ts` |
+| 供應商端 | `/supplier/invoices`(請款單列表、標記已收款、作廢)、`/supplier/invoice-create`(新增請款) |
+| 餐廳端(僅老闆 / 店長) | `/restaurant/payables`(應付帳款:確認無誤、有異議) |
+
+**部署順序:先套 migration、再 push 前端。** 前端先上線的話,請款頁會因為找不到資料表而載入失敗。
+套用走 `node scripts/supabase-sql.mjs apply supabase/migrations/20261022100000_supplier_invoices.sql`(同一個交易寫 ledger)。
+
+規則:
+- 一張請款單包含 1 到 500 張「已收貨」的訂單(定義同 `src/lib/metrics.ts`:received / reviewed / completed,或收過貨的 closed),一張訂單同時最多在一張請款單裡。
+- 金額由資料庫從訂單加總,前端傳的金額不採信;到期日 = 區間迄日 + 付款天數。
+- 狀態:issued 待確認 → confirmed 已確認 / disputed 有異議 → paid 已收款;void 作廢(已收款不能作廢,作廢會釋放訂單)。「逾期」不存欄位,畫面現算。
+- 資料表不開放直接寫入(RLS 只開讀取,寫入只走 RPC);已放進請款單的訂單不能被刪(`ON DELETE RESTRICT`,要先作廢請款單)。

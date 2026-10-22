@@ -84,6 +84,8 @@ import SupplierPricingPage from "./pages/supplier/SupplierPricingPage";
 import SupplierForecastPage from "./pages/supplier/SupplierForecastPage";
 import SupplierCustomersPage from "./pages/supplier/SupplierCustomersPage";
 import SupplierReviewsPage from "./pages/supplier/SupplierReviewsPage";
+import SupplierInvoicesPage from "./pages/supplier/SupplierInvoicesPage";
+import SupplierInvoiceCreatePage from "./pages/supplier/SupplierInvoiceCreatePage";
 import SupplierMarketStorePage from "./pages/supplier/SupplierMarketStorePage";
 import SupplierMarketOrdersPage from "./pages/supplier/SupplierMarketOrdersPage";
 
@@ -97,6 +99,7 @@ import RestaurantPurchasePage from "./pages/restaurant/RestaurantPurchasePage";
 import RestaurantOrdersPage from "./pages/restaurant/RestaurantOrdersPage";
 import RestaurantCostsPage from "./pages/restaurant/RestaurantCostsPage";
 import RestaurantReportsPage from "./pages/restaurant/RestaurantReportsPage";
+import RestaurantPayablesPage from "./pages/restaurant/RestaurantPayablesPage";
 import RestaurantSuppliersPage from "./pages/restaurant/RestaurantSuppliersPage";
 import RestaurantLabPage from "./pages/restaurant/RestaurantLabPage";
 import RestaurantTeamPage from "./pages/restaurant/RestaurantTeamPage";
@@ -190,6 +193,7 @@ const MainRoutes = () => (
       <Route path="orders" element={<RestaurantOrdersPage />} />
       <Route path="costs" element={<RestaurantCostsPage />} />
       <Route path="reports" element={<RestaurantReportsPage />} />
+      <Route path="payables" element={<RestaurantPayablesPage />} />
       <Route path="suppliers" element={<RestaurantSuppliersPage />} />
       <Route path="lab" element={<RestaurantLabPage />} />
       <Route path="team" element={<RestaurantTeamPage />} />
@@ -210,6 +214,8 @@ const MainRoutes = () => (
       <Route path="logistics" element={<Navigate to="/supplier/orders?stage=shipped" replace />} />
       <Route path="shipments" element={<Navigate to="/supplier/orders?stage=shipped" replace />} />
       <Route path="reviews" element={<SupplierReviewsPage />} />
+      <Route path="invoices" element={<SupplierInvoicesPage />} />
+      <Route path="invoice-create" element={<SupplierInvoiceCreatePage />} />
       {/* 零售市集(B2C) */}
       <Route path="market/store" element={<SupplierMarketStorePage />} />
       <Route path="market/orders" element={<SupplierMarketOrdersPage />} />

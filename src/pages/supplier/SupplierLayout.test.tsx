@@ -1,7 +1,7 @@
 // 後台精簡第一期:供應商後台選單 11 → 5 個分區,分區裡用分頁。
 // 第二期(Q1-A):訂單分區的收單/報價/出貨合成一個訂單頁(頁面自己用 ?stage= 狀態分頁),
 // 版面不再畫訂單分區的分頁列;舊網址轉址到 /supplier/orders?stage=…(轉址寫法與 App.tsx 相同)。
-// 這裡驗證:①側欄剛好 6 項(2026-10 加「零售市集」) ②分頁依路由標出 active ③舊路由全部還能開、
+// 這裡驗證:①側欄剛好 7 項(2026-10 加「零售市集」「請款」) ②分頁依路由標出 active ③舊路由全部還能開、
 // 落在正確的分區與分頁 ④定價助手從選單/分頁收起來但路由仍可直接開 ⑤鍵盤與 aria
 // ⑥手機抽屜收起時不在 Tab 順序與無障礙樹裡,收起後焦點回到選單鈕。
 //
@@ -53,6 +53,8 @@ const renderLayout = (path: string) =>
           <Route path="logistics" element={<Navigate to="/supplier/orders?stage=shipped" replace />} />
           <Route path="shipments" element={<Navigate to="/supplier/orders?stage=shipped" replace />} />
           <Route path="reviews" element={<h1>我的評價頁</h1>} />
+          <Route path="invoices" element={<h1>請款單頁</h1>} />
+          <Route path="invoice-create" element={<h1>新增請款頁</h1>} />
           <Route path="market/store" element={<h1>店家設定頁</h1>} />
           <Route path="market/orders" element={<h1>零售訂單頁</h1>} />
         </Route>
@@ -89,23 +91,23 @@ afterEach(() => {
   expect(fetchGuard).not.toHaveBeenCalled();
 });
 
-describe("SupplierLayout — 側欄剛好 6 個分區", () => {
-  it("桌機側欄是 6 個分區連結,文字依序為:總覽、訂單、商機、商品與價格、客戶與評價、零售市集", () => {
+describe("SupplierLayout — 側欄剛好 7 個分區", () => {
+  it("桌機側欄是 7 個分區連結,文字依序為:總覽、訂單、商機、商品與價格、客戶與評價、零售市集", () => {
     renderLayout("/supplier");
     const desktopNav = screen.getByTestId("supplier-sidebar-desktop");
     const links = within(desktopNav).getAllByRole("link");
-    expect(links).toHaveLength(6);
-    expect(links.map((l) => l.textContent)).toEqual(["總覽", "訂單", "商機", "商品與價格", "客戶與評價", "零售市集"]);
+    expect(links).toHaveLength(7);
+    expect(links.map((l) => l.textContent)).toEqual(["總覽", "訂單", "商機", "商品與價格", "客戶與評價", "請款", "零售市集"]);
   });
 
-  it("手機抽屜打開後也是同樣 6 個分區連結", async () => {
+  it("手機抽屜打開後也是同樣 7 個分區連結", async () => {
     const user = userEvent.setup();
     renderLayout("/supplier");
     await user.click(menuButton("開啟選單"));
     const mobileNav = screen.getByTestId("supplier-sidebar-mobile");
     const links = within(mobileNav).getAllByRole("link");
-    expect(links).toHaveLength(6);
-    expect(links.map((l) => l.textContent)).toEqual(["總覽", "訂單", "商機", "商品與價格", "客戶與評價", "零售市集"]);
+    expect(links).toHaveLength(7);
+    expect(links.map((l) => l.textContent)).toEqual(["總覽", "訂單", "商機", "商品與價格", "客戶與評價", "請款", "零售市集"]);
   });
 
   it("找不到「定價助手」「需求預測」「收單紀錄」等舊的 11 項標籤 —— 選單只剩 5 個分區名", () => {
@@ -121,7 +123,7 @@ describe("SupplierLayout — aria-current 標出目前分區", () => {
     renderLayout("/supplier/quotes");
     const desktopNav = screen.getByTestId("supplier-sidebar-desktop");
     expect(within(desktopNav).getByRole("link", { name: "訂單" })).toHaveAttribute("aria-current", "page");
-    ["總覽", "商機", "商品與價格", "客戶與評價", "零售市集"].forEach((label) => {
+    ["總覽", "商機", "商品與價格", "客戶與評價", "請款", "零售市集"].forEach((label) => {
       expect(within(desktopNav).getByRole("link", { name: label })).not.toHaveAttribute("aria-current");
     });
   });
@@ -139,6 +141,8 @@ describe("SupplierLayout — 11 條舊路由全部打得開,落在正確的分�
     ["/supplier/catalog", "商品目錄頁", "商品與價格", null as string[] | null, null as string | null],
     ["/supplier/customers", "客戶管理頁", "客戶與評價", ["客戶", "評價"], "客戶"],
     ["/supplier/reviews", "我的評價頁", "客戶與評價", ["客戶", "評價"], "評價"],
+    ["/supplier/invoices", "請款單頁", "請款", ["請款單", "新增請款"], "請款單"],
+    ["/supplier/invoice-create", "新增請款頁", "請款", ["請款單", "新增請款"], "新增請款"],
     ["/supplier/market/orders", "零售訂單頁", "零售市集", ["零售訂單", "店家設定"], "零售訂單"],
     ["/supplier/market/store", "店家設定頁", "零售市集", ["零售訂單", "店家設定"], "店家設定"],
   ])("%s → 頁面 %s,分區「%s」", (path, heading, sectionLabel, expectedTabs, activeTab) => {
@@ -232,11 +236,11 @@ describe("SupplierLayout — 手機抽屜:收起時不在 Tab 順序與無障礙
     // 連結還留在 DOM 裡(滑出動畫要用),只是藏起來:無障礙樹裡沒有、畫面上看不到
     expect(within(drawer).queryAllByRole("link")).toEqual([]);
     const hiddenLinks = within(drawer).getAllByRole("link", { hidden: true });
-    expect(hiddenLinks).toHaveLength(6);
+    expect(hiddenLinks).toHaveLength(7);
     hiddenLinks.forEach((link) => expect(link).not.toBeVisible());
   });
 
-  it("抽屜打開後,6 個分區連結和登出都按 Tab 走得到、讀屏讀得到", async () => {
+  it("抽屜打開後,7 個分區連結和登出都按 Tab 走得到、讀屏讀得到", async () => {
     const user = userEvent.setup();
     renderLayout("/supplier");
     await user.click(menuButton("開啟選單"));
@@ -244,12 +248,12 @@ describe("SupplierLayout — 手機抽屜:收起時不在 Tab 順序與無障礙
 
     const drawer = screen.getByTestId("supplier-sidebar-mobile");
     const links = within(drawer).getAllByRole("link");
-    expect(links).toHaveLength(6);
+    expect(links).toHaveLength(7);
     links.forEach((link) => expect(link).toBeVisible());
 
     const visited = await tabThroughPage(user);
     expect(visited.filter((el) => drawer.contains(el)).map((el) => el.textContent)).toEqual([
-      "總覽", "訂單", "商機", "商品與價格", "客戶與評價", "零售市集", "登出",
+      "總覽", "訂單", "商機", "商品與價格", "客戶與評價", "請款", "零售市集", "登出",
     ]);
   });
 

@@ -76,13 +76,18 @@ const sections: RestaurantSection[] = [
     ],
   },
   {
-    // 依日期區間看採購明細與彙總、下載 CSV;有金額,跟「菜單與成本」一樣只給老闆/店長
+    // 採購報表(依日期區間看明細與彙總、下載 CSV)與供應商的請款單(應付帳款);
+    // 都有金額,跟「菜單與成本」一樣只給老闆/店長
     key: "reports",
     to: "/restaurant/reports",
-    label: "報表",
+    label: "報表與帳款",
     icon: BarChart3,
     costOnly: true,
-    match: startsWithAny(["/restaurant/reports"]),
+    match: startsWithAny(["/restaurant/reports", "/restaurant/payables"]),
+    tabs: [
+      { label: "採購報表", path: "/restaurant/reports" },
+      { label: "應付帳款", path: "/restaurant/payables" },
+    ],
   },
   {
     key: "settings",

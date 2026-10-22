@@ -1,6 +1,6 @@
 import { Link, Outlet, useNavigate, useLocation } from "react-router-dom";
 import {
-  Inbox, Boxes, Radar, Users, LogOut,
+  Inbox, Boxes, Radar, Users, Receipt, LogOut,
   LayoutDashboard, Menu, X, Store, type LucideIcon,
 } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
@@ -76,6 +76,18 @@ const sections: SupplierSection[] = [
     tabs: [
       { label: "客戶", path: "/supplier/customers" },
       { label: "評價", path: "/supplier/reviews" },
+    ],
+  },
+  {
+    // 向餐廳請款:日結、月結、自訂區間;餐廳端在「報表與帳款 › 應付帳款」看到並確認
+    key: "invoices",
+    to: "/supplier/invoices",
+    label: "請款",
+    icon: Receipt,
+    match: startsWithAny(["/supplier/invoices", "/supplier/invoice-create"]),
+    tabs: [
+      { label: "請款單", path: "/supplier/invoices" },
+      { label: "新增請款", path: "/supplier/invoice-create" },
     ],
   },
   {
