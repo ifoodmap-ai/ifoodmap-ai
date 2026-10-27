@@ -15,6 +15,8 @@ const { state, recordOrderEvent, toast } = vi.hoisted(() => ({
   state: {
     calls: [] as Call[],
     history: [] as Record<string, unknown>[],
+    supplies: [] as Record<string, unknown>[],
+    suppliesFail: false,
   },
   recordOrderEvent: vi.fn(),
   toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() },
@@ -24,6 +26,10 @@ const fakeFrom = (table: string) => {
   const call: Call = { table, op: "select", filters: [] };
   const result = () => {
     state.calls.push(call);
+    if (table === "supplies") {
+      if (state.suppliesFail) throw new Error("supplies 讀取失敗");
+      return { data: state.supplies, error: null };
+    }
     if (table !== "supplier_orders") return { data: [], error: null };
     if (call.op === "insert") return { data: { id: "new-order-1" }, error: null };
     const onlyDrafts = call.filters.some(([op, col, val]) => op === "eq" && col === "status" && val === "draft");
@@ -34,6 +40,8 @@ const fakeFrom = (table: string) => {
     insert: (values: unknown) => { call.op = "insert"; call.values = values; return builder; },
     update: (values: unknown) => { call.op = "update"; call.values = values; return builder; },
     eq: (col: string, val: unknown) => { call.filters.push(["eq", col, val]); return builder; },
+    in: (col: string, val: unknown) => { call.filters.push(["in", col, val]); return builder; },
+    not: () => builder,
     order: () => builder,
     limit: () => builder,
     single: () => Promise.resolve(result()),
@@ -69,7 +77,7 @@ vi.mock("sonner", () => ({ toast }));
 const daysAgo = (n: number) => new Date(Date.now() - n * 86_400_000).toISOString();
 
 const order = (id: string, createdAt: string, ingredient_list: unknown[], status = "completed") => ({
-  id, created_at: createdAt, status, ingredient_list, created_by: "user-owner", approved_by: null, notes: null,
+  id, created_at: createdAt, status, ingredient_list, created_by: "user-owner", approved_by: null, notes: null, supplier_id: "sup-1",
 });
 
 // 高麗菜叫過兩次(週期 7 天、上次 10 天前 → 該補貨);雞蛋只叫過一次
@@ -105,6 +113,8 @@ let fetchGuard: ReturnType<typeof vi.fn>;
 beforeEach(() => {
   state.calls = [];
   state.history = HISTORY.map((o) => ({ ...o }));
+  state.supplies = [];
+  state.suppliesFail = false;
   recordOrderEvent.mockReset();
   recordOrderEvent.mockResolvedValue({});
   toast.error.mockReset();
@@ -230,5 +240,51 @@ describe("RestaurantPurchasePage — 過往叫貨品項自動列出", () => {
     state.history = [];
     renderPage();
     expect(await screen.findByText("還沒有叫過貨的品項")).toBeInTheDocument();
+  });
+
+  describe("商品縮圖", () => {
+    const FILE = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+
+    it("品名配得到往來供應商上架的商品圖片就顯示縮圖,配不到的顯示品名第一個字的佔位", async () => {
+      state.supplies = [
+        { supplier_id: "sup-1", name: "高麗菜", image_path: `sup-1/p-1/${FILE}.jpg` },
+        { supplier_id: "sup-1", name: "雞蛋心", image_path: `sup-1/p-2/${FILE}.jpg` },
+      ];
+      renderPage();
+
+      const cabbage = await rowOf("高麗菜");
+      await waitFor(() => expect(within(cabbage).getByRole("img", { name: "高麗菜" })).toBeInTheDocument());
+      expect(within(cabbage).getByRole("img", { name: "高麗菜" }).getAttribute("src")).toContain(`/sup-1/p-1/${FILE}_t.jpg`);
+
+      const egg = await rowOf("雞蛋");
+      expect(within(egg).queryByRole("img")).toBeNull();
+      expect(egg).toHaveTextContent("雞");
+    });
+
+    it("只查往來過的供應商", async () => {
+      renderPage();
+      await screen.findAllByTestId("history-item");
+      const q = state.calls.find((c) => c.table === "supplies");
+      expect(q?.filters).toContainEqual(["in", "supplier_id", ["sup-1"]]);
+    });
+
+    it("手動加入的品項,品名跟往來供應商的商品一樣也會帶出縮圖", async () => {
+      state.supplies = [{ supplier_id: "sup-1", name: "牛肉", image_path: `sup-1/p-5/${FILE}.jpg` }];
+      const user = userEvent.setup();
+      renderPage();
+      await screen.findAllByTestId("history-item");
+
+      await user.type(screen.getByPlaceholderText("食材名稱,例:高麗菜"), "牛肉");
+      await user.click(screen.getByRole("button", { name: "加入" }));
+      const img = await screen.findByRole("img", { name: "牛肉" });
+      expect(img.getAttribute("src")).toContain(`/sup-1/p-5/${FILE}_t.jpg`);
+    });
+
+    it("讀商品圖片失敗不影響叫貨:清單照常列出", async () => {
+      state.suppliesFail = true;
+      renderPage();
+      expect(await screen.findAllByTestId("history-item")).toHaveLength(2);
+      expect(screen.queryByRole("img")).toBeNull();
+    });
   });
 });

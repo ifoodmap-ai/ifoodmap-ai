@@ -26,6 +26,8 @@ import { useRestaurant, needsApproval } from "@/components/RestaurantRoute";
 import { ANALYSIS_HANDOFF_KEY } from "./RestaurantAnalyzePage";
 import { recordOrderEvent } from "@/lib/orders";
 import type { ClaimedDraftLocationState } from "@/hooks/use-landing-handoff-claim";
+import SupplyThumb from "@/components/SupplyThumb";
+import { buildSupplyImageLookup, type SupplyImageLookup, type SupplyImageRow } from "@/lib/supply-images";
 
 /* ── 新資料表不在 types.ts,沿用專案的 loose cast 慣例 ─────────────── */
 type Result<T> = { data: T[] | null; error: { message: string } | null };
@@ -33,6 +35,7 @@ interface Q<T> extends PromiseLike<Result<T>> {
   select(cols?: string): Q<T>;
   eq(col: string, val: unknown): Q<T>;
   in(col: string, vals: unknown[]): Q<T>;
+  not(col: string, op: string, val: unknown): Q<T>;
   gte(col: string, val: unknown): Q<T>;
   order(col: string, opts?: { ascending: boolean }): Q<T>;
   limit(n: number): Q<T>;
@@ -60,6 +63,7 @@ interface OrderRow {
   created_by: string | null;
   approved_by: string | null;
   notes: string | null;
+  supplier_id?: string | null;
 }
 
 /** 過往叫過的品項:進頁就全部列出,預設都在這張單裡,不要的刪掉、數量與參考價自己調 */
@@ -73,6 +77,8 @@ interface HistoryItem {
   /** 叫過兩次以上才算得出週期;只叫過一次是 0 */
   avgCycle: number;
   due: boolean;
+  /** 最近一次叫這個品項的供應商,配對商品縮圖時優先找這家 */
+  supplierId: string | null;
 }
 
 interface ManualItem {
@@ -175,6 +181,8 @@ const RestaurantPurchasePage = () => {
   const [items, setItems] = useState<HistoryItem[]>([]);
   const [removed, setRemoved] = useState<HistoryItem[]>([]);
   const [reloadKey, setReloadKey] = useState(0);
+  // 叫貨品項的商品縮圖:用品名配對往來供應商上架的商品圖片;純裝飾,讀不到就都顯示佔位
+  const [thumbOf, setThumbOf] = useState<SupplyImageLookup>(() => () => null);
   // AI 菜單分析頁按「帶到智慧採購」時暫存的食材,進頁時接手
   const [manual, setManual] = useState<ManualItem[]>(() => {
     try {
@@ -216,13 +224,13 @@ const RestaurantPurchasePage = () => {
       if (!cancelled) setUserId(user?.id ?? null);
 
       const { data: orders } = await db<OrderRow>("supplier_orders")
-        .select("id, created_at, status, ingredient_list, created_by, approved_by, notes")
+        .select("id, created_at, status, ingredient_list, created_by, approved_by, notes, supplier_id")
         .eq("restaurant_id", account.restaurant_id)
         .order("created_at", { ascending: false })
         .limit(300);
 
       // orders 由新到舊:每個品項的單位 / 數量 / 參考價取「最近一次」叫貨時的
-      const history = new Map<string, { dates: number[]; unit: string; quantity: string; price: string; times: number }>();
+      const history = new Map<string, { dates: number[]; unit: string; quantity: string; price: string; times: number; supplierId: string | null }>();
       (orders ?? [])
         .filter((o) => o.status !== "cancelled" && o.status !== "draft")
         .forEach((o) => {
@@ -242,7 +250,7 @@ const RestaurantPurchasePage = () => {
               prev.times += 1;
               if (!prev.price && price) prev.price = price;
             } else {
-              history.set(name, { dates: [at], unit: raw?.unit ?? "", quantity: qty, price, times: 1 });
+              history.set(name, { dates: [at], unit: raw?.unit ?? "", quantity: qty, price, times: 1, supplierId: o.supplier_id ?? null });
             }
           });
         });
@@ -266,6 +274,7 @@ const RestaurantPurchasePage = () => {
           daysSince,
           avgCycle,
           due: avgCycle > 0 && daysSince >= avgCycle,
+          supplierId: v.supplierId,
         });
       });
 
@@ -277,6 +286,23 @@ const RestaurantPurchasePage = () => {
       });
 
       if (!cancelled) setItems(list);
+
+      try {
+        const supplierIds = Array.from(
+          new Set((orders ?? []).map((o) => o.supplier_id).filter((id): id is string => !!id)),
+        );
+        if (supplierIds.length > 0) {
+          const { data: imgs } = await db<SupplyImageRow>("supplies")
+            .select("supplier_id, name, image_path")
+            .in("supplier_id", supplierIds)
+            .not("image_path", "is", null);
+          if (!cancelled) setThumbOf(() => buildSupplyImageLookup(imgs ?? []));
+        } else if (!cancelled) {
+          setThumbOf(() => () => null);
+        }
+      } catch {
+        if (!cancelled) setThumbOf(() => () => null);
+      }
 
       await loadDrafts();
       if (!cancelled) setLoading(false);
@@ -635,6 +661,7 @@ const RestaurantPurchasePage = () => {
                 const overdue = i.due && i.daysSince >= i.avgCycle * 1.5;
                 return (
                   <div key={i.name} data-testid="history-item" className="flex flex-wrap items-center gap-x-3 gap-y-2 py-3">
+                    <SupplyThumb path={thumbOf(i.name, i.supplierId)} name={i.name} />
                     <div className="flex-1 min-w-[140px]">
                       <div className="text-sm font-medium text-slate-800 flex items-center gap-2 flex-wrap">
                         {i.name}
@@ -762,6 +789,7 @@ const RestaurantPurchasePage = () => {
             <div className="divide-y divide-slate-100 border-t border-slate-100">
               {manual.map((m) => (
                 <div key={m.key} className="flex flex-wrap items-center gap-x-3 gap-y-2 py-2.5">
+                  <SupplyThumb path={thumbOf(m.name)} name={m.name} size={32} />
                   <div className="flex-1 min-w-[120px]">
                     <p className="text-sm text-slate-800 truncate">{m.name}</p>
                   </div>

@@ -12,6 +12,7 @@ import { Star, MapPin, Phone, Mail, ArrowLeft, CheckCircle2, Search, ShoppingCar
 import { useLanguage } from "@/contexts/LanguageContext";
 import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
+import { supplyImageUrl } from "@/lib/supply-images";
 
 interface SupplierRow {
   id: string;
@@ -34,6 +35,7 @@ interface SupplyRow {
   currency: string | null;
   description: string | null;
   is_available: boolean | null;
+  image_path: string | null;
 }
 
 /**
@@ -90,6 +92,29 @@ const categoryColor = (category: string | null): string => {
   let hash = 0;
   for (let i = 0; i < key.length; i++) hash = (hash * 31 + key.charCodeAt(i)) >>> 0;
   return CATEGORY_COLORS[hash % CATEGORY_COLORS.length];
+};
+
+/** 商品卡片的圖片:有上傳圖片就顯示(縮圖、lazy),沒有或載入失敗就退回分類色塊 */
+const ProductImage = ({ product }: { product: SupplyRow }) => {
+  const [failed, setFailed] = useState(false);
+  const url = failed ? null : supplyImageUrl(product.image_path, true);
+  if (url) {
+    return (
+      <img
+        src={url}
+        alt={product.name}
+        loading="lazy"
+        decoding="async"
+        onError={() => setFailed(true)}
+        className="aspect-square w-full object-cover bg-muted"
+      />
+    );
+  }
+  return (
+    <div className={`aspect-square flex items-center justify-center ${categoryColor(product.category)}`}>
+      <span className="text-lg font-bold px-3 text-center">{product.category || "食材"}</span>
+    </div>
+  );
 };
 
 const formatPrice = (s: { price: number | null; currency: string | null; unit: string | null }): string => {
@@ -438,13 +463,7 @@ const SupplierDetail = () => {
                       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
                         {filteredProducts.map((product) => (
                           <Card key={product.id} className="overflow-hidden hover:shadow-lg transition-shadow">
-                            <div
-                              className={`aspect-square flex items-center justify-center ${categoryColor(product.category)}`}
-                            >
-                              <span className="text-lg font-bold px-3 text-center">
-                                {product.category || "食材"}
-                              </span>
-                            </div>
+                            <ProductImage product={product} />
                             <div className="p-3 space-y-2">
                               <h3 className="font-semibold">{product.name}</h3>
                               <p className="text-sm text-muted-foreground">

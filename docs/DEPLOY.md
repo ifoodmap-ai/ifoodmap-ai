@@ -2062,3 +2062,23 @@ Expected:`market_mails_15m` = `{"sent": 4}`(**通知紀錄 4 筆 sent**,沒有 `
 - 金額由資料庫從訂單加總,前端傳的金額不採信;到期日 = 區間迄日 + 付款天數。
 - 狀態:issued 待確認 → confirmed 已確認 / disputed 有異議 → paid 已收款;void 作廢(已收款不能作廢,作廢會釋放訂單)。「逾期」不存欄位,畫面現算。
 - 資料表不開放直接寫入(RLS 只開讀取,寫入只走 RPC);已放進請款單的訂單不能被刪(`ON DELETE RESTRICT`,要先作廢請款單)。
+
+## 批發商品圖片(2026-10-28)
+
+供應商在「商品與價格 › 商品目錄」可以替批發商品上傳圖片;餐廳看供應商商品的頁面(`/supplier/:id` 產品列表)與叫貨頁(智慧採購)的品項列會顯示縮圖。
+
+| 項目 | 位置 |
+| --- | --- |
+| SQL(`supplies.image_path` + CHECK) | `supabase/migrations/20261028100000_supplies_image.sql`(rollback:`supabase/rollbacks/20261028100000_supplies_image.down.sql`) |
+| 資料庫測試(PGlite 真的跑 SQL) | `supabase/tests/supplies_image.test.ts` |
+| 上傳 / 網址 / 品名配對 | `src/lib/supply-images.ts`、縮圖元件 `src/components/SupplyThumb.tsx` |
+
+**部署順序:先套 migration、再 push 前端**(前端會讀寫 `supplies.image_path`,欄位不存在時目錄頁存檔會失敗)。
+
+規則:
+- 圖片沿用零售商品的 Storage bucket `market-images`(公開讀取、每張 ≤ 2 MB、jpg / png / webp、只有該供應商能寫自己的資料夾),
+  路徑 `<supplier_id>/<supplies.id>/<uuid>.jpg`,縮圖是同資料夾的 `<uuid>_t.jpg`(480px)。資料表只存路徑。
+- `supplies.image_path` 有 CHECK:只收自己供應商、自己這個商品資料夾底下的圖片路徑(不能指到別人的圖、縮圖或外部網址)。
+- 物件只能寫一次(bucket 沒有 UPDATE / DELETE policy):換掉、移除圖片後舊檔留在 bucket 當孤兒檔,跟零售商品照片一樣。
+- 叫貨頁只有品名,沒有商品 id:用「品名」配對往來供應商上架的商品(先同供應商、再任何一家;全形半形、大小寫、空白不影響),
+  配不到就顯示品名第一個字的佔位 —— 寧可沒圖不配錯圖。讀商品圖片失敗不影響叫貨。

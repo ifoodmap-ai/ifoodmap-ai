@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Loader2, Plus, Pencil, Trash2, PackageX } from 'lucide-react';
+import { ImagePlus, Loader2, Plus, Pencil, Trash2, PackageX } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
@@ -26,6 +26,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useToast } from '@/hooks/use-toast';
 import { supabase } from '@/integrations/supabase/client';
 import { newUuid } from '@/lib/market/db';
+import { uploadSupplyImage } from '@/lib/supply-images';
+import SupplyThumb from '@/components/SupplyThumb';
 import type { SupplySeed } from '@/lib/market/productForm';
 import type { MarketProductRow } from '@/lib/market/types';
 import MarketProductDialog from './market/MarketProductDialog';
@@ -46,10 +48,14 @@ interface Supply {
   currency: string;
   description: string | null;
   is_available: boolean;
+  image_path: string | null;
 }
 
 interface FormState {
   id: string | null;
+  /** 新增商品時先決定好的 id:圖片要先上傳到 <供應商>/<商品 id>/ 底下,存檔時用同一個 id 建立 */
+  newId: string | null;
+  image_path: string | null;
   name: string;
   category: string;
   sku: string;
@@ -62,6 +68,8 @@ interface FormState {
 
 const emptyForm: FormState = {
   id: null,
+  newId: null,
+  image_path: null,
   name: '',
   category: '',
   sku: '',
@@ -80,6 +88,8 @@ export default function SupplierCatalogPage() {
   const [form, setForm] = useState<FormState>(emptyForm);
   const [formOpen, setFormOpen] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const imageInput = useRef<HTMLInputElement>(null);
   const [deleteId, setDeleteId] = useState<string | null>(null);
   // 零售市集(B2C):自家零售商品;編輯視窗每次打開給新的 key(新商品的 id 在打開時決定)
   // 讀取中、讀取失敗時「零售」欄不給任何按鈕:還不知道有沒有店家、有沒有對應的零售商品,
@@ -150,10 +160,12 @@ export default function SupplierCatalogPage() {
     }
   };
 
-  const openCreate = () => { setForm(emptyForm); setFormOpen(true); };
+  const openCreate = () => { setForm({ ...emptyForm, newId: newUuid() }); setFormOpen(true); };
   const openEdit = (s: Supply) => {
     setForm({
       id: s.id,
+      newId: null,
+      image_path: s.image_path ?? null,
       name: s.name,
       category: s.category ?? '',
       sku: s.sku ?? '',
@@ -178,10 +190,11 @@ export default function SupplierCatalogPage() {
       price: form.price.trim() ? Number(form.price) : null,
       description: form.description.trim() || null,
       is_available: form.is_available,
+      image_path: form.image_path,
     };
     const { error } = form.id
       ? await (supabase as never).from('supplies').update(payload).eq('id', form.id)
-      : await (supabase as never).from('supplies').insert({ ...payload, supplier_id: supplierId, currency: 'TWD' });
+      : await (supabase as never).from('supplies').insert({ ...payload, ...(form.newId ? { id: form.newId } : {}), supplier_id: supplierId, currency: 'TWD' });
     setSaving(false);
     if (error) {
       toast({ title: '儲存失敗', description: (error as { message?: string }).message, variant: 'destructive' });
@@ -190,6 +203,21 @@ export default function SupplierCatalogPage() {
     setFormOpen(false);
     toast({ title: form.id ? '已更新商品' : '已新增商品' });
     await fetchSupplies(supplierId);
+  };
+
+  const onPickImage = async (file: File | undefined) => {
+    const productId = form.id ?? form.newId;
+    if (!file || !supplierId || !productId) return;
+    setUploading(true);
+    try {
+      const path = await uploadSupplyImage(supplierId, productId, file);
+      setForm((f) => ({ ...f, image_path: path }));
+    } catch (e) {
+      toast({ title: '圖片上傳失敗', description: (e as Error).message, variant: 'destructive' });
+    } finally {
+      setUploading(false);
+      if (imageInput.current) imageInput.current.value = '';
+    }
   };
 
   const handleDelete = async () => {
@@ -269,8 +297,13 @@ export default function SupplierCatalogPage() {
                 return (
                 <tr key={s.id} className="border-b border-gray-100 last:border-0 hover:bg-gray-50">
                   <td className="px-5 py-3">
-                    <p className="font-medium text-gray-800">{s.name}</p>
-                    {s.description && <p className="text-xs text-gray-400 truncate max-w-xs">{s.description}</p>}
+                    <div className="flex items-center gap-3">
+                      <SupplyThumb path={s.image_path} name={s.name} size={40} />
+                      <div className="min-w-0">
+                        <p className="font-medium text-gray-800">{s.name}</p>
+                        {s.description && <p className="text-xs text-gray-400 truncate max-w-xs">{s.description}</p>}
+                      </div>
+                    </div>
                   </td>
                   {/* whitespace-nowrap:橫向捲的表格裡欄寬會被壓縮,
                       「乾貨」「海鮮」這種短詞會被折成一個字一行 */}
@@ -411,6 +444,34 @@ export default function SupplierCatalogPage() {
               <label className="text-sm text-gray-600 mb-1 block">說明</label>
               <Textarea value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} rows={2} placeholder="產地、特色…" />
             </div>
+            <div>
+              <label className="text-sm text-gray-600 mb-1 block">商品圖片</label>
+              <div className="flex items-center gap-3">
+                <SupplyThumb path={form.image_path} name={form.name || '商品'} size={64} />
+                <div className="space-y-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <input
+                      ref={imageInput}
+                      type="file"
+                      accept="image/jpeg,image/png,image/webp"
+                      className="sr-only"
+                      aria-label="選擇商品圖片"
+                      onChange={(e) => void onPickImage(e.target.files?.[0])}
+                    />
+                    <Button type="button" variant="outline" size="sm" disabled={uploading} onClick={() => imageInput.current?.click()}>
+                      {uploading ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : <ImagePlus className="h-4 w-4 mr-1.5" />}
+                      {form.image_path ? '更換圖片' : '上傳圖片'}
+                    </Button>
+                    {form.image_path && (
+                      <Button type="button" variant="ghost" size="sm" className="text-gray-500" disabled={uploading} onClick={() => setForm((f) => ({ ...f, image_path: null }))}>
+                        移除圖片
+                      </Button>
+                    )}
+                  </div>
+                  <p className="text-xs text-gray-400">JPG、PNG、WebP,系統會自動縮小。餐廳瀏覽商品、叫貨時會看到縮圖。</p>
+                </div>
+              </div>
+            </div>
             <div className="flex items-center gap-2">
               <Switch checked={form.is_available} onCheckedChange={(v) => setForm((f) => ({ ...f, is_available: v }))} />
               <span className="text-sm text-gray-600">上架供買家瀏覽</span>
@@ -418,7 +479,7 @@ export default function SupplierCatalogPage() {
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setFormOpen(false)}>取消</Button>
-            <Button className="bg-emerald-600 hover:bg-emerald-700 text-white" disabled={!form.name.trim() || saving} onClick={handleSave}>
+            <Button className="bg-emerald-600 hover:bg-emerald-700 text-white" disabled={!form.name.trim() || saving || uploading} onClick={handleSave}>
               {saving ? '儲存中…' : '儲存'}
             </Button>
           </DialogFooter>
