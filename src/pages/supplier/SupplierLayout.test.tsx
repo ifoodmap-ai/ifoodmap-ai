@@ -50,6 +50,8 @@ const renderLayout = (path: string) =>
           <Route path="pricing" element={<h1>定價助手頁</h1>} />
           <Route path="forecast" element={<h1>需求預測頁</h1>} />
           <Route path="customers" element={<h1>客戶管理頁</h1>} />
+          <Route path="customer-prices" element={<h1>客戶價格與上限頁</h1>} />
+          <Route path="price-groups" element={<h1>群組報價頁</h1>} />
           <Route path="logistics" element={<Navigate to="/supplier/orders?stage=shipped" replace />} />
           <Route path="shipments" element={<Navigate to="/supplier/orders?stage=shipped" replace />} />
           <Route path="reviews" element={<h1>我的評價頁</h1>} />
@@ -139,8 +141,10 @@ describe("SupplierLayout — 11 條舊路由全部打得開,落在正確的分�
     ["/supplier/shipments", "訂單頁", "訂單", null as string[] | null, null as string | null],
     ["/supplier/logistics", "訂單頁", "訂單", null as string[] | null, null as string | null],
     ["/supplier/catalog", "商品目錄頁", "商品與價格", null as string[] | null, null as string | null],
-    ["/supplier/customers", "客戶管理頁", "客戶與評價", ["客戶", "評價"], "客戶"],
-    ["/supplier/reviews", "我的評價頁", "客戶與評價", ["客戶", "評價"], "評價"],
+    ["/supplier/customers", "客戶管理頁", "客戶與評價", ["客戶", "群組報價", "客戶價格與上限", "評價"], "客戶"],
+    ["/supplier/price-groups", "群組報價頁", "客戶與評價", ["客戶", "群組報價", "客戶價格與上限", "評價"], "群組報價"],
+    ["/supplier/customer-prices", "客戶價格與上限頁", "客戶與評價", ["客戶", "群組報價", "客戶價格與上限", "評價"], "客戶價格與上限"],
+    ["/supplier/reviews", "我的評價頁", "客戶與評價", ["客戶", "群組報價", "客戶價格與上限", "評價"], "評價"],
     ["/supplier/invoices", "請款單頁", "請款", ["請款單", "新增請款"], "請款單"],
     ["/supplier/invoice-create", "新增請款頁", "請款", ["請款單", "新增請款"], "新增請款"],
     ["/supplier/market/orders", "零售訂單頁", "零售市集", ["零售訂單", "店家設定"], "零售訂單"],

@@ -65,7 +65,7 @@ import {
   type OrderStatus,
 } from "@/lib/orders";
 import { formatOrderNo } from "@/lib/order-number";
-import ReceiveOrderDialog, {
+import { deliveryLabel } from "@/lib/delivery";import ReceiveOrderDialog, {
   type OrderIngredient,
 } from "@/components/restaurant/ReceiveOrderDialog";
 import OrderReviewDialog from "@/components/restaurant/OrderReviewDialog";
@@ -95,6 +95,7 @@ interface OrderRow {
   notes: string | null;
   created_at: string;
   current_stage_since: string | null;
+  delivery_date: string | null;
 }
 
 const CLOSED_STATUSES: OrderStatus[] = [
@@ -292,7 +293,7 @@ export default function RestaurantOrdersPage() {
     const [{ data, error }, { data: drafts }] = await Promise.all([
       db<OrderRow>("supplier_orders")
         .select(
-          "id, status, supplier_id, ingredient_list, total_amount, notes, created_at, current_stage_since",
+          "id, status, supplier_id, ingredient_list, total_amount, notes, created_at, current_stage_since, delivery_date",
         )
         .eq("restaurant_id", restaurant_id)
         .neq("status", "draft")
@@ -692,6 +693,14 @@ export default function RestaurantOrdersPage() {
                       <span className="text-slate-400">
                         {new Date(order.created_at).toLocaleDateString("zh-TW")} 下單
                       </span>
+                      {deliveryLabel(order.delivery_date) && (
+                        <>
+                          <span className="text-slate-300">·</span>
+                          <span className="font-medium text-emerald-700" data-testid={`delivery-${order.id}`}>
+                            配送日 {deliveryLabel(order.delivery_date)}
+                          </span>
+                        </>
+                      )}
                     </p>
                   </div>
                   {showCost && (

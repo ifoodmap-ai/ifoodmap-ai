@@ -366,3 +366,15 @@ describe("RestaurantOrdersPage — 採購系統的訂單沒有「待派發」", 
     expect(screen.getByText("已評價")).toBeInTheDocument();
   });
 });
+
+describe("RestaurantOrdersPage — 配送日", () => {
+  it("訂單卡片顯示配送日(含星期);沒有配送日的單不顯示", async () => {
+    state.listRows = [
+      { ...order("aaaaaaaa-0000-4000-8000-00000000g001", "quoted"), delivery_date: "2026-10-30" },
+      order("aaaaaaaa-0000-4000-8000-00000000g002", "quoted"),
+    ];
+    renderPage();
+    expect(await screen.findByTestId("delivery-aaaaaaaa-0000-4000-8000-00000000g001")).toHaveTextContent("配送日 2026-10-30(週五)");
+    expect(screen.queryByTestId("delivery-aaaaaaaa-0000-4000-8000-00000000g002")).toBeNull();
+  });
+});

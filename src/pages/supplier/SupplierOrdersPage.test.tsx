@@ -16,7 +16,16 @@ import { OrderEventError } from "@/lib/orders";
 interface Call { table: string; op: string; filters: [string, string, unknown][] }
 
 const { state, recordOrderEvent, toastSuccess, toastError } = vi.hoisted(() => ({
-  state: { calls: [] as Call[], orders: [] as Record<string, unknown>[], events: [] as Record<string, unknown>[] },
+  state: {
+    calls: [] as Call[],
+    orders: [] as Record<string, unknown>[],
+    events: [] as Record<string, unknown>[],
+    supplies: [] as Record<string, unknown>[],
+    prices: [] as Record<string, unknown>[],
+    /** 下單餐廳所屬群組的群組價(沒群組 = 空陣列) */
+    member: [] as Record<string, unknown>[],
+    groupPrices: [] as Record<string, unknown>[],
+  },
   recordOrderEvent: vi.fn(),
   toastSuccess: vi.fn(),
   toastError: vi.fn(),
@@ -30,6 +39,10 @@ const fakeFrom = (table: string) => {
     if (table === "supplier_orders") return { data: state.orders, error: null };
     if (table === "restaurants") return { data: [{ id: "rest-1", name: "好味小館", city: "台北市" }], error: null };
     if (table === "order_events") return { data: state.events, error: null };
+    if (table === "supplies") return { data: state.supplies, error: null };
+    if (table === "supplier_customer_prices") return { data: state.prices, error: null };
+    if (table === "supplier_customer_group_members") return { data: state.member, error: null };
+    if (table === "supplier_group_prices") return { data: state.groupPrices, error: null };
     if (table === "supplier_shipments")
       return {
         data: [{ order_id: "ord-shipped-000000a4", shipped_at: "2026-09-28T02:00:00Z", tracking_info: { carrier: "自有車隊", tracking_number: "T-9" }, notes: null }],
@@ -116,6 +129,10 @@ beforeEach(() => {
   state.calls = [];
   state.orders = ALL();
   state.events = [];
+  state.supplies = [];
+  state.prices = [];
+  state.member = [];
+  state.groupPrices = [];
   recordOrderEvent.mockReset();
   recordOrderEvent.mockResolvedValue({});
   toastSuccess.mockReset();
@@ -418,5 +435,92 @@ describe("退回重新報價、取消、逾時的原因(業主拍板 N2 / F5)", 
     await waitLoaded();
     expect(screen.getByTestId("reason-ord-twice-00000000t1")).toHaveTextContent("第二次退回:數量改 30");
   });
-});
 
+  describe("配送日、接單設定與出貨彙總", () => {
+    it("訂單卡片顯示配送日(含星期);沒有配送日的單不顯示這行", async () => {
+      state.orders = [
+        order("ord-with-date-0000000d1", "accepted", { delivery_date: "2026-10-30" }),
+        order("ord-no-date-000000000d2", "accepted"),
+      ];
+      renderPage("/supplier/orders?stage=all");
+      await waitLoaded();
+      expect(screen.getByTestId("delivery-ord-with-date-0000000d1")).toHaveTextContent("配送日 2026-10-30(週五)");
+      expect(screen.queryByTestId("delivery-ord-no-date-000000000d2")).toBeNull();
+    });
+
+    it("頁首有「接單設定」與「出貨彙總」,按下去開對應的視窗", async () => {
+      const user = userEvent.setup();
+      renderPage("/supplier/orders?stage=all");
+      await waitLoaded();
+
+      await user.click(screen.getByRole("button", { name: /出貨彙總/ }));
+      expect(await screen.findByRole("heading", { name: "出貨彙總與揀貨單" })).toBeInTheDocument();
+      await user.keyboard("{Escape}");
+
+      await user.click(screen.getByRole("button", { name: /接單設定/ }));
+      expect(await screen.findByRole("heading", { name: "接單設定" })).toBeInTheDocument();
+    });
+  });
+
+  describe("報價金額預填", () => {
+    const CATALOG = [
+      { id: "p1", name: "高麗菜", sku: null, unit: "kg", price: 45 },
+      { id: "p2", name: "雞蛋", sku: null, unit: "箱", price: 620 },
+    ];
+    const open = async (id: string) => {
+      const user = userEvent.setup();
+      renderPage("/supplier/orders?stage=all");
+      await waitLoaded();
+      await user.click(within(card(id)).getByRole("button", { name: "報價" }));
+      return { user, dialog: await screen.findByRole("dialog") };
+    };
+
+    it("每個品項都算得出來:依這家客戶的專屬價格(沒有專屬價用定價)預填金額,並說明來源", async () => {
+      state.supplies = CATALOG;
+      state.prices = [{ supply_id: "p1", price: "40.00" }];
+      state.orders = [order("ord-prefill-0000000p1", "accepted", { ingredient_list: [{ name: "高麗菜", quantity: "10", unit: "kg" }, { name: "雞蛋", quantity: "2", unit: "箱" }] })];
+      const { dialog } = await open("ord-prefill-0000000p1");
+
+      await waitFor(() => expect(within(dialog).getByLabelText(/報價總金額/)).toHaveValue(1640));
+      expect(within(dialog).getByTestId("quote-hint")).toHaveTextContent("專屬價格");
+    });
+
+    it("客戶在群組裡:專屬價 > 群組價 > 定價(高麗菜專屬價 40、雞蛋群組價 600)", async () => {
+      state.supplies = CATALOG;
+      state.prices = [{ supply_id: "p1", price: "40.00" }];
+      state.member = [{ group_id: "g1" }];
+      state.groupPrices = [{ supply_id: "p1", price: "38.00" }, { supply_id: "p2", price: "600.00" }];
+      state.orders = [order("ord-group-0000000000g1", "accepted", { ingredient_list: [{ name: "高麗菜", quantity: "10", unit: "kg" }, { name: "雞蛋", quantity: "2", unit: "箱" }] })];
+      const { dialog } = await open("ord-group-0000000000g1");
+
+      await waitFor(() => expect(within(dialog).getByLabelText(/報價總金額/)).toHaveValue(1600));
+      expect(within(dialog).getByTestId("quote-hint")).toHaveTextContent("群組價格");
+    });
+
+    it("只算得出一部分(有品項沒單價):不預填,免得被當成完整金額", async () => {
+      state.supplies = CATALOG;
+      state.orders = [order("ord-partial-00000000p2", "accepted", { ingredient_list: [{ name: "高麗菜", quantity: "10", unit: "kg" }, { name: "牛肉", quantity: "3", unit: "kg" }] })];
+      const { dialog } = await open("ord-partial-00000000p2");
+      await new Promise((r) => setTimeout(r, 50));
+      expect(within(dialog).getByLabelText(/報價總金額/)).toHaveValue(null);
+      expect(within(dialog).queryByTestId("quote-hint")).toBeNull();
+    });
+
+    it("預填之後可以直接改成自己的金額", async () => {
+      state.supplies = CATALOG;
+      state.orders = [order("ord-typed-0000000000p3", "accepted", { ingredient_list: [{ name: "高麗菜", quantity: "10", unit: "kg" }] })];
+      const { user, dialog } = await open("ord-typed-0000000000p3");
+      await waitFor(() => expect(within(dialog).getByLabelText(/報價總金額/)).toHaveValue(450));
+      await user.clear(within(dialog).getByLabelText(/報價總金額/));
+      await user.type(within(dialog).getByLabelText(/報價總金額/), "999");
+      expect(within(dialog).getByLabelText(/報價總金額/)).toHaveValue(999);
+    });
+
+    it("讀不到價格資料時照常讓供應商自己填", async () => {
+      state.supplies = [];
+      state.orders = [order("ord-none-00000000000p4", "accepted")];
+      const { dialog } = await open("ord-none-00000000000p4");
+      expect(within(dialog).getByLabelText(/報價總金額/)).toHaveValue(null);
+    });
+  });
+});

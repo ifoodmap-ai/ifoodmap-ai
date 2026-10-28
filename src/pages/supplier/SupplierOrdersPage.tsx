@@ -15,8 +15,10 @@ import {
   CheckCircle2,
   Inbox,
   Loader2,
+  ClipboardList,
   PackageCheck,
   ReceiptText,
+  Settings2,
   Truck,
   XCircle,
   type LucideIcon,
@@ -48,6 +50,10 @@ import {
   type OrderStatus,
 } from "@/lib/orders";
 import { formatOrderNo } from "@/lib/order-number";
+import { deliveryLabel } from "@/lib/delivery";
+import { effectivePrices, suggestQuote, type CatalogItem } from "@/lib/pricing";
+import SupplierOrderSettingsDialog from "@/components/supplier/SupplierOrderSettingsDialog";
+import SupplierPickListDialog from "@/components/supplier/SupplierPickListDialog";
 
 /* 新資料表不在 types.ts 裡 —— 沿用專案既有的 cast 慣例,只描述這頁用得到的 builder */
 type PgError = { message: string } | null;
@@ -76,6 +82,7 @@ interface OrderRow {
   notes: string | null;
   created_at: string;
   current_stage_since: string | null;
+  delivery_date: string | null;
 }
 
 interface RestaurantRow {
@@ -198,11 +205,15 @@ export default function SupplierOrdersPage() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [pickOpen, setPickOpen] = useState(false);
 
   const [dialog, setDialog] = useState<DialogState>(null);
   const [dialogError, setDialogError] = useState<string | null>(null);
   const [reason, setReason] = useState("");
   const [amount, setAmount] = useState("");
+  // 報價視窗的金額預填來源說明:依這家客戶的專屬價格 / 商品定價算出來的(可以改)
+  const [quoteHint, setQuoteHint] = useState<string | null>(null);
   const [validUntil, setValidUntil] = useState("");
   const [note, setNote] = useState("");
   const [carrier, setCarrier] = useState("");
@@ -237,7 +248,7 @@ export default function SupplierOrdersPage() {
 
   const fetchOrders = useCallback(async (sid: string) => {
     const { data, error } = await db<OrderRow>("supplier_orders")
-      .select("id, status, restaurant_id, ingredient_list, total_amount, notes, created_at, current_stage_since")
+      .select("id, status, restaurant_id, ingredient_list, total_amount, notes, created_at, current_stage_since, delivery_date")
       .eq("supplier_id", sid)
       .order("created_at", { ascending: false });
     if (error) {
@@ -349,6 +360,7 @@ export default function SupplierOrdersPage() {
     setDialogError(null);
     setReason("");
     setAmount("");
+    setQuoteHint(null);
     setValidUntil("");
     setNote("");
     setCarrier("");
@@ -386,12 +398,54 @@ export default function SupplierOrdersPage() {
     }
   };
 
+  /** 報價預填:用這家客戶的專屬價格、沒有就用他所屬群組的價格、再沒有就用商品定價算每個品項,每個都算得出來才預填;失敗就不預填 */
+  const prefillQuote = async (order: OrderRow) => {
+    if (!supplierId || !order.restaurant_id) return;
+    try {
+      const [{ data: supplies }, { data: prices }, { data: membership }] = await Promise.all([
+        db<{ id: string; name: string; sku: string | null; unit: string | null; price: number | string | null }>("supplies")
+          .select("id, name, sku, unit, price")
+          .eq("supplier_id", supplierId),
+        db<{ supply_id: string; price: number | string }>("supplier_customer_prices")
+          .select("supply_id, price")
+          .eq("supplier_id", supplierId)
+          .eq("restaurant_id", order.restaurant_id),
+        db<{ group_id: string }>("supplier_customer_group_members")
+          .select("group_id")
+          .eq("supplier_id", supplierId)
+          .eq("restaurant_id", order.restaurant_id),
+      ]);
+      const groupId = membership?.[0]?.group_id;
+      const { data: gPrices } = groupId
+        ? await db<{ supply_id: string; price: number | string }>("supplier_group_prices").select("supply_id, price").eq("group_id", groupId)
+        : { data: [] as { supply_id: string; price: number | string }[] };
+      const catalog: CatalogItem[] = (supplies ?? []).map((c) => ({ id: c.id, name: c.name, sku: c.sku, unit: c.unit, price: c.price == null ? null : Number(c.price) }));
+      const special = effectivePrices(
+        new Map((gPrices ?? []).map((p) => [p.supply_id, Number(p.price)])),
+        new Map((prices ?? []).map((p) => [p.supply_id, Number(p.price)])),
+      );
+      const suggested = suggestQuote(
+        (Array.isArray(order.ingredient_list) ? order.ingredient_list : []).map((i) => ({ name: i.name ?? "", quantity: i.quantity ?? "" })),
+        catalog,
+        special,
+      );
+      if (suggested != null) {
+        // 供應商已經自己打了字就不蓋掉
+        setAmount((cur) => (cur === "" ? String(suggested) : cur));
+        setQuoteHint(special.size > 0 ? "金額已依這家客戶的專屬價格、群組價格與商品定價預填,請確認後再送出(可以修改)" : "金額已依商品定價預填,請確認後再送出(可以修改)");
+      }
+    } catch {
+      /* 預填失敗就讓供應商自己填 */
+    }
+  };
+
   const handleAction = (order: OrderRow, to: OrderStatus) => {
     const conf = ACTION_CONF[to];
     if (conf?.dialog) {
       resetForm();
       if (conf.dialog === "quote" && order.total_amount != null) setAmount(String(Number(order.total_amount)));
       setDialog({ kind: conf.dialog, order, to });
+      if (conf.dialog === "quote" && order.total_amount == null) void prefillQuote(order);
       return;
     }
     void perform(order, to);
@@ -458,13 +512,33 @@ export default function SupplierOrdersPage() {
     );
   };
 
+  const customerNames = useMemo(
+    () => Object.fromEntries(Object.values(restaurants).map((r) => [r.id, r.name])),
+    [restaurants],
+  );
   const dialogOrderNo = dialog ? formatOrderNo(dialog.order.id) : "";
   const dialogBusy = dialog ? busyId === dialog.order.id : false;
 
   return (
     <div className="mx-auto max-w-4xl p-4 md:p-6">
-      <h1 className="text-xl font-bold text-slate-900">訂單</h1>
-      <p className="mb-4 mt-1 text-sm text-slate-500">接單、報價、出貨、送達都在這裡;每一步都會通知餐廳</p>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-bold text-slate-900">訂單</h1>
+          <p className="mb-4 mt-1 text-sm text-slate-500">接單、報價、出貨、送達都在這裡;每一步都會通知餐廳</p>
+        </div>
+        {supplierId && (
+          <div className="flex flex-wrap gap-2">
+            <Button variant="outline" size="sm" onClick={() => setPickOpen(true)}>
+              <ClipboardList className="h-4 w-4 mr-1.5" />
+              出貨彙總
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => setSettingsOpen(true)}>
+              <Settings2 className="h-4 w-4 mr-1.5" />
+              接單設定
+            </Button>
+          </div>
+        )}
+      </div>
 
       {/* 狀態分頁:手機放不下時橫向捲 */}
       <div
@@ -560,6 +634,11 @@ export default function SupplierOrdersPage() {
                     <p className="text-xs text-slate-400">
                       {new Date(order.created_at).toLocaleDateString("zh-TW")} 下單 · 這一關已停留 {formatStageAge(since)}
                     </p>
+                    {deliveryLabel(order.delivery_date) && (
+                      <p className="text-xs font-medium text-emerald-700" data-testid={`delivery-${order.id}`}>
+                        配送日 {deliveryLabel(order.delivery_date)}
+                      </p>
+                    )}
                   </div>
                   {amountText && (
                     <div className="text-right">
@@ -679,6 +758,7 @@ export default function SupplierOrdersPage() {
                     onChange={(e) => setAmount(e.target.value)}
                     placeholder="例如:3200"
                   />
+                  {quoteHint && <p className="text-xs text-emerald-700" data-testid="quote-hint">{quoteHint}</p>}
                 </div>
                 <div className="space-y-1.5">
                   <Label htmlFor="quote-valid-until">報價有效到(可不填)</Label>
@@ -738,6 +818,13 @@ export default function SupplierOrdersPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {supplierId && (
+        <>
+          <SupplierOrderSettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} supplierId={supplierId} />
+          <SupplierPickListDialog open={pickOpen} onOpenChange={setPickOpen} orders={orders} customerNames={customerNames} />
+        </>
+      )}
     </div>
   );
 }

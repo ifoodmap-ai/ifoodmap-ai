@@ -72,9 +72,11 @@ const sections: SupplierSection[] = [
     to: "/supplier/customers",
     label: "客戶與評價",
     icon: Users,
-    match: startsWithAny(["/supplier/customers", "/supplier/reviews"]),
+    match: startsWithAny(["/supplier/customers", "/supplier/reviews", "/supplier/customer-prices", "/supplier/price-groups"]),
     tabs: [
       { label: "客戶", path: "/supplier/customers" },
+      { label: "群組報價", path: "/supplier/price-groups" },
+      { label: "客戶價格與上限", path: "/supplier/customer-prices" },
       { label: "評價", path: "/supplier/reviews" },
     ],
   },

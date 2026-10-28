@@ -2107,3 +2107,50 @@ Expected:`market_mails_15m` = `{"sent": 4}`(**通知紀錄 4 筆 sent**,沒有 `
 pgTAP 沒辦法在本機跑(沒有 Postgres):套用前用乾跑驗證(不會 commit):
 `node scripts/supabase-sql.mjs dry supabase/tests/database/order_transition_rules.test.sql --with-migration supabase/migrations/20261028110000_restaurant_supplier_binding.sql`
 (另外兩支同理);套用走 `node scripts/supabase-sql.mjs apply supabase/migrations/20261028110000_restaurant_supplier_binding.sql`。
+
+## 配送日與截單時間、出貨彙總、再叫一次(2026-10-29)
+
+參考 OrderUp B2B 的批發叫貨流程(晚上下單、隔天一早備貨送貨),採購系統補上:
+
+| 項目 | 位置 |
+| --- | --- |
+| SQL(`supplier_orders.delivery_date`、`supplier_order_settings`、直接叫貨的配送日 / 截單檢查、送出後配送日鎖定) | `supabase/migrations/20261029100000_delivery_date_and_cutoff.sql`(rollback:`supabase/rollbacks/20261029100000_delivery_date_and_cutoff.down.sql`) |
+| 資料庫測試(PGlite 重放真正的訂單狀態機 migration) | `supabase/tests/delivery_date_and_cutoff.test.ts`(共用工具 `supabase/tests/_state-machine-harness.ts`) |
+| 規則與日期邏輯(前後端同一套) | `src/lib/delivery.ts` |
+| 供應商端 | 訂單頁「接單設定」(截單時間、提前幾天、哪幾天配送)、「出貨彙總」(`src/lib/pick-list.ts`,CSV 可用 Excel 開) |
+| 餐廳端 | 叫貨頁:選配送日(預設最早能選的)、「套用上一張單」;訂單卡片顯示配送日 |
+
+**部署順序:先套 migration、再 push 前端。**
+
+規則:
+- 供應商沒有設接單規則 = 沒有限制(配送日選填,只擋「過去的日子」);設了之後餐廳叫貨一定要選配送日、那天要有配送、而且還沒超過截單時間。
+- 截單時間用台灣時間:「配送日前 N 天 + 截單時間」之前要下單;剛好在截單那一分鐘還來得及。檢查在資料庫(`guard_restaurant_direct_dispatch`),前端只是不讓人選到一定會被擋的日子。
+- 訂單送出之後配送日只有管理員 / 系統能改(`trg_guard_delivery_date_lock`),避免先趕在截單前叫貨、再把配送日改掉。
+- 管理員派單、系統身分不受這些規則限制。
+- 出貨彙總只算「供應商已接單、還沒送到」的訂單(待報價、待餐廳確認、待出貨、已出貨、運送中),待接單的只提示張數。
+
+## 客戶專屬價格與數量上限(2026-10-29)
+
+| 項目 | 位置 |
+| --- | --- |
+| SQL(`supplier_customer_prices`、`supplier_customer_limits`、群組報價三張表、直接叫貨的數量上限檢查) | `supabase/migrations/20261029110000_customer_prices_and_limits.sql`(rollback:`supabase/rollbacks/20261029110000_customer_prices_and_limits.down.sql`) |
+| 資料庫測試 | `supabase/tests/customer_prices_and_limits.test.ts` |
+| 價格 / 配對 / CSV 匯出入 | `src/lib/pricing.ts` |
+| 供應商端 | 「客戶與評價 › 客戶價格與上限」(`/supplier/customer-prices`):每家客戶每個商品的專屬價格與每日 / 每週上限,CSV 匯出入;「客戶與評價 › 群組報價」(`/supplier/price-groups`):建群組、放客戶、設群組價;報價視窗依專屬價 / 群組價預填金額 |
+| 餐廳端 | 叫貨頁:品項底下顯示單價(專屬價 / 定價,僅老闆與店長)、數量上限(所有角色)、預估金額 |
+
+**部署順序:先套 20261029100000(配送日)、再套這一支,最後 push 前端。**
+
+規則:
+- 價格只是「下單時自動帶入、報價時預填」,**真正的報價金額仍由供應商報價決定**(訂單狀態流程沒有動)。沒有專屬價就用商品定價;都沒有就不帶。
+- 價格是成本資訊:餐廳端只有老闆 / 店長讀得到(RLS),採購員的訂單不帶單價、畫面不顯示金額。數量上限所有成員都看得到。
+- 品項只有品名,所以用「品名」配對供應商的商品目錄(去掉所有空白、不分大小寫與全形半形);對不上目錄的品項沒有單價、也不受上限限制。
+- 數量上限在叫貨(draft → dispatched)時由資料庫檢查:同一家店、同一家供應商、同一期(每日 = 同一天,每週 = 週一到週日,依配送日;沒有配送日用建立日)
+  其他有效訂單(排除草稿、取消、拒單、逾時)的數量加上這張單,不能超過上限。同一家店向同一家供應商同時叫貨用 advisory lock 排隊。管理員 / 系統派單不受限。
+- 價格表 CSV:匯出的檔案用 Excel 改「客戶價」「數量上限」「上限期別」後存成 CSV 再匯入,用「商品」欄的品名對目錄;匯入只是套到畫面,按「儲存」才寫入。
+
+群組報價(同一份 migration):
+- 供應商可以建群組(名稱最多 40 字、同一家供應商不重名),把「已綁定自己」的客戶放進群組,**同群組同價**;一家客戶對一家供應商最多在一個群組(放進另一個群組 = 搬過去)。
+- 價格優先順序:**客戶專屬價 → 群組價 → 商品定價**(前端 `effectivePrices`)。個別客戶例外才需要設專屬價。
+- 群組價跟專屬價一樣是成本資訊:只有「這家店在該群組、仍綁定著、而且是老闆 / 店長」讀得到;解除綁定後專屬價與群組價都讀不到,群組成員列也由資料庫擋(只能加已綁定的客戶)。
+- 刪除群組會一併刪成員與群組價(客戶不受影響,改回定價或專屬價)。數量上限仍是一家一家設(沒有群組上限)。

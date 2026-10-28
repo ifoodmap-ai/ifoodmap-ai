@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useSearchParams } from "react-router-dom";
 import {
   Sparkles, Plus, Trash2, Loader2, ShoppingCart, ClipboardCheck,
-  History, Send, PackagePlus, Hourglass, Undo2, Minus, Store,
+  History, Send, PackagePlus, Hourglass, Undo2, Minus, Store, RotateCcw, CalendarDays,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -28,6 +28,14 @@ import { recordOrderEvent } from "@/lib/orders";
 import type { ClaimedDraftLocationState } from "@/hooks/use-landing-handoff-claim";
 import SupplyThumb from "@/components/SupplyThumb";
 import { buildSupplyImageLookup, type SupplyImageLookup, type SupplyImageRow } from "@/lib/supply-images";
+import {
+  effectivePrices, estimateTotal, limitOf, limitText, parseQty, priceOf,
+  type CatalogItem, type CustomerLimit, type LimitPeriod,
+} from "@/lib/pricing";
+import {
+  DELIVERY_CHECK_MESSAGE, checkDeliveryDate, cutoffFor, describeRules, earliestDeliveryDate, isDateString,
+  type OrderRules,
+} from "@/lib/delivery";
 
 /* ── 新資料表不在 types.ts,沿用專案的 loose cast 慣例 ─────────────── */
 type Result<T> = { data: T[] | null; error: { message: string } | null };
@@ -191,6 +199,15 @@ const RestaurantPurchasePage = () => {
   // 合作供應商:叫貨先選一家,訂單直接送給他(從「待接單」開始,不經管理員派發)
   const [partners, setPartners] = useState<Partner[]>([]);
   const [supplierId, setSupplierId] = useState<string | null>(null);
+  // 各家供應商的接單規則(截單時間、哪幾天配送);沒設規則的供應商不在裡面
+  const [rulesBySupplier, setRulesBySupplier] = useState<Record<string, OrderRules>>({});
+  // 每家供應商「上一張單」的品項,給「套用上一張單」用
+  const [lastOrders, setLastOrders] = useState<Record<string, { at: string; items: { name: string; quantity: string; unit: string }[] }>>({});
+  const [deliveryDate, setDeliveryDate] = useState("");
+  // 各家供應商的商品目錄(叫貨品項只有品名,用品名配對目錄,才有單價與數量上限)、這家店的專屬價格與數量上限
+  const [catalogs, setCatalogs] = useState<Record<string, CatalogItem[]>>({});
+  const [customerPrices, setCustomerPrices] = useState<Map<string, number>>(() => new Map());
+  const [limits, setLimits] = useState<CustomerLimit[]>([]);
   const [searchParams] = useSearchParams();
   const preferredSupplier = searchParams.get("supplier");
   // 叫貨品項的商品縮圖:用品名配對往來供應商上架的商品圖片;純裝飾,讀不到就都顯示佔位
@@ -240,6 +257,17 @@ const RestaurantPurchasePage = () => {
         .eq("restaurant_id", account.restaurant_id)
         .order("created_at", { ascending: false })
         .limit(300);
+
+      // 每家供應商最近一張有效的單(orders 由新到舊,第一次遇到的就是最近的):「套用上一張單」用
+      const last: Record<string, { at: string; items: { name: string; quantity: string; unit: string }[] }> = {};
+      (orders ?? []).forEach((o) => {
+        if (!o.supplier_id || o.status === "cancelled" || o.status === "draft" || last[o.supplier_id]) return;
+        const items = (Array.isArray(o.ingredient_list) ? o.ingredient_list : [])
+          .map((raw) => ({ name: (raw?.name ?? "").trim(), quantity: raw?.quantity != null ? String(raw.quantity) : "", unit: raw?.unit ?? "" }))
+          .filter((i) => i.name);
+        if (items.length > 0) last[o.supplier_id] = { at: o.created_at, items };
+      });
+      if (!cancelled) setLastOrders(last);
 
       // orders 由新到舊:每個品項的單位 / 數量 / 參考價取「最近一次」叫貨時的
       const history = new Map<string, { name: string; dates: number[]; unit: string; quantity: string; price: string; times: number; supplierId: string }>();
@@ -323,6 +351,55 @@ const RestaurantPurchasePage = () => {
       }
       if (!cancelled) {
         setPartners(partnerList);
+        // 供應商的接單規則(讀不到就當沒有規則,資料庫叫貨時還是會檢查)
+        try {
+          const { data: rules } = partnerList.length
+            ? await db<{ supplier_id: string; cutoff_time: string; lead_days: number; delivery_weekdays: number[] }>("supplier_order_settings")
+                .select("supplier_id, cutoff_time, lead_days, delivery_weekdays")
+                .in("supplier_id", partnerList.map((x) => x.id))
+            : { data: [] };
+          const map: Record<string, OrderRules> = {};
+          (rules ?? []).forEach((r) => {
+            map[r.supplier_id] = { cutoff_time: r.cutoff_time, lead_days: r.lead_days, delivery_weekdays: r.delivery_weekdays };
+          });
+          if (!cancelled) setRulesBySupplier(map);
+        } catch {
+          if (!cancelled) setRulesBySupplier({});
+        }
+        // 商品目錄、專屬價格(只有老闆 / 店長讀得到)、數量上限:讀不到就當沒有,不影響叫貨
+        try {
+          const ids = partnerList.map((x) => x.id);
+          if (ids.length > 0) {
+            const [cat, pr, gpr, lim] = await Promise.all([
+              db<{ id: string; supplier_id: string; name: string; sku: string | null; unit: string | null; price: number | string | null }>("supplies")
+                .select("id, supplier_id, name, sku, unit, price")
+                .in("supplier_id", ids),
+              db<{ supply_id: string; price: number | string }>("supplier_customer_prices")
+                .select("supply_id, price")
+                .eq("restaurant_id", account.restaurant_id),
+              // 群組價:資料庫只會給這家店所屬群組的價格
+              db<{ supply_id: string; price: number | string }>("supplier_group_prices")
+                .select("supply_id, price"),
+              db<{ supply_id: string; period: LimitPeriod; max_qty: number | string }>("supplier_customer_limits")
+                .select("supply_id, period, max_qty")
+                .eq("restaurant_id", account.restaurant_id),
+            ]);
+            const byS: Record<string, CatalogItem[]> = {};
+            (cat.data ?? []).forEach((c) => {
+              (byS[c.supplier_id] ??= []).push({ id: c.id, name: c.name, sku: c.sku, unit: c.unit, price: c.price == null ? null : Number(c.price) });
+            });
+            if (!cancelled) {
+              setCatalogs(byS);
+              setCustomerPrices(effectivePrices(
+                new Map((gpr.data ?? []).map((p) => [p.supply_id, Number(p.price)])),
+                new Map((pr.data ?? []).map((p) => [p.supply_id, Number(p.price)])),
+              ));
+              setLimits((lim.data ?? []).map((l) => ({ supply_id: l.supply_id, period: l.period, max_qty: Number(l.max_qty) })));
+            }
+          }
+        } catch {
+          if (!cancelled) { setCatalogs({}); setCustomerPrices(new Map()); setLimits([]); }
+        }
         // 預設選誰:網址指定的(從「我的供應商」按「向他叫貨」帶來)→ 之前選的 → 最近叫過貨的 → 第一家
         const lastOrdered = (orders ?? []).find((o) => o.supplier_id && partnerList.some((x) => x.id === o.supplier_id))?.supplier_id ?? null;
         setSupplierId((cur) => {
@@ -372,6 +449,8 @@ const RestaurantPurchasePage = () => {
     quantity: string;
     unit: string;
     reference_price?: number;
+    /** 供應商給這家店的單價(專屬價,沒有就是定價);只有看得到成本的角色才會帶 */
+    unit_price?: number;
     source: "ai" | "manual";
   }
 
@@ -379,24 +458,71 @@ const RestaurantPurchasePage = () => {
   const visibleItems = useMemo(() => items.filter((i) => i.supplierId === supplierId), [items, supplierId]);
   const visibleRemoved = useMemo(() => removed.filter((i) => i.supplierId === supplierId), [removed, supplierId]);
   const supplierName = partners.find((x) => x.id === supplierId)?.name ?? "";
+  const rules = supplierId ? rulesBySupplier[supplierId] ?? null : null;
+  const lastOrder = supplierId ? lastOrders[supplierId] ?? null : null;
+  const deliveryProblem = checkDeliveryDate(deliveryDate, rules);
+  const earliest = useMemo(() => earliestDeliveryDate(rules), [rules]);
+
+  // 換供應商 / 規則讀進來:配送日預設成最早能選的那天(有規則的供應商一定要選);已經選的日子還能用就不動
+  useEffect(() => {
+    if (!supplierId) return;
+    setDeliveryDate((cur) => (cur && checkDeliveryDate(cur, rules) === "ok" ? cur : rules ? earliest ?? "" : ""));
+  }, [supplierId, rules, earliest]);
+
+  const catalog = useMemo(() => (supplierId ? catalogs[supplierId] ?? [] : []), [catalogs, supplierId]);
+  // 價格是成本資訊:只有老闆 / 店長看得到(資料庫也只讓他們讀專屬價格);採購員的訂單不帶單價、畫面不顯示金額
+  const showPrice = account.role === "owner" || account.role === "manager";
+  const unitPriceOf = (name: string): number | undefined => (showPrice ? priceOf(name, catalog, customerPrices).unitPrice ?? undefined : undefined);
 
   const cart = useMemo(() => {
     const picked: CartItem[] = visibleItems.map((i) => ({
-      name: i.name, quantity: i.quantity, unit: i.unit, reference_price: toPrice(i.referencePrice), source: "ai",
+      name: i.name, quantity: i.quantity, unit: i.unit, reference_price: toPrice(i.referencePrice), unit_price: unitPriceOf(i.name), source: "ai",
     }));
     const extra: CartItem[] = manual.map((m) => ({
-      name: m.name, quantity: m.quantity, unit: m.unit, reference_price: toPrice(m.referencePrice), source: "manual",
+      name: m.name, quantity: m.quantity, unit: m.unit, reference_price: toPrice(m.referencePrice), unit_price: unitPriceOf(m.name), source: "manual",
     }));
     // 同名只留一筆(手動輸入優先)
     const merged = new Map<string, CartItem>();
     [...picked, ...extra].forEach((i) => {
       const name = i.name.trim();
       if (!name) return;
-      const { reference_price, ...rest } = i;
-      merged.set(name, { ...rest, name, ...(reference_price !== undefined ? { reference_price } : {}) });
+      const { reference_price, unit_price, ...rest } = i;
+      merged.set(name, {
+        ...rest,
+        name,
+        ...(reference_price !== undefined ? { reference_price } : {}),
+        ...(unit_price !== undefined ? { unit_price } : {}),
+      });
     });
     return [...merged.values()];
-  }, [visibleItems, manual]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visibleItems, manual, catalog, customerPrices, showPrice]);
+
+  const estimate = useMemo(() => estimateTotal(cart, catalog, customerPrices), [cart, catalog, customerPrices]);
+
+  /** 品項底下的小字:這家供應商給你的單價(只有老闆 / 店長看得到)與數量上限;超過上限時標紅 */
+  const itemHints = (name: string, quantity: string) => {
+    const p = priceOf(name, catalog, customerPrices);
+    const lim = limitOf(name, catalog, limits);
+    const price = showPrice && p.unitPrice != null ? p : null;
+    if (!price && !lim) return null;
+    const q = parseQty(quantity);
+    const over = !!lim && q != null && q > lim.limit.max_qty;
+    return (
+      <p className="mt-0.5 flex flex-wrap gap-x-3 text-xs" data-testid={`hints-${name}`}>
+        {price && (
+          <span className={price.source === "customer" ? "text-emerald-700" : "text-slate-500"}>
+            單價 ${price.unitPrice}{price.supply?.unit ? ` / ${price.supply.unit}` : ""}{price.source === "customer" ? "(專屬價)" : ""}
+          </span>
+        )}
+        {lim && (
+          <span className={over ? "font-medium text-red-600" : "text-slate-500"}>
+            {limitText(lim.limit, lim.supply.unit)}{over ? ",這張單已經超過" : ""}
+          </span>
+        )}
+      </p>
+    );
+  };
 
   const same = (a: HistoryItem, b: { name: string; supplierId: string | null }) => a.name === b.name && a.supplierId === b.supplierId;
 
@@ -411,6 +537,23 @@ const RestaurantPurchasePage = () => {
   const restoreItem = (item: HistoryItem) => {
     setRemoved((prev) => prev.filter((x) => !same(x, item)));
     setItems((prev) => (prev.some((x) => same(x, item)) ? prev : [...prev, item]));
+  };
+
+  /** 套用上一張單:這家供應商上一張單裡有的品項,數量與單位照上一張;沒有的品項先移到「已移除」 */
+  const repeatLastOrder = () => {
+    if (!supplierId || !lastOrder) return;
+    const lastByName = new Map(lastOrder.items.map((i) => [i.name, i]));
+    const mine = [...items, ...removed].filter((i) => i.supplierId === supplierId);
+    const keep: HistoryItem[] = [];
+    const drop: HistoryItem[] = [];
+    mine.forEach((i) => {
+      const l = lastByName.get(i.name);
+      if (l) keep.push({ ...i, quantity: l.quantity || i.quantity, unit: l.unit || i.unit });
+      else drop.push(i);
+    });
+    setItems((prev) => [...prev.filter((i) => i.supplierId !== supplierId), ...keep]);
+    setRemoved((prev) => [...prev.filter((i) => i.supplierId !== supplierId), ...drop]);
+    toast.success(`已套用上一張單(${new Date(lastOrder.at).toLocaleDateString("zh-TW")}),共 ${keep.length} 項`);
   };
 
   const addManual = (name?: string, quantity?: string, unit?: string) => {
@@ -439,6 +582,10 @@ const RestaurantPurchasePage = () => {
       toast.error("請先加入至少一項食材");
       return;
     }
+    if (deliveryProblem !== "ok") {
+      toast.error("配送日有問題", { description: DELIVERY_CHECK_MESSAGE[deliveryProblem] });
+      return;
+    }
     const noQty = cart.find((i) => {
       const q = i.quantity.trim();
       return q === "" || !(Number.parseFloat(q) > 0);
@@ -456,6 +603,7 @@ const RestaurantPurchasePage = () => {
           branch_id: account.branch_id,
           created_by: userId,
           ingredient_list: cart,
+          delivery_date: deliveryDate && isDateString(deliveryDate) ? deliveryDate : null,
           status: "draft",
           notes: notes.trim() || null,
         })
@@ -751,6 +899,38 @@ const RestaurantPurchasePage = () => {
               </button>
             ))}
           </div>
+
+          <div className="mt-4 border-t border-slate-100 pt-4 space-y-1.5">
+            <label htmlFor="delivery-date" className="text-sm font-medium text-slate-700 flex items-center gap-1.5">
+              <CalendarDays className="h-4 w-4 text-emerald-600" />
+              配送日{rules ? "" : "(選填)"}
+            </label>
+            <div className="flex flex-wrap items-center gap-3">
+              <Input
+                id="delivery-date"
+                type="date"
+                value={deliveryDate}
+                min={earliest ?? undefined}
+                onChange={(e) => setDeliveryDate(e.target.value)}
+                className="w-44"
+                aria-invalid={deliveryProblem !== "ok"}
+              />
+              {rules && (
+                <span className="text-xs text-slate-400" data-testid="delivery-rules">
+                  {supplierName}:{describeRules(rules)}
+                </span>
+              )}
+            </div>
+            {deliveryProblem !== "ok" && deliveryDate && (
+              <p role="alert" className="text-xs text-red-600" data-testid="delivery-problem">
+                {DELIVERY_CHECK_MESSAGE[deliveryProblem]}
+                {deliveryProblem === "cutoff" && rules && (() => {
+                  const c = cutoffFor(deliveryDate, rules);
+                  return `(這個配送日要在 ${c.date} ${c.time} 前下單)`;
+                })()}
+              </p>
+            )}
+          </div>
         </CardContent>
       </Card>
 
@@ -761,6 +941,19 @@ const RestaurantPurchasePage = () => {
             <Sparkles className="h-4 w-4 text-emerald-600" />
             過往叫貨品項
             {visibleItems.length > 0 && <span className="text-xs font-normal text-slate-400">共 {visibleItems.length} 項</span>}
+            {lastOrder && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="ml-auto h-8"
+                onClick={repeatLastOrder}
+                title="品項、數量、單位都照這家供應商上一張單"
+              >
+                <RotateCcw className="h-3.5 w-3.5 mr-1.5" />
+                套用上一張單({new Date(lastOrder.at).toLocaleDateString("zh-TW", { month: "numeric", day: "numeric" })})
+              </Button>
+            )}
           </CardTitle>
           {visibleItems.length > 0 && (
             <p className="text-xs text-slate-400">
@@ -804,6 +997,7 @@ const RestaurantPurchasePage = () => {
                         上次叫貨 {i.daysSince} 天前
                         {i.avgCycle > 0 && ` · 平均週期 ${i.avgCycle} 天`} · 共叫過 {i.times} 次
                       </p>
+                      {itemHints(i.name, i.quantity)}
                     </div>
                     <QtyStepper
                       name={i.name}
@@ -916,6 +1110,7 @@ const RestaurantPurchasePage = () => {
                   <SupplyThumb path={thumbOf(m.name)} name={m.name} size={32} />
                   <div className="flex-1 min-w-[120px]">
                     <p className="text-sm text-slate-800 truncate">{m.name}</p>
+                    {itemHints(m.name, m.quantity)}
                   </div>
                   <QtyStepper
                     name={m.name}
@@ -966,10 +1161,17 @@ const RestaurantPurchasePage = () => {
             <p className="text-sm text-slate-500 flex-1" data-testid="order-summary">
               向 <span className="font-semibold text-slate-800">{supplierName}</span> 叫貨,目前共{" "}
               <span className="font-semibold text-slate-800">{cart.length}</span> 項
+              {showPrice && estimate.priced > 0 && (
+                <span data-testid="order-estimate">
+                  ,預估金額 <span className="font-semibold text-slate-800">NT$ {Math.round(estimate.total).toLocaleString("zh-TW")}</span>
+                  {estimate.unpriced > 0 && <span className="text-slate-400">(另有 {estimate.unpriced} 項算不出來,不含在內)</span>}
+                  <span className="text-slate-400">;實際金額以供應商報價為準</span>
+                </span>
+              )}
             </p>
             <Button
               onClick={submit}
-              disabled={submitting || cart.length === 0 || !supplierId}
+              disabled={submitting || cart.length === 0 || !supplierId || deliveryProblem !== "ok"}
               className="bg-emerald-600 hover:bg-emerald-700 text-white"
             >
               {submitting ? <Loader2 className="h-4 w-4 animate-spin mr-1.5" /> : <Send className="h-4 w-4 mr-1.5" />}
