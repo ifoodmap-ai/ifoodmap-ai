@@ -1,12 +1,21 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import {
-  Store, Star, ShieldAlert, Truck, PackageX, Clock, ChevronDown, ChevronUp,
+  Store, Star, ShieldAlert, Truck, PackageX, Clock, ChevronDown, ChevronUp, Plus, Link2Off, Loader2, Search,
 } from "lucide-react";
+import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
+import {
+  Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { supabase } from "@/integrations/supabase/client";
 import { useRestaurant, canSeeCost } from "@/components/RestaurantRoute";
 import { ORDER_STATUS, type OrderStatus } from "@/lib/orders";
@@ -21,6 +30,8 @@ interface Q<T> extends PromiseLike<Result<T>> {
   in(col: string, vals: unknown[]): Q<T>;
   order(col: string, opts?: { ascending: boolean }): Q<T>;
   limit(n: number): Q<T>;
+  insert(values: unknown): Q<T>;
+  delete(): Q<T>;
 }
 const db = <T,>(table: string): Q<T> =>
   (supabase as never as { from: (t: string) => Q<T> }).from(table);
@@ -69,6 +80,10 @@ interface Partner {
 /** 展開績效時列出的近期訂單張數 */
 const RECENT_LIMIT = 5;
 
+// 「合作供應商」= 這家店「綁定」的供應商(restaurant_suppliers):綁定的供應商可以直接叫貨(訂單從待接單開始,不經管理員派發)。
+// 綁定由老闆 / 店長新增與解除、立刻生效;採購員只能看與叫貨。既有往來(已收過貨)在 migration 時自動補成已綁定。
+// 下面的合作單數、累計訂單、累計採購金額、最近合作、近期合作清單只看這家供應商的有效訂單(沒有訂單就是 0)。
+//
 // 「合作」= 全站共用的訂單定義(src/lib/metrics.ts,業主拍板 Q5-A):不含草稿、取消、拒單、逾時。
 // 合作供應商、累計訂單、累計採購金額、最近合作、近期合作清單都只看這些單,
 // 跟營運總覽的「合作供應商」「本月採購金額」同一個口徑;供應商端「客戶管理」看到的累計訂單金額也是同一組單。
@@ -93,12 +108,21 @@ const RestaurantSuppliersPage = () => {
   const [partners, setPartners] = useState<Partner[]>([]);
   // 「查看」改成就地展開績效(PROPOSAL.md §2 / Q7-A):不再帶去公開供應商頁 —— 那頁是給訪客看的
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const canManage = account.role === "owner" || account.role === "manager";
+  const [reloadKey, setReloadKey] = useState(0);
+  const [addOpen, setAddOpen] = useState(false);
+  const [unbindTarget, setUnbindTarget] = useState<Partner | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  // 新增合作供應商的視窗:還在營業、還沒綁定的供應商名單
+  const [directory, setDirectory] = useState<SupplierRow[] | null>(null);
+  const [directoryError, setDirectoryError] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
 
   useEffect(() => {
     let cancelled = false;
 
     (async () => {
-      setLoading(true);
+      if (reloadKey === 0) setLoading(true);
 
       const { data: orders } = await db<OrderRow>("supplier_orders")
         .select("id, supplier_id, total_amount, status, created_at")
@@ -117,7 +141,10 @@ const RestaurantSuppliersPage = () => {
         grouped.set(o.supplier_id, cur);
       });
 
-      const ids = [...grouped.keys()];
+      const { data: bound } = await db<{ supplier_id: string }>("restaurant_suppliers")
+        .select("supplier_id")
+        .eq("restaurant_id", account.restaurant_id);
+      const ids = (bound ?? []).map((b) => b.supplier_id);
       if (ids.length === 0) {
         if (!cancelled) { setPartners([]); setLoading(false); }
         return;
@@ -132,7 +159,7 @@ const RestaurantSuppliersPage = () => {
 
       const metricsById = new Map((metrics ?? []).map((m) => [m.supplier_id, m]));
       const list: Partner[] = (sups ?? []).map((s) => {
-        const g = grouped.get(s.id)!;
+        const g = grouped.get(s.id) ?? { orders: 0, amount: 0, lastAt: null, recent: [] as RecentOrder[] };
         return {
           supplier: s,
           orders: g.orders,
@@ -150,7 +177,58 @@ const RestaurantSuppliersPage = () => {
 
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [account.restaurant_id]);
+  }, [account.restaurant_id, reloadKey]);
+
+  const openAdd = async () => {
+    setAddOpen(true);
+    setQuery("");
+    if (directory) return;
+    setDirectoryError(null);
+    const { data, error } = await db<SupplierRow>("suppliers")
+      .select("id, name, description, service_areas")
+      .eq("is_active", true)
+      .order("name", { ascending: true })
+      .limit(500);
+    if (error) setDirectoryError(error.message);
+    else setDirectory(data ?? []);
+  };
+
+  const bind = async (supplier: SupplierRow) => {
+    setBusy(supplier.id);
+    const { error } = await db("restaurant_suppliers").insert({ restaurant_id: account.restaurant_id, supplier_id: supplier.id });
+    setBusy(null);
+    if (error) {
+      toast.error("綁定失敗", { description: error.message });
+      return;
+    }
+    toast.success(`已綁定 ${supplier.name},現在可以直接向他們叫貨`);
+    setAddOpen(false);
+    setReloadKey((k) => k + 1);
+  };
+
+  const unbind = async (partner: Partner) => {
+    setBusy(partner.supplier.id);
+    const { error } = await db("restaurant_suppliers")
+      .delete()
+      .eq("restaurant_id", account.restaurant_id)
+      .eq("supplier_id", partner.supplier.id);
+    setBusy(null);
+    setUnbindTarget(null);
+    if (error) {
+      toast.error("解除綁定失敗", { description: error.message });
+      return;
+    }
+    toast.success(`已解除與 ${partner.supplier.name} 的綁定(進行中的訂單照常處理)`);
+    setReloadKey((k) => k + 1);
+  };
+
+  const candidates = useMemo(() => {
+    const boundIds = new Set(partners.map((p) => p.supplier.id));
+    const q = query.trim().toLowerCase();
+    return (directory ?? [])
+      .filter((d) => !boundIds.has(d.id))
+      .filter((d) => !q || d.name.toLowerCase().includes(q) || (d.description ?? "").toLowerCase().includes(q));
+  }, [directory, partners, query]);
 
   const totals = useMemo(() => ({
     suppliers: partners.length,
@@ -172,31 +250,41 @@ const RestaurantSuppliersPage = () => {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
-          <Store className="h-6 w-6 text-emerald-600" />
-          我的供應商
-        </h1>
-        <p className="text-sm text-slate-500 mt-1">
-          合作過的供應商與他們的表現,準時率或短少率不佳時會提醒你先找備援
-        </p>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
+            <Store className="h-6 w-6 text-emerald-600" />
+            我的供應商
+          </h1>
+          <p className="text-sm text-slate-500 mt-1">
+            綁定合作的供應商,之後可以直接向他們叫貨;也看得到他們的表現,準時率或短少率不佳時會提醒你先找備援
+          </p>
+        </div>
+        {canManage && (
+          <Button onClick={openAdd} className="bg-emerald-600 hover:bg-emerald-700 text-white">
+            <Plus className="h-4 w-4 mr-1.5" />
+            新增合作供應商
+          </Button>
+        )}
       </div>
 
       {partners.length === 0 ? (
         <Card>
           <CardContent className="py-16 text-center">
             <PackageX className="h-10 w-10 mx-auto mb-4 text-slate-300" />
-            <p className="text-slate-600 font-medium">還沒有合作過的供應商</p>
+            <p className="text-slate-600 font-medium">還沒有綁定合作供應商</p>
             <p className="text-sm text-slate-400 mt-1 mb-5">
-              送出第一筆採購需求後,媒合到的供應商就會列在這裡
+              {canManage
+                ? "綁定你固定往來的供應商後,就能直接向他們叫貨"
+                : "請老闆或店長先綁定合作供應商,綁定後就能直接叫貨"}
             </p>
             <div className="flex flex-wrap gap-2 justify-center">
-              <Link to="/restaurant/purchase">
-                <Button className="bg-emerald-600 hover:bg-emerald-700 text-white">
-                  <Truck className="h-4 w-4 mr-1.5" />
-                  去建立採購需求
+              {canManage && (
+                <Button onClick={openAdd} className="bg-emerald-600 hover:bg-emerald-700 text-white">
+                  <Plus className="h-4 w-4 mr-1.5" />
+                  新增合作供應商
                 </Button>
-              </Link>
+              )}
               <Link to="/suppliers">
                 <Button variant="outline">
                   <Store className="h-4 w-4 mr-1.5" />
@@ -276,6 +364,26 @@ const RestaurantSuppliersPage = () => {
                           : <ChevronDown className="h-3.5 w-3.5 mr-1.5" />}
                         {isOpen ? "收起" : "查看績效"}
                       </Button>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2 mb-3">
+                      <Link to={`/restaurant/purchase?supplier=${p.supplier.id}`}>
+                        <Button size="sm" className="bg-emerald-600 hover:bg-emerald-700 text-white">
+                          <Truck className="h-3.5 w-3.5 mr-1.5" />
+                          向他叫貨
+                        </Button>
+                      </Link>
+                      {canManage && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="text-slate-500 hover:text-red-600"
+                          disabled={busy === p.supplier.id}
+                          onClick={() => setUnbindTarget(p)}
+                        >
+                          <Link2Off className="h-3.5 w-3.5 mr-1.5" />
+                          解除綁定
+                        </Button>
+                      )}
                     </div>
 
                     <div className={`grid gap-3 ${showCost ? "grid-cols-3" : "grid-cols-2"} border-t border-slate-100 pt-3`}>
@@ -398,6 +506,76 @@ const RestaurantSuppliersPage = () => {
           </div>
         </>
       )}
+
+      <Dialog open={addOpen} onOpenChange={setAddOpen}>
+        <DialogContent className="max-w-lg max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>新增合作供應商</DialogTitle>
+            <DialogDescription>選擇你固定往來的供應商,綁定後馬上可以直接向他們叫貨(不需要供應商同意)。</DialogDescription>
+          </DialogHeader>
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
+            <Input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="搜尋供應商名稱"
+              aria-label="搜尋供應商"
+              className="pl-9"
+            />
+          </div>
+          {directoryError ? (
+            <p role="alert" className="text-sm text-red-600">載入供應商名單失敗:{directoryError}</p>
+          ) : directory === null ? (
+            <div className="flex justify-center py-8"><Loader2 className="h-5 w-5 animate-spin text-emerald-600" /></div>
+          ) : candidates.length === 0 ? (
+            <p className="text-sm text-slate-400 text-center py-8">
+              {query.trim() ? "找不到符合的供應商" : "沒有可以新增的供應商了"}
+            </p>
+          ) : (
+            <ul className="divide-y divide-slate-100" data-testid="bind-candidates">
+              {candidates.map((d) => (
+                <li key={d.id} className="flex items-center gap-3 py-3">
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-medium text-slate-800 truncate">{d.name}</p>
+                    {d.service_areas && d.service_areas.length > 0 && (
+                      <p className="text-xs text-slate-400 truncate">配送:{d.service_areas.join("、")}</p>
+                    )}
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={busy === d.id}
+                    aria-label={`綁定 ${d.name}`}
+                    onClick={() => void bind(d)}
+                  >
+                    {busy === d.id ? <Loader2 className="h-4 w-4 animate-spin" /> : "綁定"}
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      <AlertDialog open={!!unbindTarget} onOpenChange={(o) => { if (!o) setUnbindTarget(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>解除與 {unbindTarget?.supplier.name} 的綁定?</AlertDialogTitle>
+            <AlertDialogDescription>
+              解除後不能再直接向他叫貨,要用的話可以重新綁定。已經送出、進行中的訂單照常處理,歷史訂單也都還在。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>先不要</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-red-600 hover:bg-red-700"
+              onClick={(e) => { e.preventDefault(); if (unbindTarget) void unbind(unbindTarget); }}
+            >
+              確定解除
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 };

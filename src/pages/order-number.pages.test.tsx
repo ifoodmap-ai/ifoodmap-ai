@@ -157,6 +157,7 @@ const PAGES: PageCase[] = [
         if (q.table === 'supplier_orders') {
           return { data: [{ id: ID, supplier_id: 'sup-1', total_amount: 1800, status: 'delivered', created_at: AT }] };
         }
+        if (q.table === 'restaurant_suppliers') return { data: [{ supplier_id: 'sup-1' }] };
         if (q.table === 'suppliers') {
           return { data: [{ id: 'sup-1', name: '鮮綠農產', description: null, service_areas: [] }] };
         }

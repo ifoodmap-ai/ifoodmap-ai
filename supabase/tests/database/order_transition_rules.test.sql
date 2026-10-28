@@ -11,7 +11,7 @@ BEGIN;
 CREATE EXTENSION IF NOT EXISTS pgtap WITH SCHEMA extensions;
 SET search_path = public, extensions;
 
-SELECT plan(189);
+SELECT plan(192);
 
 -- ---------------------------------------------------------------------
 -- fixture(以資料庫擁有者身分建立)
@@ -57,6 +57,9 @@ INSERT INTO public.suppliers (id, name, is_active) VALUES
   ('e4000000-0000-4000-8000-000000000001', '轉移驗收供應商', true),
   ('e4000000-0000-4000-8000-000000000002', '轉移驗收別家供應商', true),
   ('e4000000-0000-4000-8000-000000000003', '轉移驗收停用供應商', false);
+-- 20261028110000:餐廳直接叫貨(draft→dispatched)的供應商要是這家店已綁定的
+INSERT INTO public.restaurant_suppliers (restaurant_id, supplier_id) VALUES
+  ('e2000000-0000-4000-8000-000000000001', 'e4000000-0000-4000-8000-000000000001');
 INSERT INTO public.supplier_accounts (id, user_id, supplier_id, is_active) VALUES
   ('e5000000-0000-4000-8000-000000000001', 'e1000000-0000-4000-8000-000000000005', 'e4000000-0000-4000-8000-000000000001', true),
   ('e5000000-0000-4000-8000-000000000002', 'e1000000-0000-4000-8000-000000000008', 'e4000000-0000-4000-8000-000000000002', true),
@@ -132,9 +135,10 @@ SELECT ok(
   AND NOT has_function_privilege('authenticated', 'public.order_transition_rules()', 'EXECUTE'),
   'anon / authenticated 不能直接呼叫 order_transition_rules()'
 );
--- 20260929110000 起 102 條(管理員取消進行中的單 7 條、老闆/店長退回重新報價 2 條、系統的聯集 8 條)
-SELECT is((SELECT count(*)::int FROM public.order_transition_rules()), 102, '轉移表共 102 條');
-SELECT is((SELECT count(*)::int FROM (SELECT DISTINCT actor, from_status, to_status FROM public.order_transition_rules()) d), 102, '轉移表沒有重複列');
+-- 20260929110000 起 102 條(管理員取消進行中的單 7 條、老闆/店長退回重新報價 2 條、系統的聯集 8 條);
+-- 20261028110000 起 105 條(老闆/店長/採購員向合作供應商直接叫貨 draft→dispatched,3 條)
+SELECT is((SELECT count(*)::int FROM public.order_transition_rules()), 105, '轉移表共 105 條');
+SELECT is((SELECT count(*)::int FROM (SELECT DISTINCT actor, from_status, to_status FROM public.order_transition_rules()) d), 105, '轉移表沒有重複列');
 SELECT is(
   (SELECT count(*)::int FROM public.order_transition_rules() r
     WHERE r.actor NOT IN ('owner', 'manager', 'purchaser', 'supplier', 'admin', 'system')
@@ -161,27 +165,30 @@ SELECT is(
 );
 
 -- ---------------------------------------------------------------------
--- A. 每一條允許的轉移:各角色各跑一次(102 條;一律帶 note —— 管理員取消進行中的單、退回重新報價要填原因)
+-- A. 每一條允許的轉移:各角色各跑一次(105 條;一律帶 note —— 管理員取消進行中的單、退回重新報價要填原因)
 -- ---------------------------------------------------------------------
 SET LOCAL ROLE authenticated;
 SELECT set_config('request.jwt.claims', '{"sub":"e1000000-0000-4000-8000-000000000001","role":"authenticated"}', true);
 SELECT lives_ok(
-  format($$INSERT INTO public.order_events (order_id, from_status, to_status, actor_role, source, note) VALUES (%L, %L, %L, 'restaurant', 'restaurant_portal', 'A 段探針')$$,
-         c.order_id, c.from_status, c.to_status),
+  format($$INSERT INTO public.order_events (order_id, from_status, to_status, actor_role, source, payload, note) VALUES (%L, %L, %L, 'restaurant', 'restaurant_portal', %L::jsonb, 'A 段探針')$$,
+         c.order_id, c.from_status, c.to_status,
+         CASE c.to_status WHEN 'dispatched' THEN '{"supplier_id":"e4000000-0000-4000-8000-000000000001"}' ELSE '{}' END),
   format('老闆 %s→%s', c.from_status, c.to_status))
   FROM _cases c WHERE c.actor = 'owner' ORDER BY c.n;
 
 SELECT set_config('request.jwt.claims', '{"sub":"e1000000-0000-4000-8000-000000000002","role":"authenticated"}', true);
 SELECT lives_ok(
-  format($$INSERT INTO public.order_events (order_id, from_status, to_status, actor_role, source, note) VALUES (%L, %L, %L, 'restaurant', 'restaurant_portal', 'A 段探針')$$,
-         c.order_id, c.from_status, c.to_status),
+  format($$INSERT INTO public.order_events (order_id, from_status, to_status, actor_role, source, payload, note) VALUES (%L, %L, %L, 'restaurant', 'restaurant_portal', %L::jsonb, 'A 段探針')$$,
+         c.order_id, c.from_status, c.to_status,
+         CASE c.to_status WHEN 'dispatched' THEN '{"supplier_id":"e4000000-0000-4000-8000-000000000001"}' ELSE '{}' END),
   format('店長 %s→%s', c.from_status, c.to_status))
   FROM _cases c WHERE c.actor = 'manager' ORDER BY c.n;
 
 SELECT set_config('request.jwt.claims', '{"sub":"e1000000-0000-4000-8000-000000000003","role":"authenticated"}', true);
 SELECT lives_ok(
-  format($$INSERT INTO public.order_events (order_id, from_status, to_status, actor_role, source, note) VALUES (%L, %L, %L, 'restaurant', 'restaurant_portal', 'A 段探針')$$,
-         c.order_id, c.from_status, c.to_status),
+  format($$INSERT INTO public.order_events (order_id, from_status, to_status, actor_role, source, payload, note) VALUES (%L, %L, %L, 'restaurant', 'restaurant_portal', %L::jsonb, 'A 段探針')$$,
+         c.order_id, c.from_status, c.to_status,
+         CASE c.to_status WHEN 'dispatched' THEN '{"supplier_id":"e4000000-0000-4000-8000-000000000001"}' ELSE '{}' END),
   format('採購員 %s→%s', c.from_status, c.to_status))
   FROM _cases c WHERE c.actor = 'purchaser' ORDER BY c.n;
 
@@ -215,12 +222,12 @@ SELECT lives_ok(
 RESET ROLE;
 SELECT is(
   (SELECT count(*)::int FROM _cases c JOIN public.supplier_orders o ON o.id = c.order_id WHERE o.status = c.to_status),
-  102, 'A 段 102 條轉移全部生效(訂單狀態都同步成目標狀態)'
+  105, 'A 段 105 條轉移全部生效(訂單狀態都同步成目標狀態)'
 );
 SELECT is(
   (SELECT count(*)::int FROM _cases c JOIN public.order_events e ON e.order_id = c.order_id
     WHERE e.from_status = c.from_status AND e.to_status = c.to_status),
-  102, 'A 段每張單剛好一筆事件,from_status 是轉移前的狀態'
+  105, 'A 段每張單剛好一筆事件,from_status 是轉移前的狀態'
 );
 
 -- ---------------------------------------------------------------------

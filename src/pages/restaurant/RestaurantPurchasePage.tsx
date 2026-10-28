@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
-import { useLocation } from "react-router-dom";
+import { Link, useLocation, useSearchParams } from "react-router-dom";
 import {
   Sparkles, Plus, Trash2, Loader2, ShoppingCart, ClipboardCheck,
-  History, Send, PackagePlus, Hourglass, Undo2, Minus,
+  History, Send, PackagePlus, Hourglass, Undo2, Minus, Store,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -89,6 +89,12 @@ interface ManualItem {
   referencePrice: string;
 }
 
+/** 這家店已綁定的合作供應商(叫貨只能叫這些) */
+interface Partner {
+  id: string;
+  name: string;
+}
+
 const DAY = 86_400_000;
 const dayDiff = (a: number, b: number) => Math.max(0, Math.round((a - b) / DAY));
 
@@ -172,6 +178,7 @@ const PriceInput = ({ value, name, unit, onChange }: PriceInputProps) => (
 const RestaurantPurchasePage = () => {
   const account = useRestaurant();
   const mustApprove = needsApproval(account.role);
+  const canBind = account.role === "owner" || account.role === "manager";
   // 形象站 AI 對話剛被認領成草稿時,RestaurantLayout 會帶著 claimedOrderId 導過來
   const claimedOrderId =
     (useLocation().state as Partial<ClaimedDraftLocationState> | null)?.claimedOrderId ?? null;
@@ -181,6 +188,11 @@ const RestaurantPurchasePage = () => {
   const [items, setItems] = useState<HistoryItem[]>([]);
   const [removed, setRemoved] = useState<HistoryItem[]>([]);
   const [reloadKey, setReloadKey] = useState(0);
+  // 合作供應商:叫貨先選一家,訂單直接送給他(從「待接單」開始,不經管理員派發)
+  const [partners, setPartners] = useState<Partner[]>([]);
+  const [supplierId, setSupplierId] = useState<string | null>(null);
+  const [searchParams] = useSearchParams();
+  const preferredSupplier = searchParams.get("supplier");
   // 叫貨品項的商品縮圖:用品名配對往來供應商上架的商品圖片;純裝飾,讀不到就都顯示佔位
   const [thumbOf, setThumbOf] = useState<SupplyImageLookup>(() => () => null);
   // AI 菜單分析頁按「帶到智慧採購」時暫存的食材,進頁時接手
@@ -230,9 +242,10 @@ const RestaurantPurchasePage = () => {
         .limit(300);
 
       // orders 由新到舊:每個品項的單位 / 數量 / 參考價取「最近一次」叫貨時的
-      const history = new Map<string, { dates: number[]; unit: string; quantity: string; price: string; times: number; supplierId: string | null }>();
+      const history = new Map<string, { name: string; dates: number[]; unit: string; quantity: string; price: string; times: number; supplierId: string }>();
       (orders ?? [])
-        .filter((o) => o.status !== "cancelled" && o.status !== "draft")
+        // 沒有供應商的單(還在媒合、等管理員派發)不是例行叫貨,不列進品項
+        .filter((o) => o.status !== "cancelled" && o.status !== "draft" && !!o.supplier_id)
         .forEach((o) => {
           const at = new Date(o.created_at).getTime();
           if (!Number.isFinite(at)) return;
@@ -242,7 +255,8 @@ const RestaurantPurchasePage = () => {
             const name = (raw?.name ?? "").trim();
             if (!name || seen.has(name)) return;
             seen.add(name);
-            const prev = history.get(name);
+            const key = `${o.supplier_id}|${name}`;
+            const prev = history.get(key);
             const qty = raw?.quantity != null ? String(raw.quantity) : "";
             const price = raw?.reference_price != null ? String(raw.reference_price) : "";
             if (prev) {
@@ -250,7 +264,7 @@ const RestaurantPurchasePage = () => {
               prev.times += 1;
               if (!prev.price && price) prev.price = price;
             } else {
-              history.set(name, { dates: [at], unit: raw?.unit ?? "", quantity: qty, price, times: 1, supplierId: o.supplier_id ?? null });
+              history.set(key, { name, dates: [at], unit: raw?.unit ?? "", quantity: qty, price, times: 1, supplierId: o.supplier_id as string });
             }
           });
         });
@@ -258,7 +272,8 @@ const RestaurantPurchasePage = () => {
       const now = Date.now();
       const list: HistoryItem[] = [];
 
-      history.forEach((v, name) => {
+      history.forEach((v) => {
+        const name = v.name;
         const dates = [...v.dates].sort((x, y) => x - y);
         const last = dates[dates.length - 1];
         const daysSince = dayDiff(now, last);
@@ -286,6 +301,37 @@ const RestaurantPurchasePage = () => {
       });
 
       if (!cancelled) setItems(list);
+
+      // 已綁定、還在營業的合作供應商
+      let partnerList: Partner[] = [];
+      try {
+        const { data: bound } = await db<{ supplier_id: string }>("restaurant_suppliers")
+          .select("supplier_id")
+          .eq("restaurant_id", account.restaurant_id);
+        const boundIds = (bound ?? []).map((b) => b.supplier_id);
+        if (boundIds.length > 0) {
+          const { data: sups } = await db<{ id: string; name: string; is_active: boolean | null }>("suppliers")
+            .select("id, name, is_active")
+            .in("id", boundIds);
+          partnerList = (sups ?? [])
+            .filter((x) => x.is_active !== false)
+            .map((x) => ({ id: x.id, name: x.name }))
+            .sort((a, b) => a.name.localeCompare(b.name, "zh-Hant"));
+        }
+      } catch {
+        partnerList = [];
+      }
+      if (!cancelled) {
+        setPartners(partnerList);
+        // 預設選誰:網址指定的(從「我的供應商」按「向他叫貨」帶來)→ 之前選的 → 最近叫過貨的 → 第一家
+        const lastOrdered = (orders ?? []).find((o) => o.supplier_id && partnerList.some((x) => x.id === o.supplier_id))?.supplier_id ?? null;
+        setSupplierId((cur) => {
+          const ids = new Set(partnerList.map((x) => x.id));
+          if (preferredSupplier && ids.has(preferredSupplier)) return preferredSupplier;
+          if (cur && ids.has(cur)) return cur;
+          return lastOrdered ?? partnerList[0]?.id ?? null;
+        });
+      }
 
       try {
         const supplierIds = Array.from(
@@ -329,8 +375,13 @@ const RestaurantPurchasePage = () => {
     source: "ai" | "manual";
   }
 
+  // 只顯示選中的供應商過往叫過的品項(例行叫貨:一張單一家供應商)
+  const visibleItems = useMemo(() => items.filter((i) => i.supplierId === supplierId), [items, supplierId]);
+  const visibleRemoved = useMemo(() => removed.filter((i) => i.supplierId === supplierId), [removed, supplierId]);
+  const supplierName = partners.find((x) => x.id === supplierId)?.name ?? "";
+
   const cart = useMemo(() => {
-    const picked: CartItem[] = items.map((i) => ({
+    const picked: CartItem[] = visibleItems.map((i) => ({
       name: i.name, quantity: i.quantity, unit: i.unit, reference_price: toPrice(i.referencePrice), source: "ai",
     }));
     const extra: CartItem[] = manual.map((m) => ({
@@ -345,19 +396,21 @@ const RestaurantPurchasePage = () => {
       merged.set(name, { ...rest, name, ...(reference_price !== undefined ? { reference_price } : {}) });
     });
     return [...merged.values()];
-  }, [items, manual]);
+  }, [visibleItems, manual]);
+
+  const same = (a: HistoryItem, b: { name: string; supplierId: string | null }) => a.name === b.name && a.supplierId === b.supplierId;
 
   const updateItem = (name: string, patch: Partial<HistoryItem>) =>
-    setItems((prev) => prev.map((x) => (x.name === name ? { ...x, ...patch } : x)));
+    setItems((prev) => prev.map((x) => (same(x, { name, supplierId }) ? { ...x, ...patch } : x)));
 
   const removeItem = (item: HistoryItem) => {
-    setItems((prev) => prev.filter((x) => x.name !== item.name));
-    setRemoved((prev) => (prev.some((x) => x.name === item.name) ? prev : [...prev, item]));
+    setItems((prev) => prev.filter((x) => !same(x, item)));
+    setRemoved((prev) => (prev.some((x) => same(x, item)) ? prev : [...prev, item]));
   };
 
   const restoreItem = (item: HistoryItem) => {
-    setRemoved((prev) => prev.filter((x) => x.name !== item.name));
-    setItems((prev) => (prev.some((x) => x.name === item.name) ? prev : [...prev, item]));
+    setRemoved((prev) => prev.filter((x) => !same(x, item)));
+    setItems((prev) => (prev.some((x) => same(x, item)) ? prev : [...prev, item]));
   };
 
   const addManual = (name?: string, quantity?: string, unit?: string) => {
@@ -378,6 +431,10 @@ const RestaurantPurchasePage = () => {
   };
 
   const submit = async () => {
+    if (!supplierId) {
+      toast.error("請先選擇要叫貨的合作供應商");
+      return;
+    }
     if (cart.length === 0) {
       toast.error("請先加入至少一項食材");
       return;
@@ -391,6 +448,7 @@ const RestaurantPurchasePage = () => {
       return;
     }
     setSubmitting(true);
+    let draftId: string | null = null;
     try {
       const { data, error } = await db<{ id: string }>("supplier_orders")
         .insert({
@@ -405,21 +463,20 @@ const RestaurantPurchasePage = () => {
         .single();
 
       if (error || !data) throw new Error(error?.message ?? "建立採購單失敗");
+      draftId = data.id;
 
-      if (mustApprove) {
-        toast.success("已建立採購單,等待老闆或店長簽核");
-      } else {
-        await recordOrderEvent({
-          orderId: data.id,
-          fromStatus: "draft",
-          toStatus: "submitted",
-          actorRole: "restaurant",
-          source: "restaurant_portal",
-          note: `${account.restaurant_name} 送出採購需求(${cart.length} 項)`,
-          payload: { item_count: cart.length },
-        });
-        toast.success("採購需求已送出,ifoodmap 將盡快媒合供應商");
-      }
+      // 向綁定的合作供應商叫貨:草稿直接進供應商的「待接單」,不經管理員派發,採購員也不用簽核。
+      // 供應商一定要是這家店已綁定的 —— 資料庫會檢查(guard_restaurant_direct_dispatch)
+      await recordOrderEvent({
+        orderId: data.id,
+        fromStatus: "draft",
+        toStatus: "dispatched",
+        actorRole: "restaurant",
+        source: "restaurant_portal",
+        note: `${account.restaurant_name} 向 ${supplierName} 叫貨(${cart.length} 項)`,
+        payload: { supplier_id: supplierId, item_count: cart.length },
+      });
+      toast.success(`已送出給 ${supplierName},等待供應商接單`);
 
       // 剛送出的品項會變成「最近一次叫貨」:重抓一次,清單回到乾淨的起點
       setReloadKey((k) => k + 1);
@@ -427,6 +484,22 @@ const RestaurantPurchasePage = () => {
       setNotes("");
       await loadDrafts();
     } catch (e) {
+      // 草稿建好了、叫貨卻被擋下(例如剛好被解除綁定):把這張草稿取消,免得變成待簽核區裡一張沒人要的單
+      if (draftId) {
+        try {
+          await recordOrderEvent({
+            orderId: draftId,
+            fromStatus: "draft",
+            toStatus: "cancelled",
+            actorRole: "restaurant",
+            source: "restaurant_portal",
+            note: "叫貨失敗,自動取消草稿",
+          });
+        } catch {
+          /* 取消不了就留著,不再打斷錯誤訊息 */
+        }
+        await loadDrafts();
+      }
       toast.error("送出失敗", { description: (e as Error).message });
     } finally {
       setSubmitting(false);
@@ -530,7 +603,7 @@ const RestaurantPurchasePage = () => {
           智慧採購
         </h1>
         <p className="text-sm text-slate-500 mt-1">
-          叫過的品項會自動列在下面,調整數量、刪掉不需要的,就能送出採購需求
+          選一家合作供應商,叫過的品項會自動列在下面,調整數量、刪掉不需要的,就能直接向他叫貨
         </p>
       </div>
 
@@ -630,34 +703,85 @@ const RestaurantPurchasePage = () => {
         </AlertDialogContent>
       </AlertDialog>
 
+      {partners.length === 0 ? (
+        <Card data-testid="no-partners">
+          <CardContent className="py-14 text-center">
+            <Store className="h-10 w-10 mx-auto mb-4 text-slate-300" />
+            <p className="text-slate-600 font-medium">還沒有綁定合作供應商</p>
+            <p className="text-sm text-slate-400 mt-1 mb-5">
+              {canBind
+                ? "先綁定你固定往來的供應商,就能直接向他們叫貨"
+                : "請老闆或店長先綁定合作供應商,綁定後就能直接叫貨"}
+            </p>
+            <Link to="/restaurant/suppliers">
+              <Button className="bg-emerald-600 hover:bg-emerald-700 text-white">
+                <Store className="h-4 w-4 mr-1.5" />
+                {canBind ? "去綁定合作供應商" : "查看我的供應商"}
+              </Button>
+            </Link>
+          </CardContent>
+        </Card>
+      ) : (
+      <>
+      {/* 向哪家合作供應商叫貨 */}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base flex items-center gap-2">
+            <Store className="h-4 w-4 text-emerald-600" />
+            向哪家供應商叫貨
+          </CardTitle>
+          <p className="text-xs text-slate-400">一張單向一家叫貨;要向多家叫貨就分開送出。想新增合作供應商請到「我的供應商」。</p>
+        </CardHeader>
+        <CardContent>
+          <div className="flex flex-wrap gap-2" role="radiogroup" aria-label="合作供應商">
+            {partners.map((x) => (
+              <button
+                key={x.id}
+                type="button"
+                role="radio"
+                aria-checked={supplierId === x.id}
+                onClick={() => setSupplierId(x.id)}
+                className={`px-4 py-1.5 rounded-full text-sm border transition-colors ${
+                  supplierId === x.id
+                    ? "bg-emerald-600 border-emerald-600 text-white"
+                    : "bg-white border-slate-200 text-slate-600 hover:border-emerald-300"
+                }`}
+              >
+                {x.name}
+              </button>
+            ))}
+          </div>
+        </CardContent>
+      </Card>
+
       {/* 過往叫貨品項:全部列出,預設都在這張單裡 */}
       <Card>
         <CardHeader className="pb-3">
           <CardTitle className="text-base flex items-center gap-2">
             <Sparkles className="h-4 w-4 text-emerald-600" />
             過往叫貨品項
-            {items.length > 0 && <span className="text-xs font-normal text-slate-400">共 {items.length} 項</span>}
+            {visibleItems.length > 0 && <span className="text-xs font-normal text-slate-400">共 {visibleItems.length} 項</span>}
           </CardTitle>
-          {items.length > 0 && (
+          {visibleItems.length > 0 && (
             <p className="text-xs text-slate-400">
               用 + − 或直接輸入數字調整數量,不需要的按垃圾桶移除;參考價是你預期的單價,選填
             </p>
           )}
         </CardHeader>
         <CardContent>
-          {items.length === 0 ? (
+          {visibleItems.length === 0 ? (
             <div className="text-center py-10 text-slate-400">
               <History className="h-9 w-9 mx-auto mb-3 opacity-40" />
-              <p className="text-sm">{removed.length > 0 ? "叫過的品項都已移除" : "還沒有叫過貨的品項"}</p>
+              <p className="text-sm">{visibleRemoved.length > 0 ? "叫過的品項都已移除" : "還沒有叫過貨的品項"}</p>
               <p className="text-xs mt-1">
-                {removed.length > 0
+                {visibleRemoved.length > 0
                   ? "可以從下方「已移除的品項」加回來,或手動加入新品項"
                   : "送出第一張採購單之後,叫過的品項會自動列在這裡,下次不用再一個個加入"}
               </p>
             </div>
           ) : (
             <div className="divide-y divide-slate-100" data-testid="history-items">
-              {items.map((i) => {
+              {visibleItems.map((i) => {
                 const overdue = i.due && i.daysSince >= i.avgCycle * 1.5;
                 return (
                   <div key={i.name} data-testid="history-item" className="flex flex-wrap items-center gap-x-3 gap-y-2 py-3">
@@ -714,11 +838,11 @@ const RestaurantPurchasePage = () => {
             </div>
           )}
 
-          {removed.length > 0 && (
+          {visibleRemoved.length > 0 && (
             <div className="mt-4 border-t border-slate-100 pt-3">
               <p className="text-xs text-slate-400 mb-2">已移除的品項,點一下加回</p>
               <div className="flex flex-wrap gap-1.5">
-                {removed.map((r) => (
+                {visibleRemoved.map((r) => (
                   <button
                     key={r.name}
                     type="button"
@@ -839,21 +963,23 @@ const RestaurantPurchasePage = () => {
             placeholder="備註（送貨時間、規格要求…）"
           />
           <div className="flex flex-col sm:flex-row sm:items-center gap-3">
-            <p className="text-sm text-slate-500 flex-1">
-              目前共 <span className="font-semibold text-slate-800">{cart.length}</span> 項
-              {mustApprove && <span className="text-amber-600">（採購員建立的採購單要由老闆或店長簽核後才會送出）</span>}
+            <p className="text-sm text-slate-500 flex-1" data-testid="order-summary">
+              向 <span className="font-semibold text-slate-800">{supplierName}</span> 叫貨,目前共{" "}
+              <span className="font-semibold text-slate-800">{cart.length}</span> 項
             </p>
             <Button
               onClick={submit}
-              disabled={submitting || cart.length === 0}
+              disabled={submitting || cart.length === 0 || !supplierId}
               className="bg-emerald-600 hover:bg-emerald-700 text-white"
             >
               {submitting ? <Loader2 className="h-4 w-4 animate-spin mr-1.5" /> : <Send className="h-4 w-4 mr-1.5" />}
-              {mustApprove ? "送交簽核" : "送出採購需求"}
+              送出訂單
             </Button>
           </div>
         </CardContent>
       </Card>
+      </>
+      )}
     </div>
   );
 };

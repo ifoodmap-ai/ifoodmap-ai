@@ -17,6 +17,8 @@ const { state, recordOrderEvent, toast } = vi.hoisted(() => ({
     history: [] as Record<string, unknown>[],
     supplies: [] as Record<string, unknown>[],
     suppliesFail: false,
+    /** 這家店已綁定的合作供應商 */
+    bound: ["sup-1"] as string[],
   },
   recordOrderEvent: vi.fn(),
   toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() },
@@ -26,6 +28,11 @@ const fakeFrom = (table: string) => {
   const call: Call = { table, op: "select", filters: [] };
   const result = () => {
     state.calls.push(call);
+    if (table === "restaurant_suppliers") return { data: state.bound.map((id) => ({ supplier_id: id })), error: null };
+    if (table === "suppliers") {
+      const all = [{ id: "sup-1", name: "阿明蔬果", is_active: true }, { id: "sup-2", name: "大海水產", is_active: true }, { id: "sup-3", name: "已歇業行", is_active: false }];
+      return { data: all.filter((x) => state.bound.includes(x.id)), error: null };
+    }
     if (table === "supplies") {
       if (state.suppliesFail) throw new Error("supplies 讀取失敗");
       return { data: state.supplies, error: null };
@@ -115,6 +122,7 @@ beforeEach(() => {
   state.history = HISTORY.map((o) => ({ ...o }));
   state.supplies = [];
   state.suppliesFail = false;
+  state.bound = ["sup-1"];
   recordOrderEvent.mockReset();
   recordOrderEvent.mockResolvedValue({});
   toast.error.mockReset();
@@ -142,7 +150,7 @@ describe("RestaurantPurchasePage — 過往叫貨品項自動列出", () => {
     // 數量、單位、參考價帶入「最近一次」叫貨時的值
     expect(within(rows[0]).getByLabelText("高麗菜 數量")).toHaveValue("5");
     expect(within(rows[0]).getByLabelText("高麗菜 參考價")).toHaveValue("35");
-    expect(screen.getByText(/目前共/)).toHaveTextContent("目前共 2 項");
+    expect(screen.getByTestId("order-summary")).toHaveTextContent("目前共 2 項");
   });
 
   it("按 + / − 調整數量,最少停在 1", async () => {
@@ -167,7 +175,7 @@ describe("RestaurantPurchasePage — 過往叫貨品項自動列出", () => {
     await user.type(qty, "a1b2.5");
     expect(qty).toHaveValue("12.5");
 
-    await user.click(screen.getByRole("button", { name: "送出採購需求" }));
+    await user.click(screen.getByRole("button", { name: "送出訂單" }));
     await waitFor(() => expect(recordOrderEvent).toHaveBeenCalled());
     expect(insertedList().find((i) => i.name === "雞蛋")).toEqual(
       expect.objectContaining({ quantity: "12.5", unit: "箱" }),
@@ -180,13 +188,13 @@ describe("RestaurantPurchasePage — 過往叫貨品項自動列出", () => {
 
     await user.click(await screen.findByRole("button", { name: "移除 雞蛋" }));
     expect(screen.getAllByTestId("history-item")).toHaveLength(1);
-    expect(screen.getByText(/目前共/)).toHaveTextContent("目前共 1 項");
+    expect(screen.getByTestId("order-summary")).toHaveTextContent("目前共 1 項");
 
     await user.click(screen.getByRole("button", { name: "+ 雞蛋" }));
     expect(screen.getAllByTestId("history-item")).toHaveLength(2);
 
     await user.click(screen.getByRole("button", { name: "移除 雞蛋" }));
-    await user.click(screen.getByRole("button", { name: "送出採購需求" }));
+    await user.click(screen.getByRole("button", { name: "送出訂單" }));
     await waitFor(() => expect(recordOrderEvent).toHaveBeenCalled());
     expect(insertedList().map((i) => i.name)).toEqual(["高麗菜"]);
   });
@@ -197,7 +205,7 @@ describe("RestaurantPurchasePage — 過往叫貨品項自動列出", () => {
     const row = await rowOf("雞蛋");
 
     await user.type(within(row).getByLabelText("雞蛋 參考價"), "620");
-    await user.click(screen.getByRole("button", { name: "送出採購需求" }));
+    await user.click(screen.getByRole("button", { name: "送出訂單" }));
     await waitFor(() => expect(recordOrderEvent).toHaveBeenCalled());
 
     const list = insertedList();
@@ -216,7 +224,7 @@ describe("RestaurantPurchasePage — 過往叫貨品項自動列出", () => {
     await user.type(await screen.findByPlaceholderText("食材名稱,例:高麗菜"), "牛肉");
     await user.type(screen.getByLabelText("參考價"), "480");
     await user.click(screen.getByRole("button", { name: "加入" }));
-    await user.click(screen.getByRole("button", { name: "送出採購需求" }));
+    await user.click(screen.getByRole("button", { name: "送出訂單" }));
     await waitFor(() => expect(recordOrderEvent).toHaveBeenCalled());
 
     expect(insertedList()).toEqual([
@@ -230,7 +238,7 @@ describe("RestaurantPurchasePage — 過往叫貨品項自動列出", () => {
     const row = await rowOf("雞蛋");
 
     await user.clear(within(row).getByLabelText("雞蛋 數量"));
-    await user.click(screen.getByRole("button", { name: "送出採購需求" }));
+    await user.click(screen.getByRole("button", { name: "送出訂單" }));
 
     expect(toast.error).toHaveBeenCalledWith("請確認每一項的數量", expect.anything());
     expect(state.calls.some((c) => c.op === "insert")).toBe(false);
@@ -285,6 +293,96 @@ describe("RestaurantPurchasePage — 過往叫貨品項自動列出", () => {
       renderPage();
       expect(await screen.findAllByTestId("history-item")).toHaveLength(2);
       expect(screen.queryByRole("img")).toBeNull();
+    });
+  });
+
+  describe("選合作供應商,直接叫貨", () => {
+    const orderTo = (id: string, supplier: string, at: string, items: unknown[]) => ({ ...order(id, at, items), supplier_id: supplier });
+
+    it("預設選最近叫過貨的供應商;每家各自列自己叫過的品項,切換供應商清單跟著換", async () => {
+      state.bound = ["sup-1", "sup-2"];
+      state.history = [
+        orderTo("o-9", "sup-2", daysAgo(3), [{ name: "吳郭魚", quantity: "4", unit: "kg" }]),
+        orderTo("o-3", "sup-1", daysAgo(10), [{ name: "高麗菜", quantity: "5", unit: "kg" }]),
+      ];
+      const user = userEvent.setup();
+      renderPage();
+
+      expect(await screen.findByRole("radio", { name: "大海水產" })).toHaveAttribute("aria-checked", "true");
+      expect((await screen.findAllByTestId("history-item")).map((r) => r.textContent)).toEqual([expect.stringContaining("吳郭魚")]);
+
+      await user.click(screen.getByRole("radio", { name: "阿明蔬果" }));
+      const rows = screen.getAllByTestId("history-item");
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toHaveTextContent("高麗菜");
+      expect(screen.getByTestId("order-summary")).toHaveTextContent("向 阿明蔬果 叫貨,目前共 1 項");
+    });
+
+    it("網址帶 ?supplier=… 就預選那一家(從「我的供應商」按「向他叫貨」過來)", async () => {
+      state.bound = ["sup-1", "sup-2"];
+      state.history = [orderTo("o-9", "sup-2", daysAgo(3), [{ name: "吳郭魚", quantity: "4", unit: "kg" }])];
+      render(
+        <MemoryRouter initialEntries={["/restaurant/purchase?supplier=sup-1"]}>
+          <RestaurantPurchasePage />
+        </MemoryRouter>,
+      );
+      expect(await screen.findByRole("radio", { name: "阿明蔬果" })).toHaveAttribute("aria-checked", "true");
+    });
+
+    it("送出:訂單直接進供應商的待接單(draft → dispatched),帶著選的供應商,不經管理員派發", async () => {
+      state.bound = ["sup-1", "sup-2"];
+      const user = userEvent.setup();
+      renderPage();
+      await user.click(await screen.findByRole("radio", { name: "大海水產" }));
+      await user.type(screen.getByPlaceholderText("食材名稱,例:高麗菜"), "吳郭魚");
+      await user.click(screen.getByRole("button", { name: "加入" }));
+      await user.click(screen.getByRole("button", { name: "送出訂單" }));
+
+      await waitFor(() => expect(recordOrderEvent).toHaveBeenCalledTimes(1));
+      expect(recordOrderEvent).toHaveBeenCalledWith(
+        expect.objectContaining({ fromStatus: "draft", toStatus: "dispatched", payload: expect.objectContaining({ supplier_id: "sup-2" }) }),
+      );
+      expect(insertedList().map((i) => i.name)).toEqual(["吳郭魚"]);
+    });
+
+    it("沒有綁定任何供應商:不能叫貨,引導到「我的供應商」綁定(老闆 / 店長有按鈕文字不同)", async () => {
+      state.bound = [];
+      renderPage();
+      const empty = await screen.findByTestId("no-partners");
+      expect(empty).toHaveTextContent("還沒有綁定合作供應商");
+      expect(within(empty).getByRole("link", { name: /去綁定合作供應商/ })).toHaveAttribute("href", "/restaurant/suppliers");
+      expect(screen.queryByRole("button", { name: "送出訂單" })).toBeNull();
+    });
+
+    it("已歇業的供應商不能選(綁定了也一樣)", async () => {
+      state.bound = ["sup-1", "sup-3"];
+      renderPage();
+      await screen.findByRole("radio", { name: "阿明蔬果" });
+      expect(screen.queryByRole("radio", { name: "已歇業行" })).toBeNull();
+    });
+
+    it("叫貨被資料庫擋下(例如剛好被解除綁定):顯示原因,並把剛建的草稿取消,不留在待簽核區", async () => {
+      recordOrderEvent.mockRejectedValueOnce(new Error("只能向已綁定的合作供應商叫貨,請先到「我的供應商」綁定"));
+      const user = userEvent.setup();
+      renderPage();
+      await rowOf("高麗菜");
+      await user.click(screen.getByRole("button", { name: "送出訂單" }));
+
+      await waitFor(() => expect(toast.error).toHaveBeenCalledWith("送出失敗", { description: expect.stringContaining("只能向已綁定的合作供應商叫貨") }));
+      expect(recordOrderEvent).toHaveBeenCalledTimes(2);
+      expect(recordOrderEvent).toHaveBeenLastCalledWith(
+        expect.objectContaining({ orderId: "new-order-1", fromStatus: "draft", toStatus: "cancelled" }),
+      );
+    });
+
+    it("沒有供應商的舊單(還在媒合)不列進叫貨品項", async () => {
+      state.history = [
+        { ...order("o-1", daysAgo(5), [{ name: "媒合中的品項", quantity: "1", unit: "kg" }], "submitted"), supplier_id: null },
+        ...HISTORY.map((o) => ({ ...o })),
+      ];
+      renderPage();
+      await screen.findAllByTestId("history-item");
+      expect(screen.queryByText("媒合中的品項")).toBeNull();
     });
   });
 });

@@ -315,3 +315,54 @@ describe("RestaurantOrdersPage — 申請爭議一次交易完成(F7)", () => {
   });
 });
 
+
+describe("RestaurantOrdersPage — 採購系統的訂單沒有「待派發」", () => {
+  const unassigned = (id: string, status: string) => ({ ...order(id, status), supplier_id: null });
+
+  it("還在媒合的需求(沒有供應商、待派發)不列在這頁,只提示張數;有供應商的單照列", async () => {
+    state.listRows = [
+      order("aaaaaaaa-0000-4000-8000-00000000q001", "quoted"),
+      unassigned("aaaaaaaa-0000-4000-8000-00000000m001", "submitted"),
+      unassigned("aaaaaaaa-0000-4000-8000-00000000m002", "submitted"),
+    ];
+    renderPage();
+
+    expect(await screen.findByText("#0000Q001")).toBeInTheDocument();
+    expect(screen.queryByText("#0000M001")).toBeNull();
+    expect(screen.queryByText("#0000M002")).toBeNull();
+    expect(screen.queryByText("尚未指派供應商")).toBeNull();
+    expect(screen.getByTestId("matching-notice")).toHaveTextContent("另有 2 筆還在媒合的需求");
+    // 分頁的張數也只算採購系統的訂單
+    expect(screen.getByRole("button", { name: /全部\s*1/ })).toBeInTheDocument();
+  });
+
+  it("舊資料的「待處理」(pending)與「待派發」就算有供應商也不列", async () => {
+    state.listRows = [
+      order("aaaaaaaa-0000-4000-8000-00000000q001", "quoted"),
+      order("aaaaaaaa-0000-4000-8000-00000000p001", "pending"),
+      order("aaaaaaaa-0000-4000-8000-00000000s001", "submitted"),
+    ];
+    renderPage();
+
+    expect(await screen.findByText("#0000Q001")).toBeInTheDocument();
+    expect(screen.queryByText("#0000P001")).toBeNull();
+    expect(screen.queryByText("#0000S001")).toBeNull();
+  });
+
+  it("沒有還在媒合的需求時不顯示提示", async () => {
+    renderPage();
+    await screen.findByText("#0000Q001");
+    expect(screen.queryByTestId("matching-notice")).toBeNull();
+  });
+
+  it("進度條從「待接單」開始,沒有「待派發」這一格", async () => {
+    state.listRows = [order("aaaaaaaa-0000-4000-8000-00000000a001", "dispatched")];
+    renderPage();
+
+    await screen.findByText("#0000A001");
+    expect(screen.queryByText("待派發")).toBeNull();
+    // 「待接單」同時是狀態標籤與進度條第一格
+    expect(screen.getAllByText("待接單").length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByText("已評價")).toBeInTheDocument();
+  });
+});

@@ -2082,3 +2082,28 @@ Expected:`market_mails_15m` = `{"sent": 4}`(**通知紀錄 4 筆 sent**,沒有 `
 - 物件只能寫一次(bucket 沒有 UPDATE / DELETE policy):換掉、移除圖片後舊檔留在 bucket 當孤兒檔,跟零售商品照片一樣。
 - 叫貨頁只有品名,沒有商品 id:用「品名」配對往來供應商上架的商品(先同供應商、再任何一家;全形半形、大小寫、空白不影響),
   配不到就顯示品名第一個字的佔位 —— 寧可沒圖不配錯圖。讀商品圖片失敗不影響叫貨。
+
+## 合作供應商綁定與直接叫貨(2026-10-28)
+
+媒合平台(找供應商、管理員派單)與採購系統(例行叫貨)的介面是分開的。採購系統裡餐廳向「既定的合作供應商」叫貨:
+餐廳先在「我的供應商」綁定供應商,之後叫貨選一家,訂單直接進供應商的「待接單」,**不經過「待派發」與管理員派單、採購員也不用簽核**。
+
+| 項目 | 位置 |
+| --- | --- |
+| SQL(綁定表 `restaurant_suppliers`、轉移表 102 → 105 條、`guard_order_submission` 例外、`guard_restaurant_direct_dispatch`) | `supabase/migrations/20261028110000_restaurant_supplier_binding.sql`(rollback:`supabase/rollbacks/20261028110000_restaurant_supplier_binding.down.sql`) |
+| 資料庫測試(PGlite 重放真正的訂單狀態機 migration 再套這一支) | `supabase/tests/restaurant_supplier_binding.test.ts` |
+| pgTAP 同步(條數 105、直接叫貨要先綁定) | `supabase/tests/database/order_transition_rules.test.sql`、`order_cancel_requote.test.sql`、`restaurant_draft_approval.test.sql` |
+| 前端 | 「我的供應商」(綁定 / 解除)、「叫貨」(選供應商、直接送出)、「我的訂單」(沒有待派發、不列還在媒合的單) |
+
+**部署順序:先套 migration、再 push 前端。** 前端先上線的話,叫貨會因為資料表與規則還沒更新而失敗。
+
+規則:
+- 綁定由老闆 / 店長新增與解除,**立刻生效、不需要供應商接受**;採購員只能看與叫貨。既有往來(收過貨)在 migration 時自動補成已綁定。
+- 餐廳身分寫 `→ dispatched` 的事件,`payload.supplier_id` 一定要是這家店已綁定、還在營業的供應商(`guard_restaurant_direct_dispatch`),前端傳什麼都不採信。
+- 原本的流程不動:草稿送出(→ submitted,老闆 / 店長簽核)與管理員派單照舊 —— 那是媒合平台的流程(例如形象站 AI 對話帶進來的草稿)。
+- 「我的訂單」不列沒有供應商或還在待派發的單(資料保留不刪,管理員仍可派發),只提示張數;進度條從「待接單」開始。
+- 解除綁定不影響已經送出、進行中的訂單。
+
+pgTAP 沒辦法在本機跑(沒有 Postgres):套用前用乾跑驗證(不會 commit):
+`node scripts/supabase-sql.mjs dry supabase/tests/database/order_transition_rules.test.sql --with-migration supabase/migrations/20261028110000_restaurant_supplier_binding.sql`
+(另外兩支同理);套用走 `node scripts/supabase-sql.mjs apply supabase/migrations/20261028110000_restaurant_supplier_binding.sql`。

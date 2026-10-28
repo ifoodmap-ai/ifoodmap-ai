@@ -128,8 +128,8 @@ SELECT throws_ok(
 SELECT throws_ok(
   $$INSERT INTO public.order_events (order_id, from_status, to_status, actor_id, actor_role, source)
     VALUES ('d6000000-0000-4000-8000-000000000002', 'draft', 'dispatched', 'd1000000-0000-4000-8000-000000000003', 'restaurant', 'restaurant_portal')$$,
-  '42501', '採購單要由這家餐廳的老闆或店長簽核後才能送出',
-  '採購員跳關(draft→dispatched,單上已填供應商)被拒'
+  '42501', '只能向已綁定的合作供應商叫貨,請先到「我的供應商」綁定',
+  '採購員跳關(draft→dispatched,沒有帶已綁定的供應商)被拒(20261028110000 起:向合作供應商直接叫貨不用簽核,但供應商一定要是已綁定的)'
 );
 SELECT throws_ok(
   $$INSERT INTO public.order_events (order_id, from_status, to_status, actor_id, actor_role, source)

@@ -81,7 +81,7 @@ INSERT INTO public.order_quotes (order_id, supplier_id, total_amount, status) VA
 -- ---------------------------------------------------------------------
 -- 0. migration 本身
 -- ---------------------------------------------------------------------
-SELECT is((SELECT count(*)::int FROM public.order_transition_rules()), 102, '轉移表 102 條');
+SELECT is((SELECT count(*)::int FROM public.order_transition_rules()), 105, '轉移表 105 條(20261028110000 加了老闆/店長/採購員的 draft→dispatched)');
 SELECT is(
   (SELECT string_agg(from_status, ',' ORDER BY from_status) FROM public.order_transition_rules() WHERE actor = 'admin' AND to_status = 'cancelled'),
   'accepted,confirmed,dispatched,draft,expired,in_transit,pending,quoted,rejected,sent,shipped,submitted',

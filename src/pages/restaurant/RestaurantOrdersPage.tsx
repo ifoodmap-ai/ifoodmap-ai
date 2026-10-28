@@ -180,6 +180,16 @@ const statusMeta = (status: OrderStatus) =>
     waitingOn: null,
   };
 
+/**
+ * 採購系統是向「既定的合作供應商」叫貨,供應商本來就確定了:訂單從「待接單」開始,沒有「待派發」(管理員派單)這一步。
+ * 管理員派單是媒合平台的流程,不列在這頁。
+ */
+const ORDER_STAGES = PIPELINE_STAGES.filter((stage) => stage !== "submitted");
+
+/** 這張單算不算「採購系統的訂單」:有供應商,而且不是還在等管理員派發(待派發 / 舊資料待處理) */
+const isProcurementOrder = (o: { supplier_id: string | null; status: string }) =>
+  !!o.supplier_id && o.status !== "submitted" && o.status !== "pending" && o.status !== "draft";
+
 /** 橫向流程步驟條;異常狀態整條轉為灰階並在上方另外提示 */
 const PipelineBar = ({ status }: { status: OrderStatus }) => {
   const current = statusMeta(status).step;
@@ -188,7 +198,7 @@ const PipelineBar = ({ status }: { status: OrderStatus }) => {
   return (
     <div className="overflow-x-auto pb-1">
       <div className="flex min-w-[620px] items-start">
-        {PIPELINE_STAGES.map((stage, i) => {
+        {ORDER_STAGES.map((stage, i) => {
           const step = statusMeta(stage).step;
           const done = !abnormal && step < current;
           const active = !abnormal && step === current;
@@ -212,7 +222,7 @@ const PipelineBar = ({ status }: { status: OrderStatus }) => {
                   />
                   <div
                     className={`h-0.5 flex-1 ${
-                      i === PIPELINE_STAGES.length - 1
+                      i === ORDER_STAGES.length - 1
                         ? "bg-transparent"
                         : done
                           ? "bg-emerald-400"
@@ -248,6 +258,8 @@ export default function RestaurantOrdersPage() {
   const [orders, setOrders] = useState<OrderRow[]>([]);
   /** 待簽核的草稿張數 —— 草稿不在這頁列出,只在頂端提示並連到叫貨分頁 */
   const [draftCount, setDraftCount] = useState(0);
+  // 還在媒合的需求(沒有供應商、等管理員派發):不是採購系統的訂單,這頁不列,只提示張數
+  const [matchingCount, setMatchingCount] = useState(0);
   const [supplierMap, setSupplierMap] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<TabKey>("all");
@@ -299,7 +311,9 @@ export default function RestaurantOrdersPage() {
       setOrders([]);
       return;
     }
-    setOrders((data ?? []).filter((o) => o.status !== "draft"));
+    const all = (data ?? []).filter((o) => o.status !== "draft");
+    setOrders(all.filter(isProcurementOrder));
+    setMatchingCount(all.length - all.filter(isProcurementOrder).length);
   }, [restaurant_id]);
 
   useEffect(() => {
@@ -559,6 +573,12 @@ export default function RestaurantOrdersPage() {
         追蹤每一張採購單的進度,貨到請務必按「已收到貨」—— 這是我們與供應商對帳的依據
         {!showCost && "(採購員身分不顯示金額)"}
       </p>
+
+      {matchingCount > 0 && (
+        <p data-testid="matching-notice" className="mb-5 text-xs text-slate-400">
+          另有 {matchingCount} 筆還在媒合的需求(還沒有供應商),不列在採購訂單裡。
+        </p>
+      )}
 
       {/* 待簽核的草稿:只提示張數,送出/退回在叫貨分頁 */}
       {draftCount > 0 && (

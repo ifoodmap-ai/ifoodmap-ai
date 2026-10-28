@@ -86,7 +86,8 @@ export const PIPELINE_STAGES: OrderStatus[] = [
 /** 各角色在某狀態下可以推進到哪些狀態 —— 前端按鈕的唯一依據 */
 const TRANSITIONS: Record<ActorRole, Partial<Record<OrderStatus, OrderStatus[]>>> = {
   restaurant: {
-    draft:      ["submitted", "cancelled"],
+    // dispatched = 向已綁定的合作供應商直接叫貨(採購員也可以,不需簽核;供應商是否已綁定由資料庫檢查)
+    draft:      ["submitted", "cancelled", "dispatched"],
     // accepted = 退回重新報價(只有老闆/店長,要填原因;見 RESTAURANT_APPROVER_ONLY)
     quoted:     ["confirmed", "accepted", "cancelled"],
     // ★ received 只有餐廳能觸發 —— GMV 可信度的來源

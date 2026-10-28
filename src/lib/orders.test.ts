@@ -95,8 +95,8 @@ const frontRules = (): Set<string> => {
 };
 
 describe("轉移表:前端 TRANSITIONS 與資料庫 order_transition_rules() 逐條一致", () => {
-  it("資料庫共 102 條", () => {
-    expect(dbRules().size).toBe(102);
+  it("資料庫共 105 條", () => {
+    expect(dbRules().size).toBe(105);
   });
 
   it("兩邊完全相同(多一條、少一條都不行)", () => {
@@ -201,7 +201,9 @@ describe("20260929110000:退回重新報價、管理員取消進行中的單", (
     expect(restaurantTransitions("owner", "quoted")).toEqual(["confirmed", "accepted", "cancelled"]);
     expect(restaurantTransitions("manager", "quoted")).toEqual(["confirmed", "accepted", "cancelled"]);
     expect(restaurantTransitions("purchaser", "quoted")).toEqual(["confirmed", "cancelled"]);
-    expect(restaurantTransitions("purchaser", "draft")).toEqual(["cancelled"]);
+    // 採購員不能送出簽核(submitted),但可以向合作供應商直接叫貨(dispatched,20261028110000)
+    expect(restaurantTransitions("purchaser", "draft")).toEqual(["cancelled", "dispatched"]);
+    expect(restaurantTransitions("owner", "draft")).toEqual(["submitted", "cancelled", "dispatched"]);
     expect(restaurantTransitions("owner", "confirmed")).toEqual([]);
   });
 

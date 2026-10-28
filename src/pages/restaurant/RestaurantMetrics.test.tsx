@@ -67,6 +67,8 @@ beforeEach(() => {
   fakeSupabase.reset();
   fakeSupabase.respond((q) => {
     if (q.table === 'supplier_orders') return { data: ORDERS };
+    // 我的供應商只列「綁定」的合作供應商(只有取消單的那家沒綁)
+    if (q.table === 'restaurant_suppliers') return { data: [{ supplier_id: 'sup-1' }] };
     if (q.table === 'suppliers') {
       // 跟真的資料庫一樣照 .in('id', …) 篩(我的供應商只查合作過的那幾家)
       const ids = q.filters.find((f) => f.op === 'in' && f.column === 'id')?.value as string[] | undefined;
