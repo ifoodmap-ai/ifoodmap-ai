@@ -31,6 +31,7 @@ interface Q<T> extends PromiseLike<Result<T>> {
   order(col: string, opts?: { ascending: boolean }): Q<T>;
   limit(n: number): Q<T>;
   insert(values: unknown): Q<T>;
+  update(values: unknown): Q<T>;
   delete(): Q<T>;
 }
 const db = <T,>(table: string): Q<T> =>
@@ -75,6 +76,8 @@ interface Partner {
   metrics: MetricsRow | null;
   /** 最近幾張合作的單(新到舊),展開績效時列出 */
   recent: RecentOrder[];
+  /** 約定價成交:none = 沒有;proposed = 供應商提議、等老闆 / 店長同意;active = 已生效 */
+  standing: "none" | "proposed" | "active";
 }
 
 /** 展開績效時列出的近期訂單張數 */
@@ -150,13 +153,18 @@ const RestaurantSuppliersPage = () => {
         return;
       }
 
-      const [{ data: sups }, { data: metrics }] = await Promise.all([
+      const [{ data: sups }, { data: metrics }, { data: agreements }] = await Promise.all([
         db<SupplierRow>("suppliers").select("id, name, description, service_areas").in("id", ids),
         db<MetricsRow>("supplier_metrics")
           .select("supplier_id, orders_total, ontime_rate, shortage_rate, avg_reply_minutes, avg_rating, computed_at")
           .in("supplier_id", ids),
+        // 讀不到(舊資料庫、網路)就當沒有約定價,不影響其他資訊
+        db<{ supplier_id: string; status: "proposed" | "active" }>("supplier_standing_agreements")
+          .select("supplier_id, status")
+          .eq("restaurant_id", account.restaurant_id),
       ]);
 
+      const standingById = new Map<string, "proposed" | "active">((agreements ?? []).map((a) => [a.supplier_id, a.status]));
       const metricsById = new Map((metrics ?? []).map((m) => [m.supplier_id, m]));
       const list: Partner[] = (sups ?? []).map((s) => {
         const g = grouped.get(s.id) ?? { orders: 0, amount: 0, lastAt: null, recent: [] as RecentOrder[] };
@@ -166,6 +174,7 @@ const RestaurantSuppliersPage = () => {
           amount: g.amount,
           lastAt: g.lastAt,
           metrics: metricsById.get(s.id) ?? null,
+          standing: standingById.get(s.id) ?? ("none" as const),
           recent: [...g.recent]
             .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
             .slice(0, RECENT_LIMIT),
@@ -219,6 +228,27 @@ const RestaurantSuppliersPage = () => {
       return;
     }
     toast.success(`已解除與 ${partner.supplier.name} 的綁定(進行中的訂單照常處理)`);
+    setReloadKey((k) => k + 1);
+  };
+
+  /** 約定價成交:同意(proposed → active)、婉拒 / 停用(刪掉協議,回到一般報價流程) */
+  const changeStanding = async (partner: Partner, action: "agree" | "end") => {
+    setBusy(partner.supplier.id);
+    const { error } = action === "agree"
+      ? await db("supplier_standing_agreements").update({ status: "active" })
+          .eq("restaurant_id", account.restaurant_id).eq("supplier_id", partner.supplier.id)
+      : await db("supplier_standing_agreements").delete()
+          .eq("restaurant_id", account.restaurant_id).eq("supplier_id", partner.supplier.id);
+    setBusy(null);
+    if (error) {
+      toast.error(action === "agree" ? "同意失敗" : "操作失敗", { description: error.message });
+      return;
+    }
+    toast.success(
+      action === "agree"
+        ? `已同意與 ${partner.supplier.name} 的約定價成交`
+        : partner.standing === "active" ? `已停用與 ${partner.supplier.name} 的約定價成交,之後照一般報價流程` : "已婉拒約定價成交",
+    );
     setReloadKey((k) => k + 1);
   };
 
@@ -335,6 +365,9 @@ const RestaurantSuppliersPage = () => {
                       <div className="min-w-0">
                         <div className="flex items-center gap-2 flex-wrap">
                           <h2 className="font-semibold text-slate-800 truncate">{p.supplier.name}</h2>
+                          {p.standing === "active" && (
+                            <Badge variant="outline" className="bg-emerald-50 text-emerald-700 border-emerald-200">約定價成交</Badge>
+                          )}
                           {risky && (
                             <Badge variant="outline" className="bg-red-50 text-red-700 border-red-200">
                               <ShieldAlert className="h-3 w-3 mr-1" />
@@ -365,6 +398,23 @@ const RestaurantSuppliersPage = () => {
                         {isOpen ? "收起" : "查看績效"}
                       </Button>
                     </div>
+                    {p.standing === "proposed" && (
+                      <div role="status" className="mb-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900" data-testid={`standing-proposal-${p.supplier.id}`}>
+                        <p className="font-medium">{p.supplier.name} 提議「約定價成交」</p>
+                        <p className="mt-1 text-xs">
+                          同意後,你向他叫的貨,他一鍵接單就依事先談好的價格(專屬價 → 群組價 → 定價)成交,不用報價、也不用等你確認價格。
+                          只有每個品項都有價格的單才會這樣;算不出價格的單照一般流程。隨時可以停用。
+                        </p>
+                        {canManage ? (
+                          <div className="mt-2 flex gap-2">
+                            <Button size="sm" className="bg-emerald-600 hover:bg-emerald-700 text-white" disabled={busy === p.supplier.id} onClick={() => void changeStanding(p, "agree")}>同意</Button>
+                            <Button size="sm" variant="outline" disabled={busy === p.supplier.id} onClick={() => void changeStanding(p, "end")}>婉拒</Button>
+                          </div>
+                        ) : (
+                          <p className="mt-2 text-xs">請老闆或店長決定是否同意。</p>
+                        )}
+                      </div>
+                    )}
                     <div className="flex flex-wrap items-center gap-2 mb-3">
                       <Link to={`/restaurant/purchase?supplier=${p.supplier.id}`}>
                         <Button size="sm" className="bg-emerald-600 hover:bg-emerald-700 text-white">
@@ -372,6 +422,17 @@ const RestaurantSuppliersPage = () => {
                           向他叫貨
                         </Button>
                       </Link>
+                      {canManage && p.standing === "active" && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="text-slate-500"
+                          disabled={busy === p.supplier.id}
+                          onClick={() => void changeStanding(p, "end")}
+                        >
+                          停用約定價成交
+                        </Button>
+                      )}
                       {canManage && (
                         <Button
                           variant="ghost"

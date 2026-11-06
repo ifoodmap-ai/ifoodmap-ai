@@ -207,6 +207,34 @@ const CATALOG_SCHEMA = {
   required: ["products"]
 };
 
+// 叫貨訊息辨識 —— 餐廳貼上 LINE 訊息、或拍手寫單,轉成叫貨品項(叫貨頁「貼上訊息 / 拍手寫單」)
+const ORDER_SCHEMA = {
+  type: "OBJECT",
+  properties: {
+    items: {
+      type: "ARRAY",
+      items: {
+        type: "OBJECT",
+        properties: {
+          name: { type: "STRING", description: "品項名稱(繁體中文標準寫法)" },
+          quantity: { type: "NUMBER", description: "數量;看不出數量就填 0,不要猜" },
+          unit: { type: "STRING", description: "單位,如 kg、台斤、箱、包、顆;沒寫就留空" },
+          source_text: { type: "STRING", description: "這一項在原文裡對應的那一小段字(原樣照抄,給使用者核對)" }
+        },
+        required: ["name"],
+        propertyOrdering: ["name", "quantity", "unit", "source_text"]
+      }
+    },
+    unclear: {
+      type: "ARRAY",
+      description: "看不清楚、無法確定是不是品項的片段(原樣照抄)",
+      items: { type: "STRING" }
+    }
+  },
+  required: ["items"],
+  propertyOrdering: ["items", "unclear"]
+};
+
 // 新菜建議 —— 菜色實驗室用
 const DISH_IDEAS_SCHEMA = {
   type: "OBJECT",
@@ -883,6 +911,65 @@ const handleCatalog = async (ctx: Ctx, body: Record<string, unknown>) => {
   return json({ data: { products: Array.isArray(parsed.products) ? parsed.products : [] } });
 };
 
+/** 叫貨訊息(LINE 文字或手寫單照片)→ 品項清單。只開放登入使用者:要花額度,不給匿名與形象站呼叫 */
+const handleParseOrder = async (ctx: Ctx, body: Record<string, unknown>) => {
+  if (ctx.tier !== "user") return reject(ctx, "parse-order", "UNAUTHORIZED");
+  const image = typeof body.image === "string" ? body.image : "";
+  const text = typeof body.text === "string" ? body.text.trim() : "";
+  if (!image && !text) return fail("BAD_REQUEST", { message: "image or text is required" });
+  if (payloadChars("parse-order", body) > ctx.lim.maxPayloadChars) {
+    return reject(ctx, "parse-order", "TOO_LONG", tooLongMessage(ctx.lim.maxPayloadChars));
+  }
+  let img: { mimeType: string; data: string } | null = null;
+  if (image) {
+    const checked = inspectImage(image, body.mimeType, ctx.lim);
+    if (!checked.ok) return imageReject(ctx, "parse-order", checked.code, checked.message);
+    img = checked;
+  }
+  // 這家供應商的品名清單:讓 AI 遇到「高麗」「小白菜」這種簡稱時盡量對到同一個寫法(只是提示,不強迫)
+  const known = (Array.isArray(body.knownItems) ? body.knownItems : [])
+    .filter((n): n is string => typeof n === "string" && n.trim() !== "")
+    .map((n) => n.trim().slice(0, 40))
+    .slice(0, 300);
+  const limited = await takeQuota(ctx, "parse-order");
+  if (limited) return limited;
+
+  const parts: GPart[] = [{ text: [
+    "以下是餐廳傳給食材供應商的叫貨內容(可能是 LINE 對話貼上來的文字,也可能是手寫叫貨單的照片)。",
+    "請逐項整理成叫貨品項:品名、數量、單位。規則:",
+    "- 只整理「要訂的東西」。問候語、價格、日期、地址、閒聊都不要變成品項。",
+    "- 數量看不出來就填 0,不要猜;中文數字要換成阿拉伯數字(兩 = 2、半 = 0.5)。「3箱」→ 數量 3、單位 箱。",
+    "- 同一個品項出現多次(例如改單、補單)以最後的說法為準,只留一筆。",
+    "- 看不清楚、不確定是不是品項的片段放進 unclear,不要硬猜成品項。",
+    known.length ? `- 這家供應商的品名有:${known.join("、")}。如果訊息裡的說法明顯就是其中一個,請用上面的寫法;沒有對應就照原文,不要硬套。` : ""
+  ].filter(Boolean).join("\n") }];
+  if (img) parts.push({ inlineData: { mimeType: img.mimeType, data: img.data } });
+  if (text) parts.push({ text: `\n=== 叫貨內容 ===\n${text}` });
+
+  const raw = await geminiGenerate([{ role: "user", parts }],
+    { system: "你是食材採購叫貨助手。只回傳 JSON。品名一律繁體中文。", structured: true, temperature: 0.1, schema: ORDER_SCHEMA, action: "parse-order", tier: ctx.tier });
+  let parsed: { items?: { name?: unknown; quantity?: unknown; unit?: unknown; source_text?: unknown }[]; unclear?: unknown[] };
+  try { parsed = JSON.parse(raw); } catch { return fail("AI_UPSTREAM", { message: "叫貨內容辨識失敗" }); }
+
+  const items = (Array.isArray(parsed.items) ? parsed.items : [])
+    .filter((i) => i && typeof i.name === "string" && i.name.trim() !== "")
+    .slice(0, 100)
+    .map((i) => {
+      const q = Number(i.quantity);
+      return {
+        name: String(i.name).trim().slice(0, 60),
+        quantity: Number.isFinite(q) && q > 0 && q <= 100000 ? q : 0,
+        unit: typeof i.unit === "string" ? i.unit.trim().slice(0, 10) : "",
+        source_text: typeof i.source_text === "string" ? i.source_text.trim().slice(0, 100) : ""
+      };
+    });
+  const unclear = (Array.isArray(parsed.unclear) ? parsed.unclear : [])
+    .filter((u): u is string => typeof u === "string" && u.trim() !== "")
+    .map((u) => u.trim().slice(0, 100))
+    .slice(0, 20);
+  return json({ data: { items, unclear } });
+};
+
 const handleDishIdeas = async (ctx: Ctx, body: Record<string, unknown>) => {
   const ingredients = Array.isArray(body.ingredients) ? (body.ingredients as string[]) : [];
   const seasonal = Array.isArray(body.seasonal) ? (body.seasonal as string[]) : [];
@@ -991,6 +1078,7 @@ Deno.serve(async (req) => {
       case "chat": return await handleChat(ctx, body);
       case "parse-delivery-note": return await handleDeliveryNote(ctx, body);
       case "parse-catalog": return await handleCatalog(ctx, body);
+      case "parse-order": return await handleParseOrder(ctx, body);
       case "dish-ideas": return await handleDishIdeas(ctx, body);
       case "quote-draft": return await handleQuoteDraft(ctx, body);
       default: return fail("BAD_REQUEST", { message: "Unknown action" });

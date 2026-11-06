@@ -2163,3 +2163,38 @@ pgTAP 沒辦法在本機跑(沒有 Postgres):套用前用乾跑驗證(不會 com
 - 儲存格空白 = 不動現有的值;匯入不會刪商品、也不能清空欄位。選檔後先預覽(新增 / 更新 / 沒變動 / 有問題的列與原因),按確定才寫入;一次最多 1000 列,200 筆一批寫入,中途失敗會說已寫入多少,重新匯入同一個檔案即可補完。
 - 寫入走既有的 `supplies` RLS(供應商只能動自己的商品)。
 - 讀檔用 `src/lib/csv-file.ts`:先嚴格 UTF-8、失敗改 Big5 —— 台灣 Excel 另存「CSV(逗號分隔)」預設是 Big5。客戶價格表匯入也改用同一個讀法。
+
+## 約定價成交 — 例行叫貨略過報價(2026-11-07)
+
+| 項目 | 位置 |
+| --- | --- |
+| SQL(`supplier_standing_agreements`、`standing_order_total`、`standing_accept_order`、守門函式與通知函式更新) | `supabase/migrations/20261107100000_standing_price_orders.sql`(rollback:`supabase/rollbacks/20261107100000_standing_price_orders.down.sql`) |
+| 資料庫測試 | `supabase/tests/standing_price_orders.test.ts` |
+| 供應商端 | 「客戶價格與上限」選客戶後的「約定價成交」卡片(提議 / 取消 / 停用);訂單頁待接單多一顆「接單並依約定價成交」 |
+| 餐廳端 | 「我的供應商」卡片:供應商的提議(老闆 / 店長可同意 / 婉拒)、「約定價成交」標示與停用 |
+
+**部署順序:先套 migration,再 push 前端。** 前端在 migration 之前上線也不會壞(讀不到協議表就當沒有),只是沒有這個功能。
+
+規則:
+- 供應商「提議」、餐廳老闆 / 店長「同意」才生效;供應商不能自己改成生效,採購員不能同意。任一方隨時可以刪掉(停用),停用後一律照一般流程報價。
+- 供應商在待接單的訂單按「接單並依約定價成交」:資料庫(`standing_accept_order`)在**同一個交易**寫三筆事件 —— 接單(供應商本人)→ 報價 → 成交(後兩筆是「系統」身分、來源 `system`,payload 帶 `standing_price: true`)。訂單直接進「待出貨」。
+- 金額由資料庫算(`standing_order_total`):每個品項用「客戶專屬價 > 群組價 > 商品定價」,品名要剛好對到一個**上架中**的商品;任何一項對不到 / 對到好幾個 / 沒價格 / 數量不是大於 0 的純數字 → 整張單不能用,整個交易回滾、訂單維持待接單,供應商改走一般報價。
+- 防繞過:`trg_guard_standing_auto_event` 對任何帶 `standing_price` 的事件重新驗(系統身分、旗標對得上、協議生效且仍綁定、金額 = 現算的約定價金額);`guard_order_transition` 只多認一個交易內旗標 `ifm.standing_auto`(= 訂單 id),讓系統身分的 quoted / confirmed 事件在旗標下通過,其餘規則不變。**轉移表 `order_transition_rules()` 沒有動(仍是 105 條)。**
+- 約定價的「報價」事件不寄「請確認報價」信給餐廳(`notify_order_event` 略過)。
+
+## 叫貨訊息 AI 辨識:貼上 LINE 訊息 / 拍手寫單(2026-11-07)
+
+站內版(LINE 機器人版還沒做,需要 LINE 官方帳號與 Messaging API 金鑰)。
+
+| 項目 | 位置 |
+| --- | --- |
+| Edge Function | `supabase/functions/ai/index.ts` 新 action `parse-order`(`guard.ts` 的 `ACTIONS`、`payloadChars` 同步) |
+| 前端 | `src/lib/api.ts` 的 `parseOrder`;`src/components/restaurant/AiOrderDialog.tsx`;叫貨頁「手動加入品項」裡的「貼上訊息 / 拍手寫單」 |
+
+**部署:** `SUPABASE_ACCESS_TOKEN=sbp_... supabase functions deploy ai --project-ref cwvpehqcvbfuynabpqop --no-verify-jwt`(沒有 migration)。先部署函式、再 push 前端。
+
+規則:
+- 只開放登入使用者(user tier);形象站與舊前端打會被擋(UNAUTHORIZED)。算在 user 額度裡(每 10 分鐘 60 次、每天 200 次,跟其他 AI 動作合計),文字 / 圖片上限同其他 user 動作。
+- AI 只是幫忙「打字」:辨識結果要使用者逐項核對、數量看不出來的要自己填,按「加入叫貨清單」才進清單;不會自動送出訂單。數量一律限制在 0–100000,品項最多 100 項。
+- 把這家供應商叫過的品名與商品目錄(最多 300 個)當提示給 AI,簡稱盡量對到同一個寫法;品名比對用跟其他地方一樣的正規化(全形半形、大小寫、空白不影響)。
+- 被擋的統計(`ai_guard_daily`)裡 `parse-order` 會歸在「other」—— `ai_note_rejection` 的白名單沒收錄這個名字,只影響統計分類。

@@ -202,6 +202,8 @@ export default function SupplierOrdersPage() {
   const [restaurants, setRestaurants] = useState<Record<string, RestaurantRow>>({});
   const [shipments, setShipments] = useState<Record<string, ShipmentRow>>({});
   const [reasons, setReasons] = useState<Record<string, ReasonEventRow>>({});
+  /** 已經和餐廳雙方同意約定價成交的客戶(restaurant_id):這些客戶的待接單可以「接單並依約定價成交」 */
+  const [standing, setStanding] = useState<ReadonlySet<string>>(() => new Set());
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -310,6 +312,20 @@ export default function SupplierOrdersPage() {
       setReasons({});
     }
   }, []);
+
+  // 約定價成交的客戶清單:讀不到就當沒有(只是少一顆捷徑,一般接單照常)
+  useEffect(() => {
+    if (!supplierId) return;
+    let cancelled = false;
+    (async () => {
+      const { data } = await db<{ restaurant_id: string }>("supplier_standing_agreements")
+        .select("restaurant_id")
+        .eq("supplier_id", supplierId)
+        .eq("status", "active");
+      if (!cancelled) setStanding(new Set((data ?? []).map((r) => r.restaurant_id)));
+    })();
+    return () => { cancelled = true; };
+  }, [supplierId]);
 
   useEffect(() => {
     if (!supplierId) return;
@@ -436,6 +452,26 @@ export default function SupplierOrdersPage() {
       }
     } catch {
       /* 預填失敗就讓供應商自己填 */
+    }
+  };
+
+  /** 接單並依約定價成交:資料庫在同一個交易裡接單 → 依約定價報價 → 成交,訂單直接進待出貨;算不出價格會整個回滾 */
+  const standingAccept = async (order: OrderRow) => {
+    setBusyId(order.id);
+    try {
+      const { data, error } = await (supabase as never as {
+        rpc: (fn: string, args: Record<string, unknown>) => PromiseLike<{ data: { total_amount?: number } | null; error: { message: string } | null }>;
+      }).rpc("standing_accept_order", { p_order_id: order.id });
+      if (error) throw new Error(error.message);
+      const total = money(data?.total_amount ?? null);
+      toast.success(`訂單 ${formatOrderNo(order.id)} 已依約定價成交${total ? `(${total})` : ""},可以安排出貨`);
+      if (supplierId) await fetchOrders(supplierId);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "操作失敗";
+      toast.error("沒辦法依約定價成交", { description: message });
+      if (supplierId) await fetchOrders(supplierId);
+    } finally {
+      setBusyId(null);
     }
   };
 
@@ -676,6 +712,18 @@ export default function SupplierOrdersPage() {
                 )}
 
                 <div className="mt-3 flex flex-wrap items-center gap-2">
+                  {order.status === "dispatched" && order.restaurant_id && standing.has(order.restaurant_id) && (
+                    <Button
+                      size="sm"
+                      disabled={busy}
+                      onClick={() => void standingAccept(order)}
+                      className={TONE_CLASS.primary}
+                      title="這家客戶已和你約定價格:依專屬價 / 群組價 / 定價算出金額,直接成交,不用報價、也不用等餐廳確認"
+                    >
+                      {busy ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : <CheckCircle2 className="mr-1.5 h-4 w-4" />}
+                      接單並依約定價成交
+                    </Button>
+                  )}
                   {actions.length > 0 ? (
                     actions.map((to) => {
                       const conf = ACTION_CONF[to];

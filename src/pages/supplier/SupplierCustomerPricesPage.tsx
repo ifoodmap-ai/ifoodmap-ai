@@ -21,6 +21,7 @@ interface Q<T> extends PromiseLike<Result<T>> {
   eq(col: string, val: unknown): Q<T>;
   in(col: string, vals: readonly unknown[]): Q<T>;
   order(col: string, opts?: { ascending: boolean }): Q<T>;
+  insert(values: unknown): Q<T>;
   upsert(values: unknown, opts?: { onConflict: string }): Q<T>;
   delete(): Q<T>;
   maybeSingle(): PromiseLike<{ data: T | null; error: { message: string } | null }>;
@@ -48,6 +49,9 @@ const SupplierCustomerPricesPage = () => {
   const [saving, setSaving] = useState(false);
   /** 這家客戶所屬的群組(沒有群組是 null)與群組價:沒填專屬價的商品用群組價 */
   const [group, setGroup] = useState<{ name: string; prices: Record<string, number> } | null>(null);
+  /** 和這家客戶的約定價成交:none = 沒有;proposed = 已提議、等餐廳老闆 / 店長同意;active = 已生效 */
+  const [standing, setStanding] = useState<"none" | "proposed" | "active">("none");
+  const [standingBusy, setStandingBusy] = useState(false);
   const [importErrors, setImportErrors] = useState<{ line: number; message: string }[]>([]);
   const fileInput = useRef<HTMLInputElement>(null);
 
@@ -95,11 +99,13 @@ const SupplierCustomerPricesPage = () => {
     setLoadingRules(true);
     setImportErrors([]);
     try {
-      const [{ data: prices, error: e1 }, { data: limits, error: e2 }, { data: member, error: e3 }] = await Promise.all([
+      const [{ data: prices, error: e1 }, { data: limits, error: e2 }, { data: member, error: e3 }, { data: agreement }] = await Promise.all([
         db<{ supply_id: string; price: number | string }>("supplier_customer_prices").select("supply_id, price").eq("supplier_id", sid).eq("restaurant_id", rid),
         db<{ supply_id: string; period: LimitPeriod; max_qty: number | string }>("supplier_customer_limits").select("supply_id, period, max_qty").eq("supplier_id", sid).eq("restaurant_id", rid),
         db<{ group_id: string }>("supplier_customer_group_members").select("group_id").eq("supplier_id", sid).eq("restaurant_id", rid),
+        db<{ status: "proposed" | "active" }>("supplier_standing_agreements").select("status").eq("supplier_id", sid).eq("restaurant_id", rid),
       ]);
+      setStanding(agreement?.[0]?.status ?? "none");
       if (e1 || e2 || e3) throw new Error((e1 ?? e2 ?? e3)?.message);
       const groupId = member?.[0]?.group_id;
       if (groupId) {
@@ -121,6 +127,7 @@ const SupplierCustomerPricesPage = () => {
       setSaved({});
       setDraft({});
       setGroup(null);
+      setStanding("none");
     } finally {
       setLoadingRules(false);
     }
@@ -128,8 +135,25 @@ const SupplierCustomerPricesPage = () => {
 
   useEffect(() => {
     if (supplierId && restaurantId) void loadRules(supplierId, restaurantId);
-    else { setSaved({}); setDraft({}); setGroup(null); }
+    else { setSaved({}); setDraft({}); setGroup(null); setStanding("none"); }
   }, [supplierId, restaurantId, loadRules]);
+
+  const changeStanding = async (next: "propose" | "withdraw") => {
+    if (!supplierId || !restaurantId) return;
+    setStandingBusy(true);
+    try {
+      const res = next === "propose"
+        ? await db("supplier_standing_agreements").insert({ supplier_id: supplierId, restaurant_id: restaurantId })
+        : await db("supplier_standing_agreements").delete().eq("supplier_id", supplierId).eq("restaurant_id", restaurantId);
+      if (res.error) throw new Error(res.error.message);
+      setStanding(next === "propose" ? "proposed" : "none");
+      toast.success(next === "propose" ? "已提議,等對方的老闆或店長同意" : standing === "active" ? "已停用約定價成交" : "已取消提議");
+    } catch (e) {
+      toast.error(next === "propose" ? "提議失敗" : "操作失敗", { description: (e as Error).message });
+    } finally {
+      setStandingBusy(false);
+    }
+  };
 
   const rowOf = (id: string): Draft => draft[id] ?? EMPTY;
   const setRow = (id: string, patch: Partial<Draft>) => setDraft((d) => ({ ...d, [id]: { ...(d[id] ?? EMPTY), ...patch } }));
@@ -296,6 +320,36 @@ const SupplierCustomerPricesPage = () => {
                 ? <>{customerName} 屬於群組「<span className="font-medium">{group.name}</span>」,沒有填客戶價的商品會用群組價。</>
                 : <>{customerName} 沒有加入任何群組,沒有填客戶價的商品用商品定價。</>}
             </p>
+          )}
+
+          {restaurantId && !loadingRules && (
+            <Card>
+              <CardContent className="pt-5 flex flex-wrap items-center justify-between gap-3" data-testid="standing-card">
+                <div className="space-y-1 max-w-xl">
+                  <h2 className="font-semibold text-slate-800 flex items-center gap-2">
+                    約定價成交(例行叫貨免報價)
+                    {standing === "active" && <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-800">已生效</span>}
+                    {standing === "proposed" && <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800">等待對方同意</span>}
+                  </h2>
+                  <p className="text-sm text-slate-500" data-testid="standing-text">
+                    {standing === "active"
+                      ? `${customerName} 的老闆 / 店長已經同意。他叫的貨,每個品項都有價格時,你可以按「接單並依約定價成交」(依專屬價 → 群組價 → 定價算金額),直接進待出貨,不用報價、也不用等他確認;有品項算不出價格就照一般流程報價。`
+                      : standing === "proposed"
+                        ? `已經提議。要 ${customerName} 的老闆或店長在他們的「我的供應商」同意之後才會生效,在那之前一律照一般流程報價。`
+                        : `價格早就談好的老客戶,可以提議「約定價成交」:經 ${customerName} 的老闆或店長同意後,他叫的貨你一鍵接單就依上面的價格成交,不用報價、也不用等他確認。`}
+                  </p>
+                </div>
+                {standing === "none" ? (
+                  <Button size="sm" className="bg-emerald-600 hover:bg-emerald-700 text-white" disabled={standingBusy} onClick={() => void changeStanding("propose")}>
+                    提議約定價成交
+                  </Button>
+                ) : (
+                  <Button size="sm" variant="outline" disabled={standingBusy} onClick={() => void changeStanding("withdraw")}>
+                    {standing === "active" ? "停用" : "取消提議"}
+                  </Button>
+                )}
+              </CardContent>
+            </Card>
           )}
 
           {!restaurantId ? (

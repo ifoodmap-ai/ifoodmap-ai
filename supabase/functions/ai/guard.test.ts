@@ -59,7 +59,7 @@ const msgs = (n: number, role = "user", text = "嗨") => Array.from({ length: n 
 
 describe("action 白名單", () => {
   it("共 7 個 action,形象站只開 chat / analyze-menu / analyze-chat", () => {
-    expect(ACTIONS).toHaveLength(7);
+    expect(ACTIONS).toHaveLength(8);
     expect([...LANDING_ACTIONS].sort()).toEqual(["analyze-chat", "analyze-menu", "chat"]);
     expect(isAction("dish-ideas")).toBe(true);
     expect(isAction("drop-table")).toBe(false);
@@ -269,7 +269,7 @@ describe("§3 額度數字", () => {
     expect(outputLimitsFor("chat")).toEqual({ maxOutputTokens: 400, thinkingBudget: 0 });
     expect(outputLimitsFor("analyze-chat")).toEqual({ maxOutputTokens: 1024, thinkingBudget: 0 });
     expect(outputLimitsFor("analyze-menu")).toEqual({ maxOutputTokens: 4096, thinkingBudget: 512 });
-    for (const a of ["parse-delivery-note", "parse-catalog", "dish-ideas", "quote-draft", "whatever"]) {
+    for (const a of ["parse-delivery-note", "parse-catalog", "parse-order", "dish-ideas", "quote-draft", "whatever"]) {
       expect(outputLimitsFor(a)).toEqual({ maxOutputTokens: 4096, thinkingBudget: 1024 });
     }
     // 實測最大輸出要放得下(chat 100、analyze-chat 508;menu 2026-07-28 大菜單 1,703,扣掉思考預算還有 3584)
@@ -641,6 +641,9 @@ describe("其他 action 的輸入量", () => {
     expect(payloadChars("dish-ideas", { ingredients: ["蔥", "蒜"], cuisine: "台式" })).toBe(JSON.stringify(["蔥", "蒜"]).length + 4 + 2);
     expect(payloadChars("quote-draft", { items: [1], catalog: [], history: null })).toBe(3 + 2 + 4);
     expect(payloadChars("parse-catalog", { text: "abc" })).toBe(3);
+    // parse-order:貼上的訊息字數 + 已知品名清單序列化後的字數
+    expect(payloadChars("parse-order", { text: "abc", knownItems: ["高麗菜"] })).toBe(3 + JSON.stringify(["高麗菜"]).length);
+    expect(payloadChars("parse-order", {})).toBe(JSON.stringify(null).length);
     expect(payloadChars("chat", { messages: [] })).toBe(0);
     expect(payloadChars("quote-draft", { items: ["x".repeat(9000)] })).toBeGreaterThan(LIMITS.legacy.maxPayloadChars);
   });

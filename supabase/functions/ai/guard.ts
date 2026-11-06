@@ -13,6 +13,7 @@ export const ACTIONS = [
   "chat",
   "parse-delivery-note",
   "parse-catalog",
+  "parse-order",
   "dish-ideas",
   "quote-draft",
 ] as const;
@@ -645,7 +646,7 @@ export const inspectImage = (image: unknown, mimeType: unknown, lim: TierLimits)
 };
 
 // ---------------------------------------------------------------------
-// 其他 action 的文字輸入量(dish-ideas / quote-draft / parse-catalog)
+// 其他 action 的文字輸入量(dish-ideas / quote-draft / parse-catalog / parse-order)
 // ---------------------------------------------------------------------
 export const payloadChars = (action: Action, body: Record<string, unknown>): number => {
   const size = (v: unknown) => {
@@ -658,6 +659,8 @@ export const payloadChars = (action: Action, body: Record<string, unknown>): num
   switch (action) {
     case "parse-catalog":
       return typeof body.text === "string" ? body.text.length : 0;
+    case "parse-order":
+      return (typeof body.text === "string" ? body.text.length : 0) + size(body.knownItems);
     case "dish-ideas":
       return size(body.ingredients) + size(body.seasonal) + (typeof body.cuisine === "string" ? body.cuisine.length : 0);
     case "quote-draft":

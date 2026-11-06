@@ -13,7 +13,9 @@ const { state, toast } = vi.hoisted(() => ({
   state: {
     role: "owner" as Role,
     bound: [] as string[],
-    writes: [] as { op: "insert" | "delete"; table: string; values?: unknown; filters: [string, unknown][] }[],
+    /** 約定價成交協議(供應商 → 狀態) */
+    agreements: [] as { supplier_id: string; status: string }[],
+    writes: [] as { op: "insert" | "update" | "delete"; table: string; values?: unknown; filters: [string, unknown][] }[],
     writeError: null as string | null,
   },
   toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() },
@@ -43,9 +45,11 @@ vi.mock("@/integrations/supabase/client", () => ({
     from: (table: string) => {
       const filters: [string, unknown][] = [];
       const inFilters: [string, unknown[]][] = [];
-      let write: { op: "insert" | "delete"; values?: unknown } | null = null;
+      let write: { op: "insert" | "update" | "delete"; values?: unknown } | null = null;
       const rows = () => {
-        const all = table === "restaurant_suppliers" ? state.bound.map((id) => ({ supplier_id: id })) : (TABLES[table] ?? []);
+        const all = table === "restaurant_suppliers" ? state.bound.map((id) => ({ supplier_id: id }))
+          : table === "supplier_standing_agreements" ? state.agreements
+          : (TABLES[table] ?? []);
         return all.filter(
           (r) =>
             filters.every(([c, v]) => c === "restaurant_id" || r[c] === v) && inFilters.every(([c, vs]) => vs.includes(r[c])),
@@ -65,6 +69,7 @@ vi.mock("@/integrations/supabase/client", () => ({
         order: () => builder,
         limit: () => builder,
         insert: (values: unknown) => { write = { op: "insert", values }; return builder; },
+        update: (values: unknown) => { write = { op: "update", values }; return builder; },
         delete: () => { write = { op: "delete" }; return builder; },
         then: (onFulfilled: (v: unknown) => unknown, onRejected?: (e: unknown) => unknown) =>
           Promise.resolve(result()).then(onFulfilled, onRejected),
@@ -99,6 +104,7 @@ let fetchGuard: ReturnType<typeof vi.fn>;
 beforeEach(() => {
   state.role = "owner";
   state.bound = ["sup-1", "sup-2"];
+  state.agreements = [];
   state.writes = [];
   state.writeError = null;
   toast.success.mockReset();
@@ -273,5 +279,66 @@ describe("RestaurantSuppliersPage — 合作供應商綁定", () => {
     renderPage();
     expect(await screen.findByText(/請老闆或店長先綁定合作供應商/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /新增合作供應商/ })).toBeNull();
+  });
+});
+
+describe("RestaurantSuppliersPage — 約定價成交(供應商提議、老闆 / 店長同意)", () => {
+  it("供應商提議了:老闆看得到提議與說明,按「同意」把協議改成生效(只送 status = active)", async () => {
+    state.agreements = [{ supplier_id: "sup-1", status: "proposed" }];
+    const user = userEvent.setup();
+    renderPage();
+    const box = await screen.findByTestId("standing-proposal-sup-1");
+    expect(box).toHaveTextContent("鮮綠農產 提議「約定價成交」");
+    expect(box).toHaveTextContent("不用報價、也不用等你確認價格");
+    expect(screen.queryByTestId("standing-proposal-sup-2")).toBeNull();
+
+    await user.click(within(box).getByRole("button", { name: "同意" }));
+    await waitFor(() => expect(state.writes.find((w) => w.op === "update")).toMatchObject({
+      table: "supplier_standing_agreements",
+      values: { status: "active" },
+      filters: expect.arrayContaining([["supplier_id", "sup-1"]]),
+    }));
+    expect(toast.success).toHaveBeenCalledWith("已同意與 鮮綠農產 的約定價成交");
+  });
+
+  it("婉拒 = 刪掉協議", async () => {
+    state.agreements = [{ supplier_id: "sup-1", status: "proposed" }];
+    const user = userEvent.setup();
+    renderPage();
+    await user.click(within(await screen.findByTestId("standing-proposal-sup-1")).getByRole("button", { name: "婉拒" }));
+    await waitFor(() => expect(state.writes.find((w) => w.op === "delete")).toMatchObject({ table: "supplier_standing_agreements" }));
+    expect(toast.success).toHaveBeenCalledWith("已婉拒約定價成交");
+  });
+
+  it("已生效:卡片有「約定價成交」標示與「停用」;停用 = 刪掉協議", async () => {
+    state.agreements = [{ supplier_id: "sup-1", status: "active" }];
+    const user = userEvent.setup();
+    renderPage();
+    const card = await cardOf("鮮綠農產");
+    expect(within(card).getByText("約定價成交")).toBeInTheDocument();
+    expect(screen.queryByTestId("standing-proposal-sup-1")).toBeNull();
+    await user.click(within(card).getByRole("button", { name: "停用約定價成交" }));
+    await waitFor(() => expect(state.writes.find((w) => w.op === "delete")).toMatchObject({ table: "supplier_standing_agreements" }));
+    expect(toast.success).toHaveBeenCalledWith("已停用與 鮮綠農產 的約定價成交,之後照一般報價流程");
+  });
+
+  it("採購員:看得到提議,但沒有同意 / 婉拒 / 停用的按鈕", async () => {
+    state.role = "purchaser";
+    state.agreements = [{ supplier_id: "sup-1", status: "proposed" }, { supplier_id: "sup-2", status: "active" }];
+    renderPage();
+    const box = await screen.findByTestId("standing-proposal-sup-1");
+    expect(box).toHaveTextContent("請老闆或店長決定是否同意");
+    expect(within(box).queryByRole("button")).toBeNull();
+    expect(screen.queryByRole("button", { name: "停用約定價成交" })).toBeNull();
+  });
+
+  it("資料庫拒絕(例如權限不足):顯示原因,不說成功", async () => {
+    state.agreements = [{ supplier_id: "sup-1", status: "proposed" }];
+    state.writeError = "permission denied";
+    const user = userEvent.setup();
+    renderPage();
+    await user.click(within(await screen.findByTestId("standing-proposal-sup-1")).getByRole("button", { name: "同意" }));
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith("同意失敗", { description: "permission denied" }));
+    expect(toast.success).not.toHaveBeenCalled();
   });
 });

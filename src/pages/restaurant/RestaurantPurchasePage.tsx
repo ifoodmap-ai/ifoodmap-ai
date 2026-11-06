@@ -27,7 +27,8 @@ import { ANALYSIS_HANDOFF_KEY } from "./RestaurantAnalyzePage";
 import { recordOrderEvent } from "@/lib/orders";
 import type { ClaimedDraftLocationState } from "@/hooks/use-landing-handoff-claim";
 import SupplyThumb from "@/components/SupplyThumb";
-import { buildSupplyImageLookup, type SupplyImageLookup, type SupplyImageRow } from "@/lib/supply-images";
+import AiOrderDialog, { type AiOrderRow } from "@/components/restaurant/AiOrderDialog";
+import { buildSupplyImageLookup, normalizeItemName, type SupplyImageLookup, type SupplyImageRow } from "@/lib/supply-images";
 import {
   effectivePrices, estimateTotal, limitOf, limitText, parseQty, priceOf,
   type CatalogItem, type CustomerLimit, type LimitPeriod,
@@ -229,6 +230,7 @@ const RestaurantPurchasePage = () => {
   });
   const [form, setForm] = useState({ name: "", quantity: "", unit: "", referencePrice: "" });
   const [notes, setNotes] = useState("");
+  const [aiOpen, setAiOpen] = useState(false);
   const [drafts, setDrafts] = useState<OrderRow[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [approvingId, setApprovingId] = useState<string | null>(null);
@@ -555,6 +557,44 @@ const RestaurantPurchasePage = () => {
     setRemoved((prev) => [...prev.filter((i) => i.supplierId !== supplierId), ...drop]);
     toast.success(`已套用上一張單(${new Date(lastOrder.at).toLocaleDateString("zh-TW")}),共 ${keep.length} 項`);
   };
+
+  /** AI 辨識的叫貨品項加進清單:叫過的品項(含已移除的)只改數量與單位;手動加的同名品項改數量;其餘新增成手動品項 */
+  const applyAiOrder = (rows: AiOrderRow[]) => {
+    if (!supplierId) return;
+    let updated = 0;
+    let added = 0;
+    const nextItems = [...items];
+    const nextRemoved = [...removed];
+    const nextManual = [...manual];
+    rows.forEach((r) => {
+      const key = normalizeItemName(r.name);
+      const patch = <T extends { quantity: string; unit: string }>(x: T): T => ({ ...x, quantity: r.quantity, unit: r.unit || x.unit });
+      const hi = nextItems.findIndex((x) => x.supplierId === supplierId && normalizeItemName(x.name) === key);
+      const ri = nextRemoved.findIndex((x) => x.supplierId === supplierId && normalizeItemName(x.name) === key);
+      const mi = nextManual.findIndex((x) => normalizeItemName(x.name) === key);
+      if (hi >= 0) { nextItems[hi] = patch(nextItems[hi]); updated += 1; }
+      else if (ri >= 0) { const [back] = nextRemoved.splice(ri, 1); nextItems.push(patch(back)); updated += 1; }
+      else if (mi >= 0) { nextManual[mi] = patch(nextManual[mi]); updated += 1; }
+      else {
+        nextManual.push({ key: `${Date.now()}-${Math.random().toString(16).slice(2)}`, name: r.name, quantity: r.quantity, unit: r.unit, referencePrice: "" });
+        added += 1;
+      }
+    });
+    setItems(nextItems);
+    setRemoved(nextRemoved);
+    setManual(nextManual);
+    toast.success(`已加入叫貨清單:更新 ${updated} 項、新增 ${added} 項`, { description: "請再確認一次數量,送出前都還能修改" });
+  };
+
+  const isListed = (name: string) => {
+    const key = normalizeItemName(name);
+    return [...items, ...removed].some((x) => x.supplierId === supplierId && normalizeItemName(x.name) === key)
+      || manual.some((x) => normalizeItemName(x.name) === key);
+  };
+  const aiKnownItems = useMemo(
+    () => [...new Set([...visibleItems.map((i) => i.name), ...visibleRemoved.map((i) => i.name), ...catalog.map((c) => c.name)])].slice(0, 300),
+    [visibleItems, visibleRemoved, catalog],
+  );
 
   const addManual = (name?: string, quantity?: string, unit?: string) => {
     const n = (name ?? form.name).trim();
@@ -1061,6 +1101,12 @@ const RestaurantPurchasePage = () => {
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-slate-50 px-3 py-2">
+            <p className="text-xs text-slate-500">平常用 LINE 或手寫單叫貨?貼上訊息或拍照,AI 幫你整理成品項(要核對過才會加入)。</p>
+            <Button variant="outline" size="sm" onClick={() => setAiOpen(true)} disabled={!supplierId}>
+              <Sparkles className="h-4 w-4 mr-1.5" />貼上訊息 / 拍手寫單
+            </Button>
+          </div>
           <div className="flex flex-wrap gap-2">
             <Input
               value={form.name}
@@ -1180,6 +1226,15 @@ const RestaurantPurchasePage = () => {
           </div>
         </CardContent>
       </Card>
+
+      <AiOrderDialog
+        open={aiOpen}
+        onOpenChange={setAiOpen}
+        supplierName={supplierName}
+        knownItems={aiKnownItems}
+        isListed={isListed}
+        onApply={applyAiOrder}
+      />
       </>
       )}
     </div>

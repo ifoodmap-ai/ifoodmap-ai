@@ -12,7 +12,7 @@ import RestaurantPurchasePage from "./RestaurantPurchasePage";
 type Filter = [op: string, col: string, val: unknown];
 interface Call { table: string; op: string; values?: unknown; filters: Filter[] }
 
-const { state, recordOrderEvent, toast } = vi.hoisted(() => ({
+const { state, recordOrderEvent, toast, parseOrder } = vi.hoisted(() => ({
   state: {
     calls: [] as Call[],
     history: [] as Record<string, unknown>[],
@@ -30,6 +30,7 @@ const { state, recordOrderEvent, toast } = vi.hoisted(() => ({
     role: "owner" as "owner" | "manager" | "purchaser",
   },
   recordOrderEvent: vi.fn(),
+  parseOrder: vi.fn(),
   toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() },
 }));
 
@@ -93,6 +94,10 @@ vi.mock("@/components/RestaurantRoute", () => ({
 vi.mock("./RestaurantAnalyzePage", () => ({ ANALYSIS_HANDOFF_KEY: "ifm_analysis_handoff" }));
 vi.mock("@/lib/orders", () => ({ recordOrderEvent }));
 vi.mock("sonner", () => ({ toast }));
+vi.mock("@/lib/api", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/api")>("@/lib/api");
+  return { ...actual, parseOrder };
+});
 
 const daysAgo = (n: number) => new Date(Date.now() - n * 86_400_000).toISOString();
 
@@ -548,6 +553,32 @@ describe("RestaurantPurchasePage — 過往叫貨品項自動列出", () => {
       // 高麗菜 5kg × 40 + 雞蛋 2 箱 × 620 = 1,440
       expect(screen.getByTestId("order-estimate")).toHaveTextContent("預估金額 NT$ 1,440");
       expect(screen.getByTestId("order-estimate")).toHaveTextContent("實際金額以供應商報價為準");
+    });
+
+    it("貼上訊息 / 拍手寫單:AI 辨識後核對加入 —— 叫過的品項只改數量,新品項進手動清單;還沒送出任何訂單", async () => {
+      parseOrder.mockResolvedValue({
+        items: [
+          { name: "高麗菜", quantity: 8, unit: "kg", source_text: "高麗菜8公斤" },
+          { name: "牛肉", quantity: 3, unit: "kg", source_text: "牛肉3kg" },
+        ],
+        unclear: [],
+      });
+      const user = userEvent.setup();
+      renderPage();
+      await rowOf("高麗菜");
+      await user.click(screen.getByRole("button", { name: /貼上訊息 \/ 拍手寫單/ }));
+      await user.type(await screen.findByLabelText("叫貨訊息"), "高麗菜8公斤 牛肉3kg");
+      await user.click(screen.getByRole("button", { name: "AI 辨識" }));
+      await screen.findByTestId("ai-order-rows");
+      // 已知品名 = 叫過的品項 + 商品目錄
+      expect(parseOrder).toHaveBeenCalledWith(expect.objectContaining({ knownItems: expect.arrayContaining(["高麗菜", "雞蛋"]) }));
+      await user.click(screen.getByRole("button", { name: /加入叫貨清單/ }));
+
+      const cabbage = await rowOf("高麗菜");
+      expect((within(cabbage).getByLabelText("高麗菜 數量") as HTMLInputElement).value).toBe("8");
+      expect(await screen.findByText("牛肉")).toBeInTheDocument();
+      expect(toast.success).toHaveBeenCalledWith("已加入叫貨清單:更新 1 項、新增 1 項", expect.anything());
+      expect(state.calls.find((c) => c.op === "insert")).toBeUndefined();
     });
 
     it("店在供應商的群組裡:用群組價;自己的專屬價蓋過群組價", async () => {

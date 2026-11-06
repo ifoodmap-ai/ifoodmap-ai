@@ -25,6 +25,10 @@ const { state, recordOrderEvent, toastSuccess, toastError } = vi.hoisted(() => (
     /** 下單餐廳所屬群組的群組價(沒群組 = 空陣列) */
     member: [] as Record<string, unknown>[],
     groupPrices: [] as Record<string, unknown>[],
+    /** 已經雙方同意約定價成交的客戶 */
+    standing: [] as Record<string, unknown>[],
+    rpcCalls: [] as { fn: string; args: Record<string, unknown> }[],
+    rpcResult: { data: { status: "confirmed", total_amount: 1690 }, error: null } as { data: unknown; error: { message: string } | null },
   },
   recordOrderEvent: vi.fn(),
   toastSuccess: vi.fn(),
@@ -43,6 +47,7 @@ const fakeFrom = (table: string) => {
     if (table === "supplier_customer_prices") return { data: state.prices, error: null };
     if (table === "supplier_customer_group_members") return { data: state.member, error: null };
     if (table === "supplier_group_prices") return { data: state.groupPrices, error: null };
+    if (table === "supplier_standing_agreements") return { data: state.standing, error: null };
     if (table === "supplier_shipments")
       return {
         data: [{ order_id: "ord-shipped-000000a4", shipped_at: "2026-09-28T02:00:00Z", tracking_info: { carrier: "自有車隊", tracking_number: "T-9" }, notes: null }],
@@ -67,6 +72,7 @@ const fakeFrom = (table: string) => {
 vi.mock("@/integrations/supabase/client", () => ({
   supabase: {
     from: (t: string) => fakeFrom(t),
+    rpc: async (fn: string, args: Record<string, unknown>) => { state.rpcCalls.push({ fn, args }); return state.rpcResult; },
     auth: { getSession: async () => ({ data: { session: { user: { id: "user-sup", email: "sales@example.com" } } } }) },
   },
 }));
@@ -133,6 +139,9 @@ beforeEach(() => {
   state.prices = [];
   state.member = [];
   state.groupPrices = [];
+  state.standing = [];
+  state.rpcCalls = [];
+  state.rpcResult = { data: { status: "confirmed", total_amount: 1690 }, error: null };
   recordOrderEvent.mockReset();
   recordOrderEvent.mockResolvedValue({});
   toastSuccess.mockReset();
@@ -459,6 +468,51 @@ describe("退回重新報價、取消、逾時的原因(業主拍板 N2 / F5)", 
 
       await user.click(screen.getByRole("button", { name: /接單設定/ }));
       expect(await screen.findByRole("heading", { name: "接單設定" })).toBeInTheDocument();
+    });
+  });
+
+  describe("約定價成交(例行叫貨略過報價)", () => {
+    const open = async () => {
+      renderPage("/supplier/orders?stage=all");
+      await waitLoaded();
+    };
+
+    it("客戶已經和你約定價格:待接單那張出現「接單並依約定價成交」;其他狀態、其他客戶沒有", async () => {
+      state.standing = [{ restaurant_id: "rest-1" }];
+      state.orders = [order("ord-standing-00000000s1", "dispatched"), order("ord-quote-0000000000s2", "accepted"), order("ord-other-000000000s3", "dispatched", { restaurant_id: "rest-2" })];
+      await open();
+      await waitFor(() => expect(within(card("ord-standing-00000000s1")).getByRole("button", { name: "接單並依約定價成交" })).toBeInTheDocument());
+      expect(within(card("ord-standing-00000000s1")).getByRole("button", { name: "接單" })).toBeInTheDocument(); // 一般接單還在
+      expect(within(card("ord-quote-0000000000s2")).queryByRole("button", { name: "接單並依約定價成交" })).toBeNull();
+      expect(within(card("ord-other-000000000s3")).queryByRole("button", { name: "接單並依約定價成交" })).toBeNull();
+    });
+
+    it("沒有約定價的客戶:完全沒有這顆按鈕", async () => {
+      state.orders = [order("ord-plain-00000000000p1", "dispatched")];
+      await open();
+      expect(within(card("ord-plain-00000000000p1")).queryByRole("button", { name: "接單並依約定價成交" })).toBeNull();
+    });
+
+    it("按下去:呼叫資料庫的 standing_accept_order(不是自己寫三筆事件),成功後說明金額", async () => {
+      state.standing = [{ restaurant_id: "rest-1" }];
+      state.orders = [order("ord-standing-00000000s1", "dispatched")];
+      const user = userEvent.setup();
+      await open();
+      await user.click(await within(card("ord-standing-00000000s1")).findByRole("button", { name: "接單並依約定價成交" }));
+      await waitFor(() => expect(state.rpcCalls).toEqual([{ fn: "standing_accept_order", args: { p_order_id: "ord-standing-00000000s1" } }]));
+      expect(recordOrderEvent).not.toHaveBeenCalled();
+      await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith(expect.stringContaining("已依約定價成交(NT$ 1,690)")));
+    });
+
+    it("資料庫說算不出價格:顯示原因、不假裝成功,並重新讀取(供應商改走一般報價)", async () => {
+      state.standing = [{ restaurant_id: "rest-1" }];
+      state.orders = [order("ord-standing-00000000s1", "dispatched")];
+      state.rpcResult = { data: null, error: { message: "這張單有品項沒有可用的價格(或數量不是純數字、商品對不到),請照一般流程報價" } };
+      const user = userEvent.setup();
+      await open();
+      await user.click(await within(card("ord-standing-00000000s1")).findByRole("button", { name: "接單並依約定價成交" }));
+      await waitFor(() => expect(toastError).toHaveBeenCalledWith("沒辦法依約定價成交", { description: expect.stringContaining("請照一般流程報價") }));
+      expect(toastSuccess).not.toHaveBeenCalled();
     });
   });
 

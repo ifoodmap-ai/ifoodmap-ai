@@ -95,6 +95,7 @@ const ACTION_LABEL: Record<string, string> = {
   chat: 'AI 對話',
   'parse-delivery-note': '送貨單辨識',
   'parse-catalog': '目錄上架辨識',
+  'parse-order': '叫貨訊息辨識',
   'dish-ideas': '菜色發想',
   'quote-draft': '報價草稿',
   unknown: '未分類',

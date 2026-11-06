@@ -12,6 +12,8 @@ const { state, toast } = vi.hoisted(() => ({
     limits: [] as Record<string, unknown>[],
     /** 這家客戶所屬群組與群組價(沒群組 = 空陣列) */
     member: [] as Record<string, unknown>[],
+    /** 和這家客戶的約定價成交協議(沒有 = 空陣列) */
+    agreement: [] as Record<string, unknown>[],
     groupPrices: [] as Record<string, unknown>[],
     writes: [] as { table: string; op: string; values?: unknown; opts?: unknown; filters: [string, unknown][] }[],
     writeError: null as string | null,
@@ -38,6 +40,7 @@ vi.mock("@/integrations/supabase/client", () => ({
         if (table === "supplier_customer_prices") return state.prices;
         if (table === "supplier_customer_limits") return state.limits;
         if (table === "supplier_customer_group_members") return state.member;
+        if (table === "supplier_standing_agreements") return state.agreement;
         if (table === "supplier_group_prices") return state.groupPrices;
         if (table === "supplier_customer_groups") return [{ name: "連鎖店" }];
         return [];
@@ -47,6 +50,7 @@ vi.mock("@/integrations/supabase/client", () => ({
         eq: (c: string, v: unknown) => { filters.push([c, v]); return b; },
         in: (c: string, v: unknown) => { filters.push([c, v]); return b; },
         order: () => b,
+        insert: (values: unknown) => { write = { op: "insert", values }; return b; },
         upsert: (values: unknown, opts?: unknown) => { write = { op: "upsert", values, opts }; return b; },
         delete: () => { write = { op: "delete" }; return b; },
         maybeSingle: () => Promise.resolve({ data: rows(), error: null }),
@@ -68,6 +72,7 @@ beforeEach(() => {
   state.prices = [];
   state.limits = [];
   state.member = [];
+  state.agreement = [];
   state.groupPrices = [];
   state.writes = [];
   state.writeError = null;
@@ -134,6 +139,42 @@ describe("SupplierCustomerPricesPage", () => {
     await pickCustomer();
     expect(screen.getByTestId("group-note")).toHaveTextContent("沒有加入任何群組");
     expect(priceInput("高麗菜").placeholder).toBe("照定價 45");
+  });
+
+  it("約定價成交:沒有 → 提議(寫入只帶供應商與客戶,不能自己設成生效)→ 顯示等待同意;可取消", async () => {
+    const user = userEvent.setup();
+    render(<SupplierCustomerPricesPage />);
+    await pickCustomer();
+    expect(screen.getByTestId("standing-text")).toHaveTextContent("可以提議「約定價成交」");
+    await user.click(screen.getByRole("button", { name: "提議約定價成交" }));
+    await waitFor(() => expect(state.writes.find((w) => w.table === "supplier_standing_agreements")).toMatchObject({ op: "insert", values: { supplier_id: SUP, restaurant_id: "r1" } }));
+    expect(await screen.findByText("等待對方同意")).toBeInTheDocument();
+    expect(screen.getByTestId("standing-text")).toHaveTextContent("一律照一般流程報價");
+
+    await user.click(screen.getByRole("button", { name: "取消提議" }));
+    await waitFor(() => expect(state.writes.find((w) => w.table === "supplier_standing_agreements" && w.op === "delete")?.filters).toEqual([["supplier_id", SUP], ["restaurant_id", "r1"]]));
+    expect(await screen.findByRole("button", { name: "提議約定價成交" })).toBeInTheDocument();
+  });
+
+  it("約定價成交已生效:顯示「已生效」與說明,可以停用", async () => {
+    state.agreement = [{ status: "active" }];
+    const user = userEvent.setup();
+    render(<SupplierCustomerPricesPage />);
+    await pickCustomer();
+    expect(screen.getByTestId("standing-card")).toHaveTextContent("已生效");
+    expect(screen.getByTestId("standing-text")).toHaveTextContent("接單並依約定價成交");
+    await user.click(screen.getByRole("button", { name: "停用" }));
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith("已停用約定價成交"));
+  });
+
+  it("提議被資料庫拒絕(例如客戶已解除綁定):顯示原因,狀態不變", async () => {
+    state.writeError = "這家餐廳還沒有綁定你,不能提議約定價成交";
+    const user = userEvent.setup();
+    render(<SupplierCustomerPricesPage />);
+    await pickCustomer();
+    await user.click(screen.getByRole("button", { name: "提議約定價成交" }));
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith("提議失敗", { description: "這家餐廳還沒有綁定你,不能提議約定價成交" }));
+    expect(screen.getByRole("button", { name: "提議約定價成交" })).toBeInTheDocument();
   });
 
   it("修改後儲存:有值的 upsert、清空的刪除,只送有改的商品", async () => {

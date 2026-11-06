@@ -193,6 +193,37 @@ export const analyzeChat = (messages: { role: "user" | "bot"; text: string }[]):
 export const chatReply = (messages: { role: "user" | "bot"; text: string }[]): Promise<{ reply: string }> =>
   aiCall<{ reply: string }>({ action: "chat", messages });
 
+export interface ParsedOrderItem {
+  name: string;
+  /** 0 = AI 看不出數量(要使用者自己填) */
+  quantity: number;
+  unit: string;
+  /** 這一項在原文裡對應的那一小段字,讓使用者核對 */
+  source_text: string;
+}
+
+export interface ParsedOrder {
+  items: ParsedOrderItem[];
+  /** 看不清楚、無法確定是不是品項的片段 */
+  unclear: string[];
+}
+
+/**
+ * 叫貨訊息 → 叫貨品項:貼上 LINE 訊息的文字,或拍手寫單的照片(兩個都給也可以)。
+ * knownItems:這家供應商的品名,讓 AI 遇到簡稱時盡量用同一個寫法。只有登入使用者能用。
+ */
+export const parseOrder = async (input: { text?: string; file?: File | null; knownItems?: string[] }): Promise<ParsedOrder> => {
+  const image = input.file ? await fileToBase64(input.file) : undefined;
+  const data = await aiCall<Partial<ParsedOrder>>({
+    action: "parse-order",
+    text: input.text?.trim() || undefined,
+    image,
+    mimeType: input.file ? input.file.type || "image/jpeg" : undefined,
+    knownItems: input.knownItems?.length ? input.knownItems : undefined,
+  });
+  return { items: Array.isArray(data?.items) ? data.items : [], unclear: Array.isArray(data?.unclear) ? data.unclear : [] };
+};
+
 export interface MatchedItem {
   ingredient: string;
   name: string;
