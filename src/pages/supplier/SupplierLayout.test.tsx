@@ -140,11 +140,11 @@ describe("SupplierLayout — 11 條舊路由全部打得開,落在正確的分�
     ["/supplier/quotes", "訂單頁", "訂單", null as string[] | null, null as string | null],
     ["/supplier/shipments", "訂單頁", "訂單", null as string[] | null, null as string | null],
     ["/supplier/logistics", "訂單頁", "訂單", null as string[] | null, null as string | null],
-    ["/supplier/catalog", "商品目錄頁", "商品與價格", null as string[] | null, null as string | null],
-    ["/supplier/customers", "客戶管理頁", "客戶與評價", ["客戶", "群組報價", "客戶價格與上限", "評價"], "客戶"],
-    ["/supplier/price-groups", "群組報價頁", "客戶與評價", ["客戶", "群組報價", "客戶價格與上限", "評價"], "群組報價"],
-    ["/supplier/customer-prices", "客戶價格與上限頁", "客戶與評價", ["客戶", "群組報價", "客戶價格與上限", "評價"], "客戶價格與上限"],
-    ["/supplier/reviews", "我的評價頁", "客戶與評價", ["客戶", "群組報價", "客戶價格與上限", "評價"], "評價"],
+    ["/supplier/catalog", "商品目錄頁", "商品與價格", ["商品目錄", "群組報價", "客戶價格與上限"], "商品目錄"],
+    ["/supplier/price-groups", "群組報價頁", "商品與價格", ["商品目錄", "群組報價", "客戶價格與上限"], "群組報價"],
+    ["/supplier/customer-prices", "客戶價格與上限頁", "商品與價格", ["商品目錄", "群組報價", "客戶價格與上限"], "客戶價格與上限"],
+    ["/supplier/customers", "客戶管理頁", "客戶與評價", ["客戶", "評價"], "客戶"],
+    ["/supplier/reviews", "我的評價頁", "客戶與評價", ["客戶", "評價"], "評價"],
     ["/supplier/invoices", "請款單頁", "請款", ["請款單", "新增請款"], "請款單"],
     ["/supplier/invoice-create", "新增請款頁", "請款", ["請款單", "新增請款"], "新增請款"],
     ["/supplier/market/orders", "零售訂單頁", "零售市集", ["零售訂單", "店家設定"], "零售訂單"],
@@ -193,11 +193,13 @@ describe("SupplierLayout — 定價助手:選單收起來,路由仍可直接開(
     expect(screen.queryByText("行情比價")).toBeNull();
   });
 
-  it("商品與價格分區只剩一個可見分頁,不畫分頁列(catalog 與 pricing 兩條路由都一樣)", () => {
+  it("商品與價格分區的分頁是:商品目錄、群組報價、客戶價格與上限;定價助手仍然不在分頁裡(catalog 與 pricing 兩條路由都一樣)", () => {
     renderLayout("/supplier/catalog");
-    expect(screen.queryByRole("tablist")).toBeNull();
+    expect(screen.getAllByRole("tab").map((t) => t.textContent)).toEqual(["商品目錄", "群組報價", "客戶價格與上限"]);
+    cleanup();
     renderLayout("/supplier/pricing");
-    expect(screen.queryByRole("tablist")).toBeNull();
+    expect(screen.getAllByRole("tab").map((t) => t.textContent)).toEqual(["商品目錄", "群組報價", "客戶價格與上限"]);
+    expect(screen.queryByRole("tab", { name: "行情比價" })).toBeNull();
   });
 });
 

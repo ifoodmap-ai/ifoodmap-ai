@@ -60,9 +60,12 @@ const sections: SupplierSection[] = [
     to: "/supplier/catalog",
     label: "商品與價格",
     icon: Boxes,
-    match: startsWithAny(["/supplier/catalog", "/supplier/pricing"]),
+    match: startsWithAny(["/supplier/catalog", "/supplier/pricing", "/supplier/price-groups", "/supplier/customer-prices"]),
     tabs: [
       { label: "商品目錄", path: "/supplier/catalog" },
+      // 商品定價在商品目錄;依客戶訂價(群組價、客戶專屬價、每日 / 每週上限)放在這裡,找價格的人一次看到
+      { label: "群組報價", path: "/supplier/price-groups" },
+      { label: "客戶價格與上限", path: "/supplier/customer-prices" },
       // 業主拍板(QUESTIONS.md Q6-A):定價助手從選單收起來 —— 路由保留,直接打網址仍可用
       { label: "行情比價", path: "/supplier/pricing", hidden: true },
     ],
@@ -72,11 +75,9 @@ const sections: SupplierSection[] = [
     to: "/supplier/customers",
     label: "客戶與評價",
     icon: Users,
-    match: startsWithAny(["/supplier/customers", "/supplier/reviews", "/supplier/customer-prices", "/supplier/price-groups"]),
+    match: startsWithAny(["/supplier/customers", "/supplier/reviews"]),
     tabs: [
       { label: "客戶", path: "/supplier/customers" },
-      { label: "群組報價", path: "/supplier/price-groups" },
-      { label: "客戶價格與上限", path: "/supplier/customer-prices" },
       { label: "評價", path: "/supplier/reviews" },
     ],
   },
