@@ -55,7 +55,12 @@ export default function SectionTabs({ tabs, ariaLabel, panelId, className = "" }
 
   if (visibleTabs.length < 2) return null;
 
-  const activeIndex = visibleTabs.findIndex((tab) => isTabActive(location.pathname, tab.path));
+  // 同時符合好幾個分頁時選路徑最長的(例如分區首頁 /supplier 與它底下的 /supplier/savings,後者才是目前這頁)
+  const activeIndex = visibleTabs.reduce(
+    (best, tab, i) =>
+      isTabActive(location.pathname, tab.path) && (best === -1 || tab.path.length > visibleTabs[best].path.length) ? i : best,
+    -1,
+  );
 
   const focusTabAt = (index: number) => {
     tabRefs.current[index]?.focus();

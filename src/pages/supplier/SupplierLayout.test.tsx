@@ -52,6 +52,7 @@ const renderLayout = (path: string) =>
           <Route path="customers" element={<h1>客戶管理頁</h1>} />
           <Route path="customer-prices" element={<h1>客戶價格與上限頁</h1>} />
           <Route path="price-groups" element={<h1>群組報價頁</h1>} />
+          <Route path="savings" element={<h1>省多少錢頁</h1>} />
           <Route path="logistics" element={<Navigate to="/supplier/orders?stage=shipped" replace />} />
           <Route path="shipments" element={<Navigate to="/supplier/orders?stage=shipped" replace />} />
           <Route path="reviews" element={<h1>我的評價頁</h1>} />
@@ -133,7 +134,8 @@ describe("SupplierLayout — aria-current 標出目前分區", () => {
 
 describe("SupplierLayout — 11 條舊路由全部打得開,落在正確的分區與分頁", () => {
   it.each([
-    ["/supplier", "總覽頁", "總覽", null as string[] | null, null as string | null],
+    ["/supplier", "總覽頁", "總覽", ["總覽", "省多少錢"], "總覽"],
+    ["/supplier/savings", "省多少錢頁", "總覽", ["總覽", "省多少錢"], "省多少錢"],
     ["/supplier/leads", "商機雷達頁", "商機", ["商機雷達", "需求與備貨"], "商機雷達"],
     ["/supplier/forecast", "需求預測頁", "商機", ["商機雷達", "需求與備貨"], "需求與備貨"],
     ["/supplier/orders", "訂單頁", "訂單", null as string[] | null, null as string | null],
