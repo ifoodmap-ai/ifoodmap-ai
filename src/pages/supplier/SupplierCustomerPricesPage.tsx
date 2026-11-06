@@ -9,6 +9,7 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
 import { supabase } from "@/integrations/supabase/client";
+import { readCsvFile } from "@/lib/csv-file";
 import { downloadCsv, localDateStr } from "@/lib/restaurant-report";
 import {
   importSheet, sheetCsv, type CatalogItem, type LimitPeriod, type PriceSheetRow,
@@ -198,7 +199,7 @@ const SupplierCustomerPricesPage = () => {
   const importFile = async (file: File | undefined) => {
     if (!file) return;
     try {
-      const text = await file.text();
+      const text = await readCsvFile(file);
       const r = importSheet(text, catalog);
       setImportErrors(r.errors);
       if (r.rows.length > 0) {

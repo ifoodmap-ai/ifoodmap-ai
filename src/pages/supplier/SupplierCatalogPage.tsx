@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { ImagePlus, Loader2, Plus, Pencil, Trash2, PackageX } from 'lucide-react';
+import { Download, ImagePlus, Loader2, Plus, Pencil, Trash2, PackageX, Upload } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
@@ -28,6 +28,9 @@ import { supabase } from '@/integrations/supabase/client';
 import { newUuid } from '@/lib/market/db';
 import { uploadSupplyImage } from '@/lib/supply-images';
 import SupplyThumb from '@/components/SupplyThumb';
+import SupplierCatalogImportDialog from '@/components/supplier/SupplierCatalogImportDialog';
+import { catalogCsv } from '@/lib/catalog-import';
+import { downloadCsv, localDateStr } from '@/lib/restaurant-report';
 import type { SupplySeed } from '@/lib/market/productForm';
 import type { MarketProductRow } from '@/lib/market/types';
 import MarketProductDialog from './market/MarketProductDialog';
@@ -88,6 +91,7 @@ export default function SupplierCatalogPage() {
   const [form, setForm] = useState<FormState>(emptyForm);
   const [formOpen, setFormOpen] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
   const [uploading, setUploading] = useState(false);
   const imageInput = useRef<HTMLInputElement>(null);
   const [deleteId, setDeleteId] = useState<string | null>(null);
@@ -244,9 +248,21 @@ export default function SupplierCatalogPage() {
         <TabsContent value="wholesale">
       <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
         <p className="text-sm text-gray-500">管理您上架給 ifoodmap 買家的商品品項與價格</p>
-        <Button onClick={openCreate} className="bg-emerald-600 hover:bg-emerald-700 text-white" disabled={!supplierId}>
-          <Plus size={16} className="mr-1.5" />新增商品
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          <Button variant="outline" onClick={() => setImportOpen(true)} disabled={!supplierId}>
+            <Upload size={16} className="mr-1.5" />批次匯入
+          </Button>
+          <Button
+            variant="outline"
+            onClick={() => downloadCsv(`商品目錄_${localDateStr(new Date())}.csv`, catalogCsv(supplies))}
+            disabled={!supplierId || supplies.length === 0}
+          >
+            <Download size={16} className="mr-1.5" />匯出 CSV
+          </Button>
+          <Button onClick={openCreate} className="bg-emerald-600 hover:bg-emerald-700 text-white" disabled={!supplierId}>
+            <Plus size={16} className="mr-1.5" />新增商品
+          </Button>
+        </div>
       </div>
 
       {supplierId && supplies.length > 0 && market.error ? (
@@ -485,6 +501,16 @@ export default function SupplierCatalogPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {supplierId && (
+        <SupplierCatalogImportDialog
+          open={importOpen}
+          onOpenChange={setImportOpen}
+          supplierId={supplierId}
+          supplies={supplies}
+          onApplied={() => fetchSupplies(supplierId)}
+        />
+      )}
 
       <AlertDialog open={!!deleteId} onOpenChange={(o) => { if (!o) setDeleteId(null); }}>
         <AlertDialogContent>
