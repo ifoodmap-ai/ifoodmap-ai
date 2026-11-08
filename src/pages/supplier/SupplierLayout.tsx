@@ -20,7 +20,7 @@ interface SupplierSection {
   icon: LucideIcon;
   /** 目前路由是否落在這個分區(一個分區可能對應好幾條路由) */
   match: (pathname: string) => boolean;
-  /** 分區內的分頁;沒有分頁可切的分區留 undefined */
+  /** 分區內的分頁;沒有分頁可切的分區(目前只有總覽)留 undefined */
   tabs?: SectionTabItem[];
 }
 
@@ -33,11 +33,7 @@ const sections: SupplierSection[] = [
     to: "/supplier",
     label: "總覽",
     icon: LayoutDashboard,
-    match: (pathname) => pathname === "/supplier" || pathname === "/supplier/savings",
-    tabs: [
-      { label: "總覽", path: "/supplier" },
-      { label: "省多少錢", path: "/supplier/savings" },
-    ],
+    match: (pathname) => pathname === "/supplier",
   },
   {
     key: "orders",

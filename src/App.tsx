@@ -87,7 +87,6 @@ import SupplierReviewsPage from "./pages/supplier/SupplierReviewsPage";
 import SupplierInvoicesPage from "./pages/supplier/SupplierInvoicesPage";
 import SupplierCustomerPricesPage from "./pages/supplier/SupplierCustomerPricesPage";
 import SupplierPriceGroupsPage from "./pages/supplier/SupplierPriceGroupsPage";
-import SupplierSavingsPage from "./pages/supplier/SupplierSavingsPage";
 import SupplierInvoiceCreatePage from "./pages/supplier/SupplierInvoiceCreatePage";
 import SupplierMarketStorePage from "./pages/supplier/SupplierMarketStorePage";
 import SupplierMarketOrdersPage from "./pages/supplier/SupplierMarketOrdersPage";
@@ -220,7 +219,6 @@ const MainRoutes = () => (
       <Route path="invoices" element={<SupplierInvoicesPage />} />
       <Route path="customer-prices" element={<SupplierCustomerPricesPage />} />
       <Route path="price-groups" element={<SupplierPriceGroupsPage />} />
-      <Route path="savings" element={<SupplierSavingsPage />} />
       <Route path="invoice-create" element={<SupplierInvoiceCreatePage />} />
       {/* 零售市集(B2C) */}
       <Route path="market/store" element={<SupplierMarketStorePage />} />
