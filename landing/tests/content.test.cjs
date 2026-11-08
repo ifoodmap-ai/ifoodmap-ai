@@ -148,7 +148,7 @@ function assertRestaurantOverflowRegions(fragment) {
 // 整頁一起數會把兩區加在一起(我第一次就是這樣錯的:算出 8 個編號籤)。
 function supplierCapabilitySection(fragment) {
   const start = fragment.indexOf('<section id="supplier-capabilities"');
-  const end = fragment.indexOf('supplier-outcomes-title', start);
+  const end = fragment.indexOf('id="supplier-savings"', start);
   assert.ok(start !== -1 && end > start, '找不到供應商能力區');
   return fragment.slice(start, end);
 }
@@ -161,7 +161,7 @@ function assertSupplierCapabilities(fragment) {
 
 function assertSupplierCapabilityOrder(fragment) {
   const capabilityStart = fragment.indexOf('<section id="supplier-capabilities"');
-  const capabilityEnd = fragment.indexOf('<section aria-labelledby="supplier-outcomes-title"', capabilityStart);
+  const capabilityEnd = fragment.indexOf('<section id="supplier-savings"', capabilityStart);
   const capabilityFragment = fragment.slice(capabilityStart, capabilityEnd);
   const headings = [...capabilityFragment.matchAll(/<h2[^>]*>([^<]+)<\/h2>/g)]
     .map((match) => match[1]);
@@ -682,11 +682,11 @@ test('supplier solution page follows the approved story and uses two canonical j
   const pains = suppliers.indexOf('好商品，不該埋沒在零散詢價裡');
   const workflow = suppliers.indexOf('從被看見，到報價、接單與持續經營');
   const capabilities = suppliers.indexOf('id="supplier-capabilities"');
-  const outcomes = suppliers.indexOf('供應商經營的成果參考');
+  const savings = suppliers.indexOf('id="supplier-savings"');
   const finalCta = suppliers.lastIndexOf('申請供應商上架');
   assert.ok(hero >= 0 && pains > hero);
   assert.ok(workflow > pains && capabilities > workflow);
-  assert.ok(outcomes > capabilities && finalCta > outcomes);
+  assert.ok(savings > capabilities && finalCta > savings);
 });
 
 test('supplier page names four pains and an accurate lead-to-relationship workflow', () => {
@@ -731,7 +731,7 @@ test('supplier capabilities are four illustrated bento cards, not walls of fake 
 
 test('supplier capability cards are laid out irregularly, not as a four-up equal grid', () => {
   const capStart = suppliers.indexOf('<section id="supplier-capabilities"');
-  const capEnd = suppliers.indexOf('supplier-outcomes-title', capStart);
+  const capEnd = suppliers.indexOf('id="supplier-savings"', capStart);
   const caps = suppliers.slice(capStart, capEnd);
   assert.match(caps, /<div class="ifm-bento"/);
   // 至少兩種不同寬度,而且至少一張有垂直位移 —— 不然就退化成規律四欄了
@@ -758,13 +758,9 @@ test('supplier capability guards fail when cards are swapped or lose their art',
 });
 
 
-test('supplier outcomes distinguish public metrics from examples and include a qualifier', () => {
-  for (const metric of ['2,500+', '28 類', '24hr']) {
-    assert.match(suppliers, new RegExp(metric.replace('+', '\\+')));
-  }
-  assert.match(suppliers, /平台現有公開數據/);
-  assert.match(suppliers, /示例資料，非特定客戶實績/);
-  assert.match(suppliers, /成果依品項、服務區域、供應能力與執行期間而異。/);
+// 2026-11-09 業主拿掉 /suppliers 的「供應商經營的成果參考」區塊(平台公開數據三格 + 示例說明),不要再放回來。
+test('supplier page no longer has the outcomes block (public metrics, example note)', () => {
+  assert.doesNotMatch(suppliers, /供應商經營的成果參考|平台現有公開數據|示例資料，非特定客戶實績|supplier-outcomes-title/);
 });
 
 test('supplier fragment excludes placeholders and unsupported automation claims', () => {
