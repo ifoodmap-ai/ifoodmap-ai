@@ -29,7 +29,7 @@ const EXCLUDED = [
 
 // 網站要用的頂層檔案 / 目錄:一個都不准被排除
 const SITE = [
-  'index.html', 'i18n.js', 'support.js', 'routing.js', 'legal.js', 'news.js',
+  'index.html', 'i18n.js', 'support.js', 'routing.js', 'savings.js', 'legal.js', 'news.js',
   'api', 'assets', 'vercel.json', 'package.json',
   'favicon.ico', 'favicon-16x16.png', 'favicon-32x32.png', 'apple-touch-icon.png', 'icon.png', 'logo.png',
   'og-image.png', 'og-image-en.png',

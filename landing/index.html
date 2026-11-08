@@ -16,6 +16,7 @@
      AI 助手與異業合作表單都要用,以前它包在 widget 的 IIFE 裡,外面拿不到。 -->
 <script>window.IFM_SUPA = { url: 'https://cwvpehqcvbfuynabpqop.supabase.co', anon: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImN3dnBlaHFjdmJmdXluYWJwcW9wIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk5NzQ5NjgsImV4cCI6MjA5NTU1MDk2OH0.QMkcOlGjRTP5XeddI4IAzSkGJoUjaRtcjI_Tjl6rj2k' };</script>
 <script src="/routing.js"></script>
+<script src="/savings.js"></script>
 <script src="/support.js"></script>
 <!-- 首頁 hero 的世界地圖(d3 + world-atlas),見 drawMap() -->
 <script src="https://unpkg.com/d3@7.9.0/dist/d3.min.js" integrity="sha384-CjloA8y00+1SDAUkjs099PVfnY2KmDC2BZnws9kh8D/lX1s46w6EPhpXdqMfjK6i" crossorigin="anonymous"></script>
@@ -205,6 +206,53 @@
   }
   .restaurant-case-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:24px; }
   .supplier-wrap { max-width:1240px; margin:0 auto; padding-left:40px; padding-right:40px; }
+  /* /suppliers 的作業成本試算(#supplier-savings)。桌機:輸入一排四格、結果在下面一整條;
+     手機:一欄,每格是「標籤 + 大觸控步進器」,結果摘要黏在輸入區底部(.sv-mini),邊改邊看得到數字。 */
+  .sv-section { background:linear-gradient(180deg,#fff 0%,#f4faf4 100%); border-top:1px solid #e8eee9; }
+  .sv-head { max-width:760px; margin-bottom:30px; }
+  #sv-result { scroll-margin-top:84px; }
+  .sv-card { background:#fff; border:1px solid #dfe8e1; border-radius:24px; box-shadow:0 16px 44px rgba(20,60,30,.07); }
+  .sv-inputs { padding:30px 30px 26px; }
+  .sv-fields { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:20px; }
+  .sv-field { min-width:0; }
+  .sv-label { display:block; font-size:14px; font-weight:700; color:#17261c; margin-bottom:8px; line-height:1.4; }
+  .sv-stepper { display:flex; align-items:stretch; gap:8px; }
+  .sv-btn { flex:0 0 46px; width:46px; min-height:46px; border:1.5px solid #cfdcd1; background:#f6faf6; color:#166534; border-radius:14px; font-size:22px; line-height:1; font-weight:600; cursor:pointer; font-family:inherit; touch-action:manipulation; }
+  .sv-btn:hover { background:#e9f5ea; }
+  .sv-btn:active { background:#dcefdd; }
+  .sv-btn:focus-visible, .sv-input:focus-visible, .sv-adv summary:focus-visible { outline:3px solid #7cc576; outline-offset:2px; }
+  .sv-inputwrap { flex:1; min-width:0; display:flex; align-items:center; gap:6px; border:1.5px solid #cfdcd1; border-radius:14px; padding:0 12px; background:#fff; }
+  .sv-inputwrap:focus-within { border-color:#3DAE2B; box-shadow:0 0 0 3px rgba(61,174,43,.16); }
+  /* 16px 以上:iOS Safari 對焦時不會自動放大頁面 */
+  .sv-input { flex:1; min-width:0; width:100%; border:0; outline:0; background:transparent; font-size:18px; font-weight:700; color:#0e1a12; font-family:'Space Grotesk','Noto Sans TC',sans-serif; text-align:right; padding:10px 0; }
+  .sv-unit { font-size:13px; color:#5b6b62; white-space:nowrap; }
+  .sv-hint { font-size:12.5px; line-height:1.55; color:#6c7b72; margin:7px 0 0; }
+  .sv-adv { margin-top:22px; border-top:1px dashed #d4e0d6; padding-top:16px; }
+  .sv-adv summary { cursor:pointer; font-size:14px; font-weight:700; color:#166534; padding:6px 0; min-height:32px; }
+  .sv-adv-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:20px; margin-top:16px; }
+  .sv-adv-note { font-size:13px; line-height:1.65; color:#5b6b62; margin:20px 0 0; }
+  .sv-mini { display:none; }
+  .sv-result { margin-top:22px; padding:30px; background:linear-gradient(135deg,#f1faf1 0%,#e4f4e4 100%); border-color:#cfe6d0; }
+  .sv-result-grid { display:grid; grid-template-columns:minmax(0,.9fr) minmax(0,1.1fr); gap:34px; align-items:center; }
+  .sv-orders { font-size:15px; color:#34473b; margin:0 0 18px; }
+  .sv-orders b { font-family:'Space Grotesk','Noto Sans TC',sans-serif; font-size:17px; color:#17261c; }
+  .sv-kpi-label { font-size:13px; font-weight:700; color:#166534; margin-bottom:4px; }
+  .sv-kpi-main { font-family:'Space Grotesk','Noto Sans TC',sans-serif; font-size:48px; line-height:1.1; font-weight:800; color:#14532d; letter-spacing:-.02em; overflow-wrap:anywhere; }
+  .sv-kpi-row { display:grid; grid-template-columns:1fr 1fr; gap:14px; margin-top:20px; }
+  .sv-kpi { background:rgba(255,255,255,.7); border:1px solid #d6e8d7; border-radius:16px; padding:14px 16px; min-width:0; }
+  .sv-kpi strong { display:block; font-family:'Space Grotesk','Noto Sans TC',sans-serif; font-size:24px; color:#17261c; overflow-wrap:anywhere; }
+  .sv-bars { display:grid; gap:18px; }
+  .sv-bar-head { display:flex; justify-content:space-between; gap:12px; font-size:14px; color:#34473b; margin-bottom:7px; }
+  .sv-bar-head b { font-family:'Space Grotesk','Noto Sans TC',sans-serif; color:#17261c; white-space:nowrap; }
+  .sv-bar { display:flex; height:16px; border-radius:999px; overflow:hidden; background:#dbe9dc; }
+  .sv-seg { height:100%; min-width:0; transition:width .35s ease; }
+  .sv-legend { display:flex; flex-wrap:wrap; gap:8px 18px; list-style:none; margin:2px 0 0; padding:0; font-size:13px; color:#4b5a52; }
+  .sv-legend li { display:inline-flex; align-items:center; gap:7px; }
+  .sv-dot { width:11px; height:11px; border-radius:4px; display:inline-block; }
+  .sv-foot { margin-top:22px; display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:16px 28px; }
+  .sv-note { flex:1 1 420px; font-size:13px; line-height:1.7; color:#5b6b62; margin:0; }
+  @media (prefers-reduced-motion: reduce) { .sv-seg { transition:none; } }
+  @media (min-width:769px) and (max-width:1024px) { .sv-fields { grid-template-columns:repeat(2,minmax(0,1fr)); } .sv-adv-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } .sv-result-grid { grid-template-columns:1fr; } }
   .supplier-hero-grid { display:grid; grid-template-columns:minmax(0,1.02fr) minmax(420px,.98fr); gap:54px; align-items:center; }
   .supplier-pain-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:18px; }
   .supplier-flow { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:14px; counter-reset:supplier-step; }
@@ -658,6 +706,23 @@
     .restaurant-flow { gap:12px; }
     .restaurant-mobile-copy { font-size:16px !important; }
     .supplier-wrap { padding-left:20px; padding-right:20px; }
+    .sv-inputs { padding:20px 16px 0; border-radius:20px; }
+    .sv-fields, .sv-adv-grid { grid-template-columns:1fr; gap:18px; }
+    .sv-adv-grid { gap:16px; }
+    .sv-btn { flex-basis:52px; width:52px; min-height:52px; }
+    .sv-input { font-size:20px; padding:12px 0; }
+    /* 黏在輸入區底部的摘要:改任何一格,不用捲動就看得到結果;捲過輸入區它就自然消失 */
+    .sv-mini { position:sticky; bottom:10px; z-index:5; display:flex; align-items:center; justify-content:space-between; gap:10px;
+      margin:18px -4px 12px; padding:12px 76px 12px 14px; border-radius:16px; /* 右邊留給右下角的 AI 助手浮動鈕,不讓它蓋住「看明細」 */ background:#14532d; color:#fff; box-shadow:0 10px 26px rgba(10,40,20,.28); }
+    .sv-mini small { display:block; font-size:12px; color:#b9dcbb; }
+    .sv-mini strong { font-family:'Space Grotesk','Noto Sans TC',sans-serif; font-size:21px; line-height:1.2; overflow-wrap:anywhere; }
+    .sv-mini a { flex:0 0 auto; color:#14532d; background:#bdf0b4; border-radius:999px; padding:10px 14px; font-size:13px; font-weight:700; text-decoration:none; min-height:40px; display:inline-flex; align-items:center; }
+    .sv-result { padding:22px 16px; border-radius:20px; margin-top:16px; }
+    .sv-result-grid { grid-template-columns:1fr; gap:26px; }
+    .sv-kpi-main { font-size:38px; }
+    .sv-kpi strong { font-size:20px; }
+    .sv-foot { flex-direction:column; align-items:stretch; }
+    .sv-foot .platform-action { text-align:center; justify-content:center; }
     .supplier-hero-grid,
     .supplier-pain-grid,
     .supplier-flow,
@@ -1413,6 +1478,117 @@
       </div>
     </section>
 
+    <!-- ============ 作業成本試算 ============
+         輸入全在瀏覽器計算(算法在 /savings.js,tests/savings.test.cjs 釘住),不送出任何資料。
+         手機:一欄、大觸控步進器、結果摘要(.sv-mini)黏在輸入區底部。 -->
+    <section id="supplier-savings" class="sv-section" aria-labelledby="sv-title">
+      <div class="supplier-wrap" style="padding-top:76px;padding-bottom:84px;">
+        <div class="sv-head" data-reveal>
+          <div style="font-size:13px;font-weight:700;color:#166534;letter-spacing:.1em;margin-bottom:10px;">{{ L.sup.svEyebrow }}</div>
+          <h2 id="sv-title" style="font-size:38px;line-height:1.3;color:#17261c;margin:0 0 14px;">{{ L.sup.svTitle }}</h2>
+          <p class="supplier-mobile-copy" style="font-size:17px;line-height:1.75;color:#5b6b62;margin:0;">{{ L.sup.svSub }}</p>
+        </div>
+
+        <div class="sv-card sv-inputs" data-reveal>
+          <div class="sv-fields">
+            <sc-for list="{{ svMainFields }}" as="f" hint-placeholder-count="4">
+              <div class="sv-field">
+                <label class="sv-label" for="{{ f.id }}">{{ f.label }}</label>
+                <div class="sv-stepper">
+                  <button type="button" class="sv-btn" onClick="{{ f.onDec }}" aria-label="{{ f.decLabel }}">−</button>
+                  <div class="sv-inputwrap">
+                    <input id="{{ f.id }}" class="sv-input" type="text" inputmode="decimal" autocomplete="off" value="{{ f.text }}" onChange="{{ f.onChange }}" onBlur="{{ f.onBlur }}">
+                    <span class="sv-unit">{{ f.unit }}</span>
+                  </div>
+                  <button type="button" class="sv-btn" onClick="{{ f.onInc }}" aria-label="{{ f.incLabel }}">+</button>
+                </div>
+                <p class="sv-hint">{{ f.hint }}</p>
+              </div>
+            </sc-for>
+          </div>
+
+          <details class="sv-adv">
+            <summary>{{ L.sup.svAdvanced }}</summary>
+            <div class="sv-adv-grid">
+              <sc-for list="{{ svAdvFields }}" as="f" hint-placeholder-count="3">
+                <div class="sv-field">
+                  <label class="sv-label" for="{{ f.id }}">{{ f.label }}</label>
+                  <div class="sv-stepper">
+                    <button type="button" class="sv-btn" onClick="{{ f.onDec }}" aria-label="{{ f.decLabel }}">−</button>
+                    <div class="sv-inputwrap">
+                      <input id="{{ f.id }}" class="sv-input" type="text" inputmode="decimal" autocomplete="off" value="{{ f.text }}" onChange="{{ f.onChange }}" onBlur="{{ f.onBlur }}">
+                      <span class="sv-unit">{{ f.unit }}</span>
+                    </div>
+                    <button type="button" class="sv-btn" onClick="{{ f.onInc }}" aria-label="{{ f.incLabel }}">+</button>
+                  </div>
+                  <p class="sv-hint">{{ f.hint }}</p>
+                </div>
+              </sc-for>
+            </div>
+            <p class="sv-adv-note">{{ L.sup.svAssumeNote }}</p>
+            <div class="sv-adv-grid">
+              <sc-for list="{{ svCutFields }}" as="f" hint-placeholder-count="3">
+                <div class="sv-field">
+                  <label class="sv-label" for="{{ f.id }}">{{ f.label }}</label>
+                  <div class="sv-stepper">
+                    <button type="button" class="sv-btn" onClick="{{ f.onDec }}" aria-label="{{ f.decLabel }}">−</button>
+                    <div class="sv-inputwrap">
+                      <input id="{{ f.id }}" class="sv-input" type="text" inputmode="decimal" autocomplete="off" value="{{ f.text }}" onChange="{{ f.onChange }}" onBlur="{{ f.onBlur }}">
+                      <span class="sv-unit">{{ f.unit }}</span>
+                    </div>
+                    <button type="button" class="sv-btn" onClick="{{ f.onInc }}" aria-label="{{ f.incLabel }}">+</button>
+                  </div>
+                </div>
+              </sc-for>
+            </div>
+          </details>
+
+          <div class="sv-mini">
+            <div><small>{{ L.sup.svMini }}</small><strong>NT$ {{ svSaved }}</strong></div>
+            <a href="#sv-result">{{ L.sup.svSeeResult }} ↓</a>
+          </div>
+        </div>
+
+        <div id="sv-result" class="sv-card sv-result" data-reveal role="region" aria-labelledby="sv-result-title">
+          <h3 id="sv-result-title" class="ifm-sr-only" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;">{{ L.sup.svResultTitle }}</h3>
+          <div class="sv-result-grid">
+            <div aria-live="polite" aria-atomic="true">
+              <p class="sv-orders">{{ L.sup.svOrdersBefore }} <b>{{ svOrders }}</b> {{ L.sup.svOrdersAfter }}</p>
+              <div class="sv-kpi-label">{{ L.sup.svSavedLabel }}</div>
+              <div class="sv-kpi-main">NT$ {{ svSaved }}</div>
+              <div class="sv-kpi-row">
+                <div class="sv-kpi"><div class="sv-kpi-label">{{ L.sup.svHoursLabel }}</div><strong>{{ svHours }} {{ L.sup.svHoursUnit }}</strong></div>
+                <div class="sv-kpi"><div class="sv-kpi-label">{{ L.sup.svYearLabel }}</div><strong>NT$ {{ svYear }}</strong></div>
+              </div>
+            </div>
+            <div class="sv-bars">
+              <div>
+                <div class="sv-bar-head"><span>{{ L.sup.svBefore }}</span><b>NT$ {{ svBeforeTotal }}</b></div>
+                <div class="sv-bar" role="img" aria-label="{{ svBeforeAria }}">
+                  <sc-for list="{{ svBeforeSegs }}" as="g" hint-placeholder-count="3"><span class="sv-seg" style="width:{{ g.w }}%;background:{{ g.color }}"></span></sc-for>
+                </div>
+              </div>
+              <div>
+                <div class="sv-bar-head"><span>{{ L.sup.svAfter }}</span><b>NT$ {{ svAfterTotal }}</b></div>
+                <div class="sv-bar" role="img" aria-label="{{ svAfterAria }}">
+                  <sc-for list="{{ svAfterSegs }}" as="g" hint-placeholder-count="3"><span class="sv-seg" style="width:{{ g.w }}%;background:{{ g.color }}"></span></sc-for>
+                </div>
+              </div>
+              <ul class="sv-legend">
+                <li><span class="sv-dot" style="background:#3DAE2B"></span>{{ L.sup.svHandling }}</li>
+                <li><span class="sv-dot" style="background:#F2A33A"></span>{{ L.sup.svErrors }}</li>
+                <li><span class="sv-dot" style="background:#8FB9A8"></span>{{ L.sup.svBillingLabel }}</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+
+        <div class="sv-foot">
+          <p class="sv-note">{{ L.sup.svNote }}</p>
+        </div>
+      </div>
+    </section>
+
     <section class="supplier-wrap" style="padding-top:8px;padding-bottom:92px;">
       <div class="ifm-cta-split" data-reveal style="padding:52px 48px;border-radius:28px;background:radial-gradient(560px 260px at 82% -25%,rgba(124,240,107,.22),transparent 65%),#102419;color:#fff;">
         <div class="ifm-cta-split__copy">
@@ -2076,6 +2252,12 @@ class Component extends DCLogic {
     countP: typeof window !== 'undefined' && window.__IFM_PRERENDERING ? 1 : 0,
     cw: typeof window !== 'undefined' ? window.innerWidth : 1200,
     menuOpen: false,
+    // /suppliers 作業成本試算:sv 是目前的數字(輸入 + 估算假設),svText 是使用者正在打的原字串
+    // (打到一半是空字串或「5.」都要讓他打完,離開欄位才夾回合法範圍)。算法在 /savings.js。
+    sv: typeof window !== 'undefined' && window.IfmSavings
+      ? { ...window.IfmSavings.DEFAULTS, ...window.IfmSavings.ASSUMPTIONS }
+      : {},
+    svText: {},
     // 語系提示條在這一頁被收掉了(按了切換、按了 ×、或按了 header 的語言鈕)。
     // localStorage 本來就會記,這裡再記一份在記憶體:無痕視窗寫不進 localStorage,
     // 沒有這個旗標的話按了 × 也收不掉。
@@ -2419,6 +2601,96 @@ class Component extends DCLogic {
 
   // 首頁搜尋列 / 分類籤 → 交給右下角的 AI 採購助手接著訪談。
   // 助手是獨立的 widget(window.IfmAI),萬一還沒載好就退回聯絡頁,不讓人按了沒反應。
+  /* ---------- /suppliers 作業成本試算 ---------- */
+  svApply(key, raw) {
+    const S = window.IfmSavings;
+    if (!S) return;
+    const n = raw === '' ? 0 : Number(raw);
+    this.setState({ sv: { ...this.state.sv, [key]: S.clamp(key, Number.isFinite(n) ? n : 0) } });
+  }
+  svChange(key, event) {
+    // 只收數字與一個小數點;其他字元(中文輸入法的全形數字、逗號…)直接略過
+    const raw = String(event && event.target ? event.target.value : '').replace(/[^\d.]/g, '');
+    if ((raw.match(/\./g) || []).length > 1) return;
+    this.setState({ svText: { ...this.state.svText, [key]: raw } });
+    this.svApply(key, raw);
+  }
+  svBlur(key) {
+    const { [key]: _drop, ...rest } = this.state.svText;
+    this.setState({ svText: rest });
+  }
+  svStep(key, dir) {
+    const S = window.IfmSavings;
+    if (!S) return;
+    const { step } = S.LIMITS[key];
+    const next = Math.round((Number(this.state.sv[key]) + dir * step) * 100) / 100;
+    const { [key]: _drop, ...rest } = this.state.svText;
+    this.setState({ svText: rest, sv: { ...this.state.sv, [key]: S.clamp(key, next) } });
+  }
+  /* 試算區要的全部綁定:欄位清單(主要 / 進階 / 假設)與結果數字、長條圖 */
+  savingsView(T) {
+    const S = typeof window !== 'undefined' ? window.IfmSavings : null;
+    if (!S) return {};
+    const { sv, svText } = this.state;
+    const field = (key, label, unit, hint) => ({
+      id: 'sv-' + key,
+      label,
+      unit,
+      hint: hint || '',
+      text: svText[key] !== undefined ? svText[key] : String(sv[key]),
+      decLabel: T.svDecrease + ' ' + label,
+      incLabel: T.svIncrease + ' ' + label,
+      onChange: (event) => this.svChange(key, event),
+      onBlur: () => this.svBlur(key),
+      onDec: () => this.svStep(key, -1),
+      onInc: () => this.svStep(key, 1),
+    });
+    const inputs = {
+      customers: sv.customers, ordersPerWeek: sv.ordersPerWeek, minutesPerOrder: sv.minutesPerOrder,
+      errorRatePct: sv.errorRatePct, hourlyWage: sv.hourlyWage, costPerError: sv.costPerError, billingHours: sv.billingHours,
+    };
+    const r = S.calc(inputs, { handlingCutPct: sv.handlingCutPct, errorCutPct: sv.errorCutPct, billingCutPct: sv.billingCutPct });
+    const f = S.formatNumber;
+    const segs = (part, whole) => {
+      const w = (v) => (whole > 0 ? Math.min(100, (v / whole) * 100).toFixed(2) : '0');
+      return [
+        { w: w(part.handling), color: '#3DAE2B' },
+        { w: w(part.errors), color: '#F2A33A' },
+        { w: w(part.billing), color: '#8FB9A8' },
+      ];
+    };
+    const aria = (part, total) => T.svHandling + ' NT$ ' + f(part.handling) + '、' + T.svErrors + ' NT$ ' + f(part.errors) +
+      '、' + T.svBillingLabel + ' NT$ ' + f(part.billing) + '(' + total + ')';
+    return {
+      svMainFields: [
+        field('customers', T.svCustomers, T.svCustomersUnit),
+        field('ordersPerWeek', T.svOrdersPerWeek, T.svOrdersPerWeekUnit),
+        field('minutesPerOrder', T.svMinutes, T.svMinutesUnit, T.svMinutesHint),
+        field('errorRatePct', T.svError, T.svErrorUnit, T.svErrorHint),
+      ],
+      svAdvFields: [
+        field('hourlyWage', T.svWage, T.svWageUnit),
+        field('costPerError', T.svErrorCost, T.svErrorCostUnit, T.svErrorCostHint),
+        field('billingHours', T.svBilling, T.svBillingUnit),
+      ],
+      svCutFields: [
+        field('handlingCutPct', T.svCutHandling, T.svCutUnit),
+        field('errorCutPct', T.svCutErrors, T.svCutUnit),
+        field('billingCutPct', T.svCutBilling, T.svCutUnit),
+      ],
+      svOrders: f(r.orders),
+      svSaved: f(r.saved.monthly),
+      svYear: f(r.saved.yearly),
+      svHours: f(r.hours.saved),
+      svBeforeTotal: f(r.before.total),
+      svAfterTotal: f(r.after.total),
+      svBeforeSegs: segs(r.before, r.before.total),
+      svAfterSegs: segs(r.after, r.before.total),
+      svBeforeAria: aria(r.before, T.svBefore),
+      svAfterAria: aria(r.after, T.svAfter),
+    };
+  }
+
   askAI(event) {
     if (event && typeof event.preventDefault === 'function') event.preventDefault();
     const form = event && event.currentTarget;
@@ -2691,6 +2963,9 @@ class Component extends DCLogic {
     return {
       rootRef: (el) => { this.rootEl = el; },
       mapRef: this.mapRef, headRef: this.headRef, statsRef: this.statsRef,
+
+      /* /suppliers 作業成本試算 */
+      ...this.savingsView((L && L.sup) || {}),
 
       /* 頁面切換(既有) */
       isHome: page === 'home',

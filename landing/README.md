@@ -24,6 +24,7 @@ ifoodmap_deploy/
 ├─ index.html          ← 網站主檔（可編輯原始碼；載入 /support.js）★ 部署這個
 ├─ support.js          ← 執行階段，必須放在站台根目錄
 ├─ routing.js          ← 網址 ↔ {頁面, 語系}、canonical / hreflang / <html lang>
+├─ savings.js          ← /suppliers「作業成本試算」的算法(純函式,tests/savings.test.cjs 釘住)
 ├─ i18n.js             ← 中英字典 + 語系偵測（改文案改這裡，見 docs/I18N.md）
 ├─ api/                ← Vercel Serverless：AI 助手轉給 Supabase Edge Function
 ├─ assets/             ← 站上的 SVG 插圖

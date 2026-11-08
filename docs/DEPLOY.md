@@ -2198,3 +2198,21 @@ pgTAP 沒辦法在本機跑(沒有 Postgres):套用前用乾跑驗證(不會 com
 - AI 只是幫忙「打字」:辨識結果要使用者逐項核對、數量看不出來的要自己填,按「加入叫貨清單」才進清單;不會自動送出訂單。數量一律限制在 0–100000,品項最多 100 項。
 - 把這家供應商叫過的品名與商品目錄(最多 300 個)當提示給 AI,簡稱盡量對到同一個寫法;品名比對用跟其他地方一樣的正規化(全形半形、大小寫、空白不影響)。
 - 被擋的統計(`ai_guard_daily`)裡 `parse-order` 會歸在「other」—— `ai_note_rejection` 的白名單沒收錄這個名字,只影響統計分類。
+
+## 形象站 /suppliers「作業成本試算」(2026-11-08)
+
+純前端、沒有 migration、不送出任何資料。位置:形象站 `/suppliers`(英文 `/en/suppliers`)「成果參考」之後、最後的申請 CTA 之前(`#supplier-savings`)。
+
+| 項目 | 位置 |
+| --- | --- |
+| 算法(純函式) | `landing/savings.js`(`window.IfmSavings`),測試 `landing/tests/savings.test.cjs` |
+| 畫面與互動 | `landing/index.html`:CSS(`.sv-*`)、markup(`#supplier-savings`)、`Component.savingsView()` 與 `svChange / svStep / svBlur` |
+| 文案 | `landing/i18n.js` 的 `sup.sv*`(中英各 44 條,`tests/i18n.test.cjs` 檢查對齊) |
+
+算法:每月單數 = 客戶數 × 每家每週叫貨次數 × 4.33;接單與核對 = 單數 × 每張分鐘 ÷ 60 × 時薪;出錯與重工 = 單數 × 出錯比例 × 每次出錯成本;對帳與請款 = 每月時數 × 時薪。「整合後預估」= 各項 ×(1 − 可減少比例)。
+
+- **可減少比例(預設接單 40%、出錯 50%、對帳 50%)是保守的估算假設,不是實測成效**;畫面上寫明「不代表實際成效」,使用者可以在「進階設定」自己改。有實際使用數據後再回頭換預設值(`savings.js` 的 `ASSUMPTIONS`)。
+- 頁面規定「/suppliers 只有兩個申請 CTA」(`tests/content.test.cjs`),所以試算區自己沒有放 CTA。
+- 手機:一欄、52px 的 +/− 步進鈕、輸入字級 ≥ 16px(iOS 不會自動放大)、結果摘要黏在輸入區底部(`.sv-mini`,右邊留空間給 AI 助手浮動鈕);平板兩欄;`prefers-reduced-motion` 下長條圖不做動畫。
+- 預渲染:`node scripts/prerender.mjs` 本機實跑通過(56 條路由),靜態 HTML 裡就有預設數字。
+- 部署:push 到 main、`landing/**` 有變動就由 `landing-deploy.yml` 部署(`savings.js` 要隨站公開,已加進 `tests/vercelignore.test.cjs` 的 SITE 清單)。
