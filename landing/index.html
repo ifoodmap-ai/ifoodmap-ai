@@ -223,6 +223,7 @@
   .oe-cardhead { display:flex; align-items:center; justify-content:space-between; gap:10px; margin:0 0 16px; font-size:13px; font-weight:700; letter-spacing:.06em; color:#166534; }
   .oe-badge { font-size:12px; letter-spacing:0; padding:4px 10px; border-radius:999px; background:#fff3d6; color:#8a5a00; }
   .oe-arrow { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:8px; color:#166534; font-size:12px; font-weight:700; text-align:center; }
+  .oe-arrow-ic { display:inline-flex; }
   .oe-arrow svg { width:30px; height:30px; }
   .oe-bubble { background:#e9f6e6; border-radius:18px 18px 18px 6px; padding:14px 16px; font-size:16px; line-height:1.7; color:#17261c; }
   .oe-meta { font-size:12px; color:#6c7b72; margin:0 0 8px; }
@@ -754,7 +755,7 @@
     .oe-tab { flex:1 1 100%; text-align:center; }
     .oe-stage { grid-template-columns:1fr; }
     .oe-arrow { flex-direction:row; padding:12px 0; }
-    .oe-arrow svg { transform:rotate(90deg); }
+    .oe-arrow-ic { transform:rotate(90deg); }
     .oe-card { padding:18px 16px; }
     .oe-points { grid-template-columns:1fr; gap:14px; }
     .sv-inputs { padding:20px 16px 0; border-radius:20px; }
@@ -1453,8 +1454,9 @@
             </sc-if>
           </div>
 
+          <!-- svg 外面包一層 span:prerender 的世界地圖偵測(aria-hidden 容器的第一個子節點是 svg)會把這個小箭頭誤判成地圖 -->
           <div class="oe-arrow" aria-hidden="true">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12h15M13 6l6 6-6 6"/></svg>
+            <span class="oe-arrow-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12h15M13 6l6 6-6 6"/></svg></span>
             <span>{{ L.sup.oeArrow }}</span>
           </div>
 
