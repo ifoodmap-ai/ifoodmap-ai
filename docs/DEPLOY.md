@@ -2216,3 +2216,11 @@ pgTAP 沒辦法在本機跑(沒有 Postgres):套用前用乾跑驗證(不會 com
 - 手機:一欄、52px 的 +/− 步進鈕、輸入字級 ≥ 16px(iOS 不會自動放大)、結果摘要黏在輸入區底部(`.sv-mini`,右邊留空間給 AI 助手浮動鈕);平板兩欄;`prefers-reduced-motion` 下長條圖不做動畫。
 - 預渲染:`node scripts/prerender.mjs` 本機實跑通過(56 條路由),靜態 HTML 裡就有預設數字。
 - 部署:push 到 main、`landing/**` 有變動就由 `landing-deploy.yml` 部署(`savings.js` 要隨站公開,已加進 `tests/vercelignore.test.cjs` 的 SITE 清單)。
+
+## 形象站 /suppliers「客戶怎麼叫貨」示意(2026-11-10)
+
+純前端、沒有 migration。位置:/suppliers 痛點區塊之後、接單流程之前(`#supplier-order-entry`);文案在 `landing/i18n.js` 的 `sup.oe*`,邏輯在 `landing/index.html` 的 `oeView / oeSelect / oeKey`。
+
+- 三個分頁(貼上 LINE 訊息 / 拍手寫叫貨單 / 選常叫品項),左邊是客戶的叫貨方式,右邊永遠是同一張示意訂單(品項、數量、專屬價、小計、合計)。分頁符合 ARIA tabs,支援左右鍵與 Home / End。
+- **內容全是示意資料,畫面上有註明**;只說已上線的功能:客戶端貼上訊息 / 拍照由 AI 整理(客戶核對後才送出)、常叫品項、客戶專屬價 / 群組價、約定價成交(雙方同意)、截單與數量上限。**沒有** LINE 機器人直接接單、ERP 串接這類還沒做的說法(`tests/content.test.cjs` 也禁止 /suppliers 出現 ERP、LINE@、自動接單、自動報價…)。
+- 手機:分頁直排、箭頭轉向下、卡片上下堆疊;平板三個重點改單欄。

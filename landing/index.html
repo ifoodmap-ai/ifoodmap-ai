@@ -208,6 +208,46 @@
   .supplier-wrap { max-width:1240px; margin:0 auto; padding-left:40px; padding-right:40px; }
   /* /suppliers 的作業成本試算(#supplier-savings)。桌機:輸入一排四格、結果在下面一整條;
      手機:一欄,每格是「標籤 + 大觸控步進器」,結果摘要黏在輸入區底部(.sv-mini),邊改邊看得到數字。 */
+  /* /suppliers「客戶怎麼叫貨」示意(#supplier-order-entry):三種叫貨方式切換,右邊永遠是同一張結構化訂單。
+     桌機:左(客戶這樣叫貨)→ 箭頭 → 右(你收到的訂單);手機:上下堆疊,箭頭轉向下。 */
+  .oe-section { background:#fff; border-top:1px solid #e8eee9; }
+  .oe-head { max-width:780px; margin-bottom:28px; }
+  .oe-tabs { display:inline-flex; flex-wrap:wrap; gap:6px; padding:6px; background:#eef6ee; border-radius:999px; margin-bottom:22px; }
+  .oe-tab { border:0; background:transparent; color:#34473b; font:inherit; font-size:15px; font-weight:700; padding:11px 20px; border-radius:999px; cursor:pointer; min-height:44px; touch-action:manipulation; }
+  .oe-tab:hover { background:rgba(255,255,255,.7); }
+  .oe-tab[aria-selected="true"] { background:#166534; color:#fff; box-shadow:0 6px 16px rgba(22,101,52,.25); }
+  .oe-tab:focus-visible { outline:3px solid #7cc576; outline-offset:2px; }
+  .oe-stage { display:grid; grid-template-columns:minmax(0,1fr) 72px minmax(0,1.05fr); align-items:stretch; gap:0; }
+  .oe-card { background:#fff; border:1px solid #dfe8e1; border-radius:22px; padding:22px; box-shadow:0 14px 38px rgba(20,60,30,.07); min-width:0; }
+  .oe-card--to { background:linear-gradient(180deg,#fbfefb 0%,#f2faf2 100%); border-color:#cfe6d0; }
+  .oe-cardhead { display:flex; align-items:center; justify-content:space-between; gap:10px; margin:0 0 16px; font-size:13px; font-weight:700; letter-spacing:.06em; color:#166534; }
+  .oe-badge { font-size:12px; letter-spacing:0; padding:4px 10px; border-radius:999px; background:#fff3d6; color:#8a5a00; }
+  .oe-arrow { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:8px; color:#166534; font-size:12px; font-weight:700; text-align:center; }
+  .oe-arrow svg { width:30px; height:30px; }
+  .oe-bubble { background:#e9f6e6; border-radius:18px 18px 18px 6px; padding:14px 16px; font-size:16px; line-height:1.7; color:#17261c; }
+  .oe-meta { font-size:12px; color:#6c7b72; margin:0 0 8px; }
+  .oe-note { background:#fffdf4; border:1px solid #efe6c4; border-radius:12px; padding:16px 18px 14px 22px; background-image:repeating-linear-gradient(180deg,transparent 0 31px,#ece3bd 31px 32px); font-family:'Noto Sans TC',sans-serif; color:#3a3320; transform:rotate(-1deg); }
+  .oe-note b { display:block; font-size:13px; color:#8a7c4a; margin-bottom:6px; font-weight:600; }
+  .oe-note p { margin:0; font-size:18px; line-height:32px; }
+  .oe-caption { font-size:12px; color:#6c7b72; margin:12px 0 0; }
+  .oe-pick { list-style:none; margin:0; padding:0; display:grid; gap:10px; }
+  .oe-pick li { display:flex; align-items:center; gap:12px; border:1px solid #dfe8e1; border-radius:14px; padding:10px 14px; font-size:16px; color:#17261c; }
+  .oe-check { width:22px; height:22px; border-radius:7px; background:#166534; color:#fff; font-size:14px; display:inline-flex; align-items:center; justify-content:center; flex:0 0 auto; }
+  .oe-pick .oe-qty { margin-left:auto; font-family:'Space Grotesk','Noto Sans TC',sans-serif; font-weight:700; white-space:nowrap; }
+  .oe-table { width:100%; border-collapse:collapse; font-size:15px; }
+  .oe-table th { text-align:left; font-size:12px; font-weight:700; color:#6c7b72; padding:0 0 8px; }
+  .oe-table th:nth-child(n+2), .oe-table td:nth-child(n+2) { text-align:right; }
+  .oe-table td { padding:11px 0; border-top:1px solid #e3ede4; color:#17261c; }
+  .oe-table td:first-child { font-weight:700; }
+  .oe-num { font-family:'Space Grotesk','Noto Sans TC',sans-serif; white-space:nowrap; }
+  .oe-total { display:flex; justify-content:space-between; align-items:baseline; border-top:2px solid #cfe6d0; margin-top:4px; padding-top:14px; font-weight:700; color:#17261c; }
+  .oe-total b { font-family:'Space Grotesk','Noto Sans TC',sans-serif; font-size:26px; color:#14532d; }
+  .oe-fine { font-size:12.5px; line-height:1.65; color:#5b6b62; margin:12px 0 0; }
+  .oe-points { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:18px; margin-top:26px; }
+  .oe-point { background:#f6faf6; border:1px solid #e1ece2; border-radius:18px; padding:20px 22px; }
+  .oe-point h3 { font-size:16.5px; margin:0 0 8px; color:#0e1a14; }
+  .oe-point p { font-size:14.5px; line-height:1.75; color:#4b5a52; margin:0; }
+  .oe-example { font-size:12.5px; color:#6c7b72; margin:16px 0 0; }
   .sv-section { background:linear-gradient(180deg,#fff 0%,#f4faf4 100%); border-top:1px solid #e8eee9; }
   .sv-head { max-width:760px; margin-bottom:30px; }
   #sv-result { scroll-margin-top:84px; }
@@ -252,7 +292,7 @@
   .sv-foot { margin-top:22px; display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:16px 28px; }
   .sv-note { flex:1 1 420px; font-size:13px; line-height:1.7; color:#5b6b62; margin:0; }
   @media (prefers-reduced-motion: reduce) { .sv-seg { transition:none; } }
-  @media (min-width:769px) and (max-width:1024px) { .sv-fields { grid-template-columns:repeat(2,minmax(0,1fr)); } .sv-adv-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } .sv-result-grid { grid-template-columns:1fr; } }
+  @media (min-width:769px) and (max-width:1024px) { .oe-points { grid-template-columns:1fr; } .oe-stage { grid-template-columns:minmax(0,1fr) 56px minmax(0,1.1fr); } .sv-fields { grid-template-columns:repeat(2,minmax(0,1fr)); } .sv-adv-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } .sv-result-grid { grid-template-columns:1fr; } }
   .supplier-hero-grid { display:grid; grid-template-columns:minmax(0,1.02fr) minmax(420px,.98fr); gap:54px; align-items:center; }
   .supplier-pain-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:18px; }
   .supplier-flow { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:14px; counter-reset:supplier-step; }
@@ -710,6 +750,13 @@
     .restaurant-flow { gap:12px; }
     .restaurant-mobile-copy { font-size:16px !important; }
     .supplier-wrap { padding-left:20px; padding-right:20px; }
+    .oe-tabs { display:flex; border-radius:20px; }
+    .oe-tab { flex:1 1 100%; text-align:center; }
+    .oe-stage { grid-template-columns:1fr; }
+    .oe-arrow { flex-direction:row; padding:12px 0; }
+    .oe-arrow svg { transform:rotate(90deg); }
+    .oe-card { padding:18px 16px; }
+    .oe-points { grid-template-columns:1fr; gap:14px; }
     .sv-inputs { padding:20px 16px 0; border-radius:20px; }
     .sv-fields, .sv-adv-grid { grid-template-columns:1fr; gap:18px; }
     .sv-adv-grid { gap:16px; }
@@ -1361,6 +1408,76 @@
             <h3 style="font-size:17.5px;margin:0 0 8px;color:#0E1A14;">{{ L.sup.painRetentionTitle }}</h3>
             <p style="font-size:14.5px;line-height:1.7;color:#4B5A52;margin:0;">{{ L.sup.painRetentionDesc }}</p>
           </article>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ 客戶怎麼叫貨(示意)============
+         三種叫貨方式用分頁切換,右邊永遠是同一張結構化訂單 —— 重點是「進到你手上都一樣」。
+         內容全是示意資料,畫面上有註明;功能範圍對應已上線的:貼上訊息 / 拍照辨識(客戶端,核對後才送出)、
+         常叫品項、客戶專屬價 / 群組價、截單與數量規則。 -->
+    <section id="supplier-order-entry" class="oe-section" aria-labelledby="oe-title">
+      <div class="supplier-wrap" style="padding-top:76px;padding-bottom:80px;">
+        <div class="oe-head" data-reveal>
+          <div style="font-size:13px;font-weight:700;color:#166534;letter-spacing:.1em;margin-bottom:10px;">{{ L.sup.oeEyebrow }}</div>
+          <h2 id="oe-title" style="font-size:38px;line-height:1.3;color:#17261c;margin:0 0 14px;">{{ L.sup.oeTitle }}</h2>
+          <p class="supplier-mobile-copy" style="font-size:17px;line-height:1.75;color:#5b6b62;margin:0;">{{ L.sup.oeSub }}</p>
+        </div>
+
+        <div class="oe-tabs" role="tablist" aria-label="{{ L.sup.oeTabsLabel }}" data-reveal>
+          <sc-for list="{{ oeTabs }}" as="t" hint-placeholder-count="3">
+            <button type="button" role="tab" class="oe-tab" id="{{ t.id }}" aria-selected="{{ t.selected }}" aria-controls="oe-panel" tabindex="{{ t.tabIndex }}" onClick="{{ t.onSelect }}" onKeyDown="{{ t.onKey }}">{{ t.label }}</button>
+          </sc-for>
+        </div>
+
+        <div id="oe-panel" role="tabpanel" aria-labelledby="{{ oeActiveTabId }}" class="oe-stage" data-reveal>
+          <div class="oe-card">
+            <div class="oe-cardhead">{{ L.sup.oeFromTitle }}</div>
+            <sc-if value="{{ oeIs0 }}">
+              <p class="oe-meta">{{ L.sup.oeChatMeta }}</p>
+              <div class="oe-bubble">{{ L.sup.oeChatText }}</div>
+            </sc-if>
+            <sc-if value="{{ oeIs1 }}">
+              <div class="oe-note">
+                <b>{{ L.sup.oeNoteTitle }}</b>
+                <sc-for list="{{ oeLines }}" as="l" hint-placeholder-count="3"><p>{{ l.text }}</p></sc-for>
+              </div>
+              <p class="oe-caption">{{ L.sup.oeNoteCaption }}</p>
+            </sc-if>
+            <sc-if value="{{ oeIs2 }}">
+              <p class="oe-meta">{{ L.sup.oeListTitle }}</p>
+              <ul class="oe-pick">
+                <sc-for list="{{ oeLines }}" as="l" hint-placeholder-count="3"><li><span class="oe-check" aria-hidden="true">✓</span>{{ l.name }}<span class="oe-qty">− {{ l.qty }} {{ l.unit }} +</span></li></sc-for>
+              </ul>
+              <p class="oe-caption">{{ L.sup.oeListHint }}</p>
+            </sc-if>
+          </div>
+
+          <div class="oe-arrow" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12h15M13 6l6 6-6 6"/></svg>
+            <span>{{ L.sup.oeArrow }}</span>
+          </div>
+
+          <div class="oe-card oe-card--to">
+            <div class="oe-cardhead"><span>{{ L.sup.oeToTitle }}</span><span class="oe-badge">{{ L.sup.oeStatus }}</span></div>
+            <table class="oe-table">
+              <thead><tr><th>{{ L.sup.oeColItem }}</th><th>{{ L.sup.oeColQty }}</th><th>{{ L.sup.oeColPrice }}</th><th>{{ L.sup.oeColSub }}</th></tr></thead>
+              <tbody>
+                <sc-for list="{{ oeRows }}" as="r" hint-placeholder-count="3">
+                  <tr><td>{{ r.name }}</td><td class="oe-num">{{ r.qty }} {{ r.unit }}</td><td class="oe-num">{{ r.price }}</td><td class="oe-num">{{ r.sub }}</td></tr>
+                </sc-for>
+              </tbody>
+            </table>
+            <div class="oe-total"><span>{{ L.sup.oeTotal }}</span><b>NT$ {{ oeTotal }}</b></div>
+            <p class="oe-fine">{{ L.sup.oePriceNote }}</p>
+          </div>
+        </div>
+        <p class="oe-example">{{ L.sup.oeExample }}</p>
+
+        <div class="oe-points">
+          <div class="oe-point" data-reveal><h3>{{ L.sup.oePoint1Title }}</h3><p>{{ L.sup.oePoint1Body }}</p></div>
+          <div class="oe-point" data-reveal><h3>{{ L.sup.oePoint2Title }}</h3><p>{{ L.sup.oePoint2Body }}</p></div>
+          <div class="oe-point" data-reveal><h3>{{ L.sup.oePoint3Title }}</h3><p>{{ L.sup.oePoint3Body }}</p></div>
         </div>
       </div>
     </section>
@@ -2230,6 +2347,8 @@ class Component extends DCLogic {
       ? { ...window.IfmSavings.DEFAULTS, ...window.IfmSavings.ASSUMPTIONS }
       : {},
     svText: {},
+    // /suppliers 客戶叫貨示意:目前選的叫貨方式(0 = LINE 訊息、1 = 手寫單、2 = 常叫品項)
+    oeTab: 0,
     // 語系提示條在這一頁被收掉了(按了切換、按了 ×、或按了 header 的語言鈕)。
     // localStorage 本來就會記,這裡再記一份在記憶體:無痕視窗寫不進 localStorage,
     // 沒有這個旗標的話按了 × 也收不掉。
@@ -2573,6 +2692,54 @@ class Component extends DCLogic {
 
   // 首頁搜尋列 / 分類籤 → 交給右下角的 AI 採購助手接著訪談。
   // 助手是獨立的 widget(window.IfmAI),萬一還沒載好就退回聯絡頁,不讓人按了沒反應。
+  /* ---------- /suppliers 客戶叫貨示意 ---------- */
+  oeSelect(i) {
+    this.setState({ oeTab: i });
+  }
+  oeKey(event, i) {
+    // 分頁的方向鍵:左右切換、Home / End 跳頭尾;切換時焦點跟著移到新的分頁
+    const keys = { ArrowRight: 1, ArrowLeft: -1 };
+    let next = null;
+    if (event.key in keys) next = (i + keys[event.key] + 3) % 3;
+    else if (event.key === 'Home') next = 0;
+    else if (event.key === 'End') next = 2;
+    if (next === null) return;
+    event.preventDefault();
+    this.setState({ oeTab: next });
+    requestAnimationFrame(() => {
+      const el = document.getElementById('oe-tab-' + next);
+      if (el) el.focus();
+    });
+  }
+  oeView(T) {
+    const tab = this.state.oeTab || 0;
+    // 示意資料:三個品項的數量、單價固定(文字在字典),三種叫貨方式右邊都是同一張訂單
+    const items = [
+      { name: T.oeItem1Name, unit: T.oeItem1Unit, qty: 10, price: 38 },
+      { name: T.oeItem2Name, unit: T.oeItem2Unit, qty: 2, price: 600 },
+      { name: T.oeItem3Name, unit: T.oeItem3Unit, qty: 5, price: 20 },
+    ];
+    const fmt = (n) => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+    const labels = [T.oeTab0, T.oeTab1, T.oeTab2];
+    return {
+      oeTabs: labels.map((label, i) => ({
+        label,
+        id: 'oe-tab-' + i,
+        selected: tab === i,
+        tabIndex: tab === i ? 0 : -1,
+        onSelect: () => this.oeSelect(i),
+        onKey: (event) => this.oeKey(event, i),
+      })),
+      oeActiveTabId: 'oe-tab-' + tab,
+      oeIs0: tab === 0,
+      oeIs1: tab === 1,
+      oeIs2: tab === 2,
+      oeLines: items.map((it) => ({ text: it.name + '  ' + it.qty + ' ' + it.unit, name: it.name, qty: it.qty, unit: it.unit })),
+      oeRows: items.map((it) => ({ name: it.name, qty: it.qty, unit: it.unit, price: fmt(it.price), sub: fmt(it.qty * it.price) })),
+      oeTotal: fmt(items.reduce((sum, it) => sum + it.qty * it.price, 0)),
+    };
+  }
+
   /* ---------- /suppliers 作業成本試算 ---------- */
   svApply(key, raw) {
     const S = window.IfmSavings;
@@ -2938,6 +3105,7 @@ class Component extends DCLogic {
 
       /* /suppliers 作業成本試算 */
       ...this.savingsView((L && L.sup) || {}),
+      ...this.oeView((L && L.sup) || {}),
 
       /* 頁面切換(既有) */
       isHome: page === 'home',
