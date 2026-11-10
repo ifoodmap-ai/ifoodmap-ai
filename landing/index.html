@@ -438,6 +438,10 @@
     align-items:start;
   }
   .ifm-bento > * { min-width:0; }
+  /* 整齊版(2026-11-10 業主要求 /suppliers 的四個痛點大小一致):兩欄、每張同寬同高、沒有上下錯位。
+     不加 bt-* / bt-drop / bt-rise,由這個修飾 class 統一管;手機照舊塌成單欄。 */
+  .ifm-bento--even { align-items:stretch; }
+  .ifm-bento--even > * { grid-column:span 6; margin-top:0; }
   .bt-3  { grid-column:span 3; }
   .bt-4  { grid-column:span 4; }
   .bt-5  { grid-column:span 5; }
@@ -1336,23 +1340,23 @@
           <h2 style="font-size:38px;line-height:1.3;color:#17261c;margin:0 0 14px;">{{ L.sup.painTitle }}</h2>
           <p class="supplier-mobile-copy" style="font-size:17px;line-height:1.75;color:#5b6b62;margin:0;">{{ L.sup.painSub }}</p>
         </div>
-        <div class="ifm-bento">
-          <article class="ifm-card bt-5" data-reveal>
+        <div class="ifm-bento ifm-bento--even">
+          <article class="ifm-card" data-reveal>
             <img class="ifm-art ifm-art--pad" src="/assets/sup-pain-1.svg" alt="" width="120" height="120" loading="lazy" style="width:76px;height:76px;padding:10px;margin-bottom:16px;">
             <h3 style="font-size:17.5px;margin:0 0 8px;color:#0E1A14;">{{ L.sup.painScatteredTitle }}</h3>
             <p style="font-size:14.5px;line-height:1.7;color:#4B5A52;margin:0;">{{ L.sup.painScatteredDesc }}</p>
           </article>
-          <article class="ifm-card bt-7 bt-drop" data-reveal>
+          <article class="ifm-card" data-reveal>
             <img class="ifm-art ifm-art--pad" src="/assets/sup-pain-2.svg" alt="" width="120" height="120" loading="lazy" style="width:76px;height:76px;padding:10px;margin-bottom:16px;">
             <h3 style="font-size:17.5px;margin:0 0 8px;color:#0E1A14;">{{ L.sup.painQuotesTitle }}</h3>
             <p style="font-size:14.5px;line-height:1.7;color:#4B5A52;margin:0;">{{ L.sup.painQuotesDesc }}</p>
           </article>
-          <article class="ifm-card bt-7 bt-rise" data-reveal>
+          <article class="ifm-card" data-reveal>
             <img class="ifm-art ifm-art--pad" src="/assets/sup-pain-3.svg" alt="" width="120" height="120" loading="lazy" style="width:76px;height:76px;padding:10px;margin-bottom:16px;">
             <h3 style="font-size:17.5px;margin:0 0 8px;color:#0E1A14;">{{ L.sup.painPricingTitle }}</h3>
             <p style="font-size:14.5px;line-height:1.7;color:#4B5A52;margin:0;">{{ L.sup.painPricingDesc }}</p>
           </article>
-          <article class="ifm-card bt-5" data-reveal>
+          <article class="ifm-card" data-reveal>
             <img class="ifm-art ifm-art--pad" src="/assets/sup-pain-4.svg" alt="" width="120" height="120" loading="lazy" style="width:76px;height:76px;padding:10px;margin-bottom:16px;">
             <h3 style="font-size:17.5px;margin:0 0 8px;color:#0E1A14;">{{ L.sup.painRetentionTitle }}</h3>
             <p style="font-size:14.5px;line-height:1.7;color:#4B5A52;margin:0;">{{ L.sup.painRetentionDesc }}</p>
