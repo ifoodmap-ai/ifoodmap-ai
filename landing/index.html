@@ -1441,14 +1441,14 @@
             <sc-if value="{{ oeIs1 }}">
               <div class="oe-note">
                 <b>{{ L.sup.oeNoteTitle }}</b>
-                <sc-for list="{{ oeLines }}" as="l" hint-placeholder-count="3"><p>{{ l.text }}</p></sc-for>
+                <sc-for list="{{ oeLines }}" as="l" hint-placeholder-count="4"><p>{{ l.text }}</p></sc-for>
               </div>
               <p class="oe-caption">{{ L.sup.oeNoteCaption }}</p>
             </sc-if>
             <sc-if value="{{ oeIs2 }}">
               <p class="oe-meta">{{ L.sup.oeListTitle }}</p>
               <ul class="oe-pick">
-                <sc-for list="{{ oeLines }}" as="l" hint-placeholder-count="3"><li><span class="oe-check" aria-hidden="true">✓</span>{{ l.name }}<span class="oe-qty">− {{ l.qty }} {{ l.unit }} +</span></li></sc-for>
+                <sc-for list="{{ oeLines }}" as="l" hint-placeholder-count="4"><li><span class="oe-check" aria-hidden="true">✓</span>{{ l.name }}<span class="oe-qty">− {{ l.qty }} {{ l.unit }} +</span></li></sc-for>
               </ul>
               <p class="oe-caption">{{ L.sup.oeListHint }}</p>
             </sc-if>
@@ -1465,7 +1465,7 @@
             <table class="oe-table">
               <thead><tr><th>{{ L.sup.oeColItem }}</th><th>{{ L.sup.oeColQty }}</th><th>{{ L.sup.oeColPrice }}</th><th>{{ L.sup.oeColSub }}</th></tr></thead>
               <tbody>
-                <sc-for list="{{ oeRows }}" as="r" hint-placeholder-count="3">
+                <sc-for list="{{ oeRows }}" as="r" hint-placeholder-count="4">
                   <tr><td>{{ r.name }}</td><td class="oe-num">{{ r.qty }} {{ r.unit }}</td><td class="oe-num">{{ r.price }}</td><td class="oe-num">{{ r.sub }}</td></tr>
                 </sc-for>
               </tbody>
@@ -2715,11 +2715,12 @@ class Component extends DCLogic {
   }
   oeView(T) {
     const tab = this.state.oeTab || 0;
-    // 示意資料:三個品項的數量、單價固定(文字在字典),三種叫貨方式右邊都是同一張訂單
+    // 示意資料:四個品項的數量、單價固定(文字在字典),三種叫貨方式右邊都是同一張訂單
     const items = [
       { name: T.oeItem1Name, unit: T.oeItem1Unit, qty: 10, price: 38 },
-      { name: T.oeItem2Name, unit: T.oeItem2Unit, qty: 2, price: 600 },
-      { name: T.oeItem3Name, unit: T.oeItem3Unit, qty: 5, price: 20 },
+      { name: T.oeItem2Name, unit: T.oeItem2Unit, qty: 5, price: 20 },
+      { name: T.oeItem3Name, unit: T.oeItem3Unit, qty: 2, price: 600 },
+      { name: T.oeItem4Name, unit: T.oeItem4Unit, qty: 20, price: 25 },
     ];
     const fmt = (n) => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
     const labels = [T.oeTab0, T.oeTab1, T.oeTab2];
