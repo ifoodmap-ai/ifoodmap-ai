@@ -17,6 +17,7 @@ interface Call { table: string; op: string; cols?: string; values?: unknown; fil
 const { state, recordOrderEvent, callOrderRpc, toastError } = vi.hoisted(() => ({
   state: {
     role: "owner" as Role,
+    branchId: null as string | null,
     calls: [] as Call[],
     listRows: [] as Record<string, unknown>[],
     draftRows: [] as Record<string, unknown>[],
@@ -32,6 +33,7 @@ const fakeFrom = (table: string) => {
   const resolve = () => {
     state.calls.push(call);
     if (table === "suppliers") return { data: [{ id: "sup-1", name: "鮮綠農產" }], error: null };
+    if (table === "restaurant_branches") return { data: [{ name: "中正店" }], error: null };
     if (table === "supplier_orders") {
       const isDraftCount = call.filters.some(([op, col, val]) => op === "eq" && col === "status" && val === "draft");
       return { data: isDraftCount ? state.draftRows : state.listRows, error: null };
@@ -61,7 +63,7 @@ vi.mock("@/components/RestaurantRoute", () => ({
   useRestaurant: () => ({
     id: "account-1",
     restaurant_id: "restaurant-1",
-    branch_id: null,
+    branch_id: state.branchId,
     role: state.role,
     restaurant_name: "好味小館",
   }),
@@ -100,6 +102,7 @@ let fetchGuard: ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
   state.role = "owner";
+  state.branchId = null;
   state.calls = [];
   state.listRows = [order("aaaaaaaa-0000-4000-8000-00000000q001", "quoted"), order("aaaaaaaa-0000-4000-8000-00000000d001", "delivered")];
   state.draftRows = [{ id: "draft-1" }, { id: "draft-2" }];
@@ -376,5 +379,32 @@ describe("RestaurantOrdersPage — 配送日", () => {
     renderPage();
     expect(await screen.findByTestId("delivery-aaaaaaaa-0000-4000-8000-00000000g001")).toHaveTextContent("配送日 2026-10-30(週五)");
     expect(screen.queryByTestId("delivery-aaaaaaaa-0000-4000-8000-00000000g002")).toBeNull();
+  });
+});
+
+describe("RestaurantOrdersPage — 分店範圍提示", () => {
+  it("店長 / 採購員被指派了分店:頂端說明只顯示那家分店的訂單", async () => {
+    for (const role of ["manager", "purchaser"] as const) {
+      state.role = role;
+      state.branchId = "br-1";
+      renderPage();
+      expect(await screen.findByTestId("branch-scope-notice")).toHaveTextContent("目前只顯示「中正店」這家分店的訂單;其他分店的訂單由老闆查看");
+      cleanup();
+    }
+  });
+
+  it("老闆(就算有分店)與沒指派分店的人:不顯示這句", async () => {
+    state.role = "owner";
+    state.branchId = "br-1";
+    renderPage();
+    await screen.findByText("我的訂單");
+    expect(screen.queryByTestId("branch-scope-notice")).toBeNull();
+    cleanup();
+
+    state.role = "manager";
+    state.branchId = null;
+    renderPage();
+    await screen.findByText("我的訂單");
+    expect(screen.queryByTestId("branch-scope-notice")).toBeNull();
   });
 });

@@ -48,6 +48,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { toast } from "sonner";
+import { ROLE_VISIBILITY_HINT, visibilityText } from "@/lib/restaurant-visibility";
 import { supabase } from "@/integrations/supabase/client";
 import { useRestaurant, canSeeCost, type RestaurantRole } from "@/components/RestaurantRoute";
 
@@ -155,9 +156,9 @@ const emptyBranch: BranchForm = {
 };
 
 const ROLE_OPTIONS: { value: RestaurantRole; label: string; hint: string }[] = [
-  { value: "owner", label: "老闆", hint: "所有權限,可管理成員與分店" },
-  { value: "manager", label: "店長", hint: "可看成本、管理分店與採購" },
-  { value: "purchaser", label: "採購員", hint: "只能下單收貨,看不到成本" },
+  { value: "owner", label: "老闆", hint: ROLE_VISIBILITY_HINT.owner },
+  { value: "manager", label: "店長", hint: ROLE_VISIBILITY_HINT.manager },
+  { value: "purchaser", label: "採購員", hint: ROLE_VISIBILITY_HINT.purchaser },
 ];
 
 /** 新增成員表單:權限由小到大排,預設選最小的「採購員」 */
@@ -613,6 +614,8 @@ const RestaurantTeamPage = () => {
 
   const branchName = (id: string | null) =>
     id ? (branches.find((b) => b.id === id)?.name ?? "已移除的分店") : "全店";
+  /** 沒指派分店(或分店已被移除)= null,「看得到什麼」的說明用 */
+  const branchNameOrNull = (id: string) => branches.find((b) => b.id === id)?.name ?? null;
 
   return (
     <div className="max-w-5xl">
@@ -820,6 +823,9 @@ const RestaurantTeamPage = () => {
                       <p className="text-xs text-slate-400 mt-1">
                         {branchName(m.branch_id)} · {invitePending ? "邀請於" : "加入於"}{" "}
                         {new Date(m.created_at).toLocaleDateString("zh-TW")}
+                      </p>
+                      <p className="text-xs text-slate-500 mt-1" data-testid={`visibility-${m.id}`}>
+                        看得到:{visibilityText(m.role, m.branch_id ? branchNameOrNull(m.branch_id) : null)}
                       </p>
                       {invitePending && isOwner && (
                         <p className="text-xs text-amber-700 mt-1">
@@ -1109,6 +1115,9 @@ const RestaurantTeamPage = () => {
                   </SelectContent>
                 </Select>
                 <p className="text-xs text-slate-400">這位成員建立的採購單會記在這個分店</p>
+                <p className="text-xs text-slate-500" data-testid="invite-visibility">
+                  這位成員看得到:{visibilityText(inviteForm.role, inviteForm.branchId === ALL_BRANCHES ? null : (branches.find((b) => b.id === inviteForm.branchId)?.name ?? null))}
+                </p>
                 {inviteErrors.branch_id && (
                   <p className="text-xs text-red-600">{inviteErrors.branch_id}</p>
                 )}

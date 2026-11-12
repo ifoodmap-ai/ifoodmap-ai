@@ -63,9 +63,9 @@ describe("SupplierPickListDialog", () => {
 
     await user.click(screen.getByRole("button", { name: /下載揀貨單/ }));
     const lines = (await text(blobs[1])).replace(/^\uFEFF/, "").split("\r\n");
-    expect(lines[0]).toBe("客戶,訂單編號,品項,數量,單位");
-    expect(lines).toContain("好味小館,#AAAAAAA1,高麗菜,5,kg");
-    expect(lines).toContain("阿財麵店,#AAAAAAA2,高麗菜,3.5,kg");
+    expect(lines[0]).toBe("客戶,分店,訂單編號,品項,數量,單位");
+    expect(lines).toContain("好味小館,,#AAAAAAA1,高麗菜,5,kg");
+    expect(lines).toContain("阿財麵店,,#AAAAAAA2,高麗菜,3.5,kg");
     expect(within(document.body).queryByText("洋蔥")).toBeNull();
   });
 });

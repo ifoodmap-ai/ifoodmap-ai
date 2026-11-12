@@ -2224,3 +2224,21 @@ pgTAP 沒辦法在本機跑(沒有 Postgres):套用前用乾跑驗證(不會 com
 - 三個分頁(貼上 LINE 訊息 / 拍手寫叫貨單 / 選常叫品項),左邊是客戶的叫貨方式,右邊永遠是同一張示意訂單(品項、數量、專屬價、小計、合計)。分頁符合 ARIA tabs,支援左右鍵與 Home / End。
 - **內容全是示意資料,畫面上有註明**;只說已上線的功能:客戶端貼上訊息 / 拍照由 AI 整理(客戶核對後才送出)、常叫品項、客戶專屬價 / 群組價、約定價成交(雙方同意)、截單與數量上限。**沒有** LINE 機器人直接接單、ERP 串接這類還沒做的說法(`tests/content.test.cjs` 也禁止 /suppliers 出現 ERP、LINE@、自動接單、自動報價…)。
 - 手機:分頁直排、箭頭轉向下、卡片上下堆疊;平板三個重點改單欄。
+
+## 餐廳端依分店與身分看訂單(2026-11-13)
+
+| 項目 | 位置 |
+| --- | --- |
+| SQL(`can_see_branch_order`、`can_see_all_branches`、`supplier_orders` 餐廳端 policy、請款單 policy、供應商讀分店) | `supabase/migrations/20261110100000_restaurant_branch_scope.sql`(rollback:`supabase/rollbacks/20261110100000_restaurant_branch_scope.down.sql`) |
+| 資料庫測試 | `supabase/tests/restaurant_branch_scope.test.ts` |
+| 說明文字 | `src/lib/restaurant-visibility.ts`(「分店與成員」頁、邀請表單)、`RestaurantOrdersPage` 的分店範圍提示 |
+| 供應商端 | 訂單卡片顯示送貨地點(分店名稱、地址、收貨時段);揀貨單 CSV 多一欄「分店」 |
+
+**部署順序:先套 migration,再 push 前端。** 前端先上線的話,「只顯示某分店」的提示會出現,但資料庫還沒真的收緊。
+
+規則:
+- 老闆看所有分店;店長 / 採購員只看自己被指派的分店;**還沒指派分店的帳號維持看全部**(舊帳號不會突然看不到);沒有分店的訂單(`branch_id` 為空)所有成員都看得到。
+- 只收緊 `supplier_orders` 的餐廳端 SELECT / UPDATE / INSERT;`order_events`、`order_quotes`、`supplier_shipments`、`delivery_receipts`、`invoices`、`order_payments` 的 policy 都是「訂單 id 的子查詢」,子查詢照呼叫者的 RLS 跑,自動跟著收緊。
+- 請款單(整家餐廳層級、沒有 branch_id):只有老闆、或沒指派分店的店長看得到。
+- 價格:仍然只有老闆 / 店長看得到(採購員看不到單價與金額,RLS 與畫面都沒動)。
+- 供應商:新增 `branches supplier read`,只讀得到「派給自己的訂單」所屬的分店(名稱、地址、收貨時段),不能寫。

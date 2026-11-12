@@ -83,6 +83,15 @@ interface OrderRow {
   created_at: string;
   current_stage_since: string | null;
   delivery_date: string | null;
+  branch_id: string | null;
+}
+
+/** 連鎖餐廳的分店(送貨地點):資料庫只讓供應商讀到「派給自己的訂單」所屬的分店 */
+interface BranchRow {
+  id: string;
+  name: string;
+  address: string | null;
+  receiving_hours: string | null;
 }
 
 interface RestaurantRow {
@@ -201,6 +210,7 @@ export default function SupplierOrdersPage() {
   const [orders, setOrders] = useState<OrderRow[]>([]);
   const [restaurants, setRestaurants] = useState<Record<string, RestaurantRow>>({});
   const [shipments, setShipments] = useState<Record<string, ShipmentRow>>({});
+  const [branches, setBranches] = useState<Record<string, BranchRow>>({});
   const [reasons, setReasons] = useState<Record<string, ReasonEventRow>>({});
   /** 已經和餐廳雙方同意約定價成交的客戶(restaurant_id):這些客戶的待接單可以「接單並依約定價成交」 */
   const [standing, setStanding] = useState<ReadonlySet<string>>(() => new Set());
@@ -250,7 +260,7 @@ export default function SupplierOrdersPage() {
 
   const fetchOrders = useCallback(async (sid: string) => {
     const { data, error } = await db<OrderRow>("supplier_orders")
-      .select("id, status, restaurant_id, ingredient_list, total_amount, notes, created_at, current_stage_since, delivery_date")
+      .select("id, status, restaurant_id, branch_id, ingredient_list, total_amount, notes, created_at, current_stage_since, delivery_date")
       .eq("supplier_id", sid)
       .order("created_at", { ascending: false });
     if (error) {
@@ -263,7 +273,8 @@ export default function SupplierOrdersPage() {
     setOrders(list);
 
     const restaurantIds = [...new Set(list.map((o) => o.restaurant_id).filter((v): v is string => !!v))];
-    const [rest, ship] = await Promise.all([
+    const branchIds = [...new Set(list.map((o) => o.branch_id).filter((v): v is string => !!v))];
+    const [rest, ship, br] = await Promise.all([
       restaurantIds.length
         ? db<RestaurantRow>("restaurants").select("id, name, city").in("id", restaurantIds)
         : Promise.resolve({ data: [] as RestaurantRow[], error: null }),
@@ -271,7 +282,16 @@ export default function SupplierOrdersPage() {
         .select("order_id, shipped_at, tracking_info, notes")
         .eq("supplier_id", sid)
         .order("shipped_at", { ascending: true }),
+      // 讀不到分店(舊資料庫、網路)就只是少顯示送貨地點,不影響接單
+      branchIds.length
+        ? db<BranchRow>("restaurant_branches").select("id, name, address, receiving_hours").in("id", branchIds)
+        : Promise.resolve({ data: [] as BranchRow[], error: null }),
     ]);
+    const bMap: Record<string, BranchRow> = {};
+    (br.data ?? []).forEach((b) => {
+      bMap[b.id] = b;
+    });
+    setBranches(bMap);
     const rMap: Record<string, RestaurantRow> = {};
     (rest.data ?? []).forEach((r) => {
       rMap[r.id] = r;
@@ -552,6 +572,10 @@ export default function SupplierOrdersPage() {
     () => Object.fromEntries(Object.values(restaurants).map((r) => [r.id, r.name])),
     [restaurants],
   );
+  const branchNames = useMemo(
+    () => Object.fromEntries(Object.values(branches).map((b) => [b.id, b.name])),
+    [branches],
+  );
   const dialogOrderNo = dialog ? formatOrderNo(dialog.order.id) : "";
   const dialogBusy = dialog ? busyId === dialog.order.id : false;
 
@@ -670,6 +694,13 @@ export default function SupplierOrdersPage() {
                     <p className="text-xs text-slate-400">
                       {new Date(order.created_at).toLocaleDateString("zh-TW")} 下單 · 這一關已停留 {formatStageAge(since)}
                     </p>
+                    {order.branch_id && branches[order.branch_id] && (
+                      <p className="text-xs text-slate-600" data-testid={`branch-${order.id}`}>
+                        送貨地點:{branches[order.branch_id].name}
+                        {branches[order.branch_id].address ? ` · ${branches[order.branch_id].address}` : ""}
+                        {branches[order.branch_id].receiving_hours ? ` · 收貨時段 ${branches[order.branch_id].receiving_hours}` : ""}
+                      </p>
+                    )}
                     {deliveryLabel(order.delivery_date) && (
                       <p className="text-xs font-medium text-emerald-700" data-testid={`delivery-${order.id}`}>
                         配送日 {deliveryLabel(order.delivery_date)}
@@ -870,7 +901,7 @@ export default function SupplierOrdersPage() {
       {supplierId && (
         <>
           <SupplierOrderSettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} supplierId={supplierId} />
-          <SupplierPickListDialog open={pickOpen} onOpenChange={setPickOpen} orders={orders} customerNames={customerNames} />
+          <SupplierPickListDialog open={pickOpen} onOpenChange={setPickOpen} orders={orders} customerNames={customerNames} branchNames={branchNames} />
         </>
       )}
     </div>

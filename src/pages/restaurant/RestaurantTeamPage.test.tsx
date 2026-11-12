@@ -259,6 +259,36 @@ describe("RestaurantTeamPage — 新增成員", () => {
     for (const o of options) expect(o.className).toContain("min-h-11");
   });
 
+  it("每位成員那一列都寫明「看得到什麼」:老闆看全部、店長看自己分店(含價格)、採購員只看品項與數量", async () => {
+    await renderPage();
+    expect(screen.getByTestId("visibility-acc-owner")).toHaveTextContent("看得到:所有分店的訂單、價格與報表");
+    expect(screen.getByTestId("visibility-acc-mgr")).toHaveTextContent("看得到:「信義店」的訂單與價格;其他分店的看不到");
+    expect(screen.getByTestId("visibility-acc-pending")).toHaveTextContent("看得到:「總店」的訂單,只看品項與數量,不顯示單價與金額");
+  });
+
+  it("沒指派分店(全店)的店長 / 採購員:說明看全部並提醒要指派", async () => {
+    h.state.members = [
+      member("acc-owner", "u-owner", "owner"),
+      member("acc-mgr", "u-mgr", "manager", null),
+      member("acc-pending", "u-pending", "purchaser", null),
+    ];
+    await renderPage();
+    expect(screen.getByTestId("visibility-acc-mgr")).toHaveTextContent("所有分店的訂單與價格(還沒指派分店");
+    expect(screen.getByTestId("visibility-acc-pending")).toHaveTextContent("建議指派分店");
+  });
+
+  it("新增成員的表單:選角色與分店時,即時說明這位成員看得到什麼", async () => {
+    const user = setupUser();
+    await renderPage();
+    const dialog = await openInviteDialog(user);
+    // 預設:採購員 + 信義店
+    expect(within(dialog).getByTestId("invite-visibility")).toHaveTextContent("「信義店」的訂單,只看品項與數量,不顯示單價與金額");
+    await user.click(within(dialog).getByRole("radio", { name: /店長/ }));
+    expect(within(dialog).getByTestId("invite-visibility")).toHaveTextContent("「信義店」的訂單與價格;其他分店的看不到");
+    await user.click(within(dialog).getByRole("radio", { name: /老闆/ }));
+    expect(within(dialog).getByTestId("invite-visibility")).toHaveTextContent("所有分店的訂單、價格與報表");
+  });
+
   it("表單驗證:空白送出顯示錯誤,不會呼叫 Edge Function", async () => {
     const user = setupUser();
     await renderPage();

@@ -252,9 +252,24 @@ const PipelineBar = ({ status }: { status: OrderStatus }) => {
 };
 
 export default function RestaurantOrdersPage() {
-  const { restaurant_id, restaurant_name, role } = useRestaurant();
+  const { restaurant_id, restaurant_name, role, branch_id } = useRestaurant();
   const showCost = canSeeCost(role);
   const mustApprove = needsApproval(role);
+  // 店長 / 採購員被指派了分店:資料庫只讓他看到那家分店的訂單,這裡把範圍講清楚(老闆看全部,不顯示)
+  const [scopeBranch, setScopeBranch] = useState<string | null>(null);
+  useEffect(() => {
+    if (role === "owner" || !branch_id) { setScopeBranch(null); return; }
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data } = await db<{ name: string }>("restaurant_branches").select("name").eq("id", branch_id);
+        if (!cancelled) setScopeBranch(data?.[0]?.name ?? null);
+      } catch {
+        if (!cancelled) setScopeBranch(null);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [role, branch_id]);
 
   const [orders, setOrders] = useState<OrderRow[]>([]);
   /** 待簽核的草稿張數 —— 草稿不在這頁列出,只在頂端提示並連到叫貨分頁 */
@@ -574,6 +589,12 @@ export default function RestaurantOrdersPage() {
         追蹤每一張採購單的進度,貨到請務必按「已收到貨」—— 這是我們與供應商對帳的依據
         {!showCost && "(採購員身分不顯示金額)"}
       </p>
+
+      {scopeBranch && (
+        <p data-testid="branch-scope-notice" className="mb-5 rounded-md bg-slate-50 px-3 py-2 text-xs text-slate-600">
+          目前只顯示「{scopeBranch}」這家分店的訂單;其他分店的訂單由老闆查看。
+        </p>
+      )}
 
       {matchingCount > 0 && (
         <p data-testid="matching-notice" className="mb-5 text-xs text-slate-400">

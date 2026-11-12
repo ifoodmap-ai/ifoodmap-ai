@@ -17,12 +17,14 @@ interface Props {
   onOpenChange: (open: boolean) => void;
   orders: readonly PickOrder[];
   customerNames: Readonly<Record<string, string>>;
+  /** 分店 id → 名稱(連鎖餐廳的單,揀貨單要標出送去哪一家) */
+  branchNames?: Readonly<Record<string, string>>;
 }
 
 /** 出貨彙總與揀貨單:選一個配送日,看「每個品項總共要備多少」,並下載給倉庫 / 進銷存用的 CSV(Excel 可開) */
-const SupplierPickListDialog = ({ open, onOpenChange, orders, customerNames }: Props) => {
+const SupplierPickListDialog = ({ open, onOpenChange, orders, customerNames, branchNames }: Props) => {
   const [date, setDate] = useState(() => addDays(taipeiNow().date, 1));
-  const list = useMemo(() => buildPickList(orders, date, customerNames), [orders, date, customerNames]);
+  const list = useMemo(() => buildPickList(orders, date, customerNames, branchNames), [orders, date, customerNames, branchNames]);
   const undated = useMemo(() => orders.filter((o) => !o.delivery_date && isPickable(o)).length, [orders]);
 
   return (

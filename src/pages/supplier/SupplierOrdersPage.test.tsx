@@ -27,6 +27,8 @@ const { state, recordOrderEvent, toastSuccess, toastError } = vi.hoisted(() => (
     groupPrices: [] as Record<string, unknown>[],
     /** 已經雙方同意約定價成交的客戶 */
     standing: [] as Record<string, unknown>[],
+    /** 供應商讀得到的分店(派給他的訂單所屬的分店) */
+    branches: [] as Record<string, unknown>[],
     rpcCalls: [] as { fn: string; args: Record<string, unknown> }[],
     rpcResult: { data: { status: "confirmed", total_amount: 1690 }, error: null } as { data: unknown; error: { message: string } | null },
   },
@@ -48,6 +50,7 @@ const fakeFrom = (table: string) => {
     if (table === "supplier_customer_group_members") return { data: state.member, error: null };
     if (table === "supplier_group_prices") return { data: state.groupPrices, error: null };
     if (table === "supplier_standing_agreements") return { data: state.standing, error: null };
+    if (table === "restaurant_branches") return { data: state.branches, error: null };
     if (table === "supplier_shipments")
       return {
         data: [{ order_id: "ord-shipped-000000a4", shipped_at: "2026-09-28T02:00:00Z", tracking_info: { carrier: "自有車隊", tracking_number: "T-9" }, notes: null }],
@@ -140,6 +143,7 @@ beforeEach(() => {
   state.member = [];
   state.groupPrices = [];
   state.standing = [];
+  state.branches = [];
   state.rpcCalls = [];
   state.rpcResult = { data: { status: "confirmed", total_amount: 1690 }, error: null };
   recordOrderEvent.mockReset();
@@ -468,6 +472,27 @@ describe("退回重新報價、取消、逾時的原因(業主拍板 N2 / F5)", 
 
       await user.click(screen.getByRole("button", { name: /接單設定/ }));
       expect(await screen.findByRole("heading", { name: "接單設定" })).toBeInTheDocument();
+    });
+  });
+
+  describe("連鎖餐廳:顯示送貨地點(分店)", () => {
+    it("訂單有分店:卡片顯示分店名稱、地址與收貨時段;沒有分店的單不顯示這一行", async () => {
+      state.branches = [{ id: "br-1", name: "中正店", address: "台北市中正區重慶南路 1 號", receiving_hours: "09:00-11:00" }];
+      state.orders = [order("ord-branch-0000000b1", "dispatched", { branch_id: "br-1" }), order("ord-nobranch-00000b2", "dispatched", { branch_id: null })];
+      renderPage("/supplier/orders?stage=all");
+      await waitLoaded();
+      await waitFor(() => expect(screen.getByTestId("branch-ord-branch-0000000b1")).toHaveTextContent("送貨地點:中正店 · 台北市中正區重慶南路 1 號 · 收貨時段 09:00-11:00"));
+      expect(screen.queryByTestId("branch-ord-nobranch-00000b2")).toBeNull();
+    });
+
+    it("只有名稱沒有地址 / 時段:只顯示名稱;讀不到分店資料也不影響接單", async () => {
+      state.branches = [{ id: "br-2", name: "信義店", address: null, receiving_hours: null }];
+      state.orders = [order("ord-branch-0000000b3", "dispatched", { branch_id: "br-2" }), order("ord-branch-0000000b4", "dispatched", { branch_id: "br-gone" })];
+      renderPage("/supplier/orders?stage=all");
+      await waitLoaded();
+      await waitFor(() => expect(screen.getByTestId("branch-ord-branch-0000000b3")).toHaveTextContent(/^送貨地點:信義店$/));
+      expect(screen.queryByTestId("branch-ord-branch-0000000b4")).toBeNull();
+      expect(within(card("ord-branch-0000000b4")).getByRole("button", { name: "接單" })).toBeInTheDocument();
     });
   });
 

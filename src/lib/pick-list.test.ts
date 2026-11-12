@@ -65,7 +65,20 @@ describe("CSV", () => {
     expect(totals[0]).toBe("品項,單位,總數量,客戶數,訂單數,備註");
     expect(totals).toContain("高麗菜,kg,8.5,2,2,");
     const lines = linesCsv(r.lines).replace(/^\uFEFF/, "").split("\r\n");
-    expect(lines[0]).toBe("客戶,訂單編號,品項,數量,單位");
-    expect(lines[1]).toBe("好味小館,#AAAAAAA1,高麗菜,5,kg");
+    expect(lines[0]).toBe("客戶,分店,訂單編號,品項,數量,單位");
+    expect(lines[1]).toBe("好味小館,,#AAAAAAA1,高麗菜,5,kg"); // 沒有分店的單,分店欄是空的
+  });
+
+  it("連鎖餐廳:揀貨單標出分店,同一家客戶的單依分店排在一起;對不到分店名稱的當沒有分店", () => {
+    const withBranch = (id: string, branch: string | null): PickOrder => ({
+      ...o(id, "r1", "confirmed", "2026-10-30", [{ name: "雞蛋", quantity: "2", unit: "箱" }]),
+      branch_id: branch,
+    });
+    const x = buildPickList([withBranch("ccccccc2", "b2"), withBranch("ccccccc1", "b1"), withBranch("ccccccc3", "b-gone")], "2026-10-30", NAMES, { b1: "中正店", b2: "信義店" });
+    expect(x.lines.map((l) => l.branch)).toEqual(["", "中正店", "信義店"]);
+    const csv = linesCsv(x.lines).replace(/^\uFEFF/, "").split("\r\n");
+    expect(csv[2]).toBe("好味小館,中正店,#CCCCCCC1,雞蛋,2,箱");
+    // 品項總量不分分店(備貨看的是總數)
+    expect(x.totals).toEqual([expect.objectContaining({ name: "雞蛋", quantity: 6, customers: 1, orders: 3 })]);
   });
 });

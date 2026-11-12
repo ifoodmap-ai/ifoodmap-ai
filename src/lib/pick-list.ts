@@ -13,6 +13,8 @@ export interface PickOrder {
   id: string;
   status: string;
   restaurant_id: string | null;
+  /** 連鎖餐廳的哪一家分店叫的貨(沒有分店 = null);供應商出貨要知道送去哪一家 */
+  branch_id?: string | null;
   delivery_date: string | null;
   ingredient_list: PickItem[] | null;
 }
@@ -40,6 +42,8 @@ export interface PickLine {
   orderId: string;
   orderNo: string;
   customer: string;
+  /** 分店名稱(沒有分店是空字串) */
+  branch: string;
   name: string;
   quantity: string;
   unit: string;
@@ -68,6 +72,7 @@ export const buildPickList = (
   orders: readonly PickOrder[],
   deliveryDate: string,
   customerNames: Readonly<Record<string, string>>,
+  branchNames: Readonly<Record<string, string>> = {},
 ): PickList => {
   const sameDay = orders.filter((o) => o.delivery_date === deliveryDate);
   const picked = sameDay.filter(isPickable);
@@ -76,9 +81,10 @@ export const buildPickList = (
   const lines: PickLine[] = [];
   picked.forEach((o) => {
     const customer = (o.restaurant_id && customerNames[o.restaurant_id]) || "（未知客戶）";
+    const branch = (o.branch_id && branchNames[o.branch_id]) || "";
     const seen = new Set<string>();
     itemsOf(o).forEach((i) => {
-      lines.push({ orderId: o.id, orderNo: formatOrderNo(o.id), customer, name: i.name, quantity: i.quantity, unit: i.unit });
+      lines.push({ orderId: o.id, orderNo: formatOrderNo(o.id), customer, branch, name: i.name, quantity: i.quantity, unit: i.unit });
       const key = `${i.name}\u0000${i.unit}`;
       const row = totals.get(key) ?? { name: i.name, unit: i.unit, quantity: 0, customers: 0, orders: 0, hasUnparsed: false, customerIds: new Set<string>() };
       if (PLAIN_NUMBER.test(i.quantity)) row.quantity = Math.round((row.quantity + Number.parseFloat(i.quantity)) * 100) / 100;
@@ -97,8 +103,8 @@ export const buildPickList = (
     totals: [...totals.values()]
       .map(({ customerIds, ...row }) => ({ ...row, customers: customerIds.size }))
       .sort((a, b) => a.name.localeCompare(b.name, "zh-Hant") || a.unit.localeCompare(b.unit, "zh-Hant")),
-    // 揀貨單依客戶分組、同一家的單放在一起
-    lines: lines.sort((a, b) => a.customer.localeCompare(b.customer, "zh-Hant") || a.orderNo.localeCompare(b.orderNo)),
+    // 揀貨單依客戶、分店分組,同一家的單放在一起
+    lines: lines.sort((a, b) => a.customer.localeCompare(b.customer, "zh-Hant") || a.branch.localeCompare(b.branch, "zh-Hant") || a.orderNo.localeCompare(b.orderNo)),
     waitingCount: sameDay.filter((o) => o.status === "dispatched" || o.status === "sent").length,
   };
 };
@@ -107,6 +113,6 @@ export const TOTALS_CSV_HEADERS = ["品項", "單位", "總數量", "客戶數",
 export const totalsCsv = (rows: readonly PickTotalRow[]): string =>
   toCsv(TOTALS_CSV_HEADERS, rows.map((r) => [r.name, r.unit, r.quantity, r.customers, r.orders, r.hasUnparsed ? "部分數量不是純數字,未計入總數量" : ""]));
 
-export const LINES_CSV_HEADERS = ["客戶", "訂單編號", "品項", "數量", "單位"] as const;
+export const LINES_CSV_HEADERS = ["客戶", "分店", "訂單編號", "品項", "數量", "單位"] as const;
 export const linesCsv = (rows: readonly PickLine[]): string =>
-  toCsv(LINES_CSV_HEADERS, rows.map((r) => [r.customer, r.orderNo, r.name, r.quantity, r.unit]));
+  toCsv(LINES_CSV_HEADERS, rows.map((r) => [r.customer, r.branch, r.orderNo, r.name, r.quantity, r.unit]));
