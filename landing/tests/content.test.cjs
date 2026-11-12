@@ -553,18 +553,19 @@ test('restaurant capabilities are four illustrated bento cards, not walls of fak
   }
 });
 
-test('restaurant capability cards are laid out irregularly, not as a four-up equal grid', () => {
+// 2026-11-13 業主要求 /restaurants 與 /suppliers 的卡片大小一致、排整齊(原本是刻意錯落的 bento):
+// 整齊版 = 容器帶 ifm-bento--even、卡片不帶任何 bt-* 跨欄或 bt-rise / bt-drop 位移。
+test('restaurant capability cards are an even 2x2 grid: same size, no staggering', () => {
   const caps = restaurantCapabilitySection(restaurants);
-  assert.match(caps, /<div class="ifm-bento"/);
-  const spans = new Set((caps.match(/\bbt-(\d+)\b/g) || []));
-  assert.ok(spans.size >= 2, `能力卡只有一種寬度(${[...spans].join(', ')}),沒有不規則感`);
-  assert.ok(/bt-rise|bt-drop/.test(caps), '能力卡沒有任何垂直位移');
+  assert.match(caps, /<div class="ifm-bento ifm-bento--even"/);
+  assert.doesNotMatch(caps, /\bbt-(\d+|rise|drop)\b/, '整齊版的卡片不可以帶跨欄或位移 class');
+  assert.equal((caps.match(/<article class="ifm-card"/g) || []).length, 4);
 });
 
 
 test('restaurant capability guards fail when cards are swapped or lose their art', () => {
   const capStart = restaurants.indexOf('<section id="restaurant-capabilities"');
-  const marker = '<article class="ifm-card bt-';
+  const marker = '<article class="ifm-card"';
   const first = restaurants.indexOf(marker, capStart);
   const second = restaurants.indexOf(marker, first + 1);
   const third = restaurants.indexOf(marker, second + 1);
@@ -729,21 +730,28 @@ test('supplier capabilities are four illustrated bento cards, not walls of fake 
   }
 });
 
-test('supplier capability cards are laid out irregularly, not as a four-up equal grid', () => {
+test('supplier capability cards are an even 2x2 grid: same size, no staggering', () => {
   const capStart = suppliers.indexOf('<section id="supplier-capabilities"');
   const capEnd = suppliers.indexOf('id="supplier-savings"', capStart);
   const caps = suppliers.slice(capStart, capEnd);
-  assert.match(caps, /<div class="ifm-bento"/);
-  // 至少兩種不同寬度,而且至少一張有垂直位移 —— 不然就退化成規律四欄了
-  const spans = new Set((caps.match(/\bbt-(\d+)\b/g) || []));
-  assert.ok(spans.size >= 2, `能力卡只有一種寬度(${[...spans].join(', ')}),沒有不規則感`);
-  assert.ok(/bt-rise|bt-drop/.test(caps), '能力卡沒有任何垂直位移');
+  assert.match(caps, /<div class="ifm-bento ifm-bento--even"/);
+  assert.doesNotMatch(caps, /\bbt-(\d+|rise|drop)\b/, '整齊版的卡片不可以帶跨欄或位移 class');
+  assert.equal((caps.match(/<article class="ifm-card"/g) || []).length, 4);
+});
+
+test('pain and flow cards on /restaurants and /suppliers are even too (pain 2x2, flow four across)', () => {
+  for (const [name, html] of [['restaurants', restaurants], ['suppliers', suppliers]]) {
+    const containers = html.match(/<div class="ifm-bento ifm-bento--even[^"]*"/g) || [];
+    assert.equal(containers.length, 3, `${name}:痛點、流程、能力三塊都該是整齊版`);
+    assert.equal(containers.filter((c) => c.includes('ifm-bento--four')).length, 1, `${name}:流程是四欄一排`);
+    assert.doesNotMatch(html, /<article class="ifm-card[^"]*\bbt-(\d+|rise|drop)\b/, `${name}:卡片不可以帶跨欄或位移 class`);
+  }
 });
 
 
 test('supplier capability guards fail when cards are swapped or lose their art', () => {
   const capStart = suppliers.indexOf('<section id="supplier-capabilities"');
-  const marker = '<article class="ifm-card bt-';
+  const marker = '<article class="ifm-card"';
   const first = suppliers.indexOf(marker, capStart);
   const second = suppliers.indexOf(marker, first + 1);
   const third = suppliers.indexOf(marker, second + 1);

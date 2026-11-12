@@ -479,10 +479,11 @@
     align-items:start;
   }
   .ifm-bento > * { min-width:0; }
-  /* 整齊版(2026-11-10 業主要求 /suppliers 的四個痛點大小一致):兩欄、每張同寬同高、沒有上下錯位。
+  /* 整齊版(2026-11-10 業主要求 /suppliers 與 /restaurants 的卡片大小一致):兩欄(--four 是四欄)、每張同寬同高、沒有上下錯位。
      不加 bt-* / bt-drop / bt-rise,由這個修飾 class 統一管;手機照舊塌成單欄。 */
   .ifm-bento--even { align-items:stretch; }
   .ifm-bento--even > * { grid-column:span 6; margin-top:0; }
+  .ifm-bento--four > * { grid-column:span 3; } /* 四欄一排的整齊版(接單流程四步) */
   .bt-3  { grid-column:span 3; }
   .bt-4  { grid-column:span 4; }
   .bt-5  { grid-column:span 5; }
@@ -1207,23 +1208,23 @@
           <h2 id="restaurant-pain-title" style="font-size:38px;line-height:1.3;color:#17261c;margin:0 0 14px;">{{ L.rest.pain.title }}</h2>
           <p class="restaurant-mobile-copy" style="font-size:17px;line-height:1.75;color:#5b6b62;margin:0;">{{ L.rest.pain.sub }}</p>
         </div>
-        <div class="ifm-bento">
-          <article class="ifm-card bt-5" data-reveal>
+        <div class="ifm-bento ifm-bento--even">
+          <article class="ifm-card" data-reveal>
             <img class="ifm-art ifm-art--pad" src="/assets/rest-pain-1.svg" alt="" width="120" height="120" loading="lazy" style="width:76px;height:76px;padding:10px;margin-bottom:16px;">
             <h3 style="font-size:18px;line-height:1.45;margin:0 0 9px;color:#0E1A14;">{{ L.rest.pain.manual.title }}</h3>
             <p style="font-size:14.5px;line-height:1.7;color:#4B5A52;margin:0;">{{ L.rest.pain.manual.body }}</p>
           </article>
-          <article class="ifm-card bt-7 bt-drop" data-reveal>
+          <article class="ifm-card" data-reveal>
             <img class="ifm-art ifm-art--pad" src="/assets/rest-pain-2.svg" alt="" width="120" height="120" loading="lazy" style="width:76px;height:76px;padding:10px;margin-bottom:16px;">
             <h3 style="font-size:18px;line-height:1.45;margin:0 0 9px;color:#0E1A14;">{{ L.rest.pain.specs.title }}</h3>
             <p style="font-size:14.5px;line-height:1.7;color:#4B5A52;margin:0;">{{ L.rest.pain.specs.body }}</p>
           </article>
-          <article class="ifm-card bt-7 bt-rise" data-reveal>
+          <article class="ifm-card" data-reveal>
             <img class="ifm-art ifm-art--pad" src="/assets/rest-pain-3.svg" alt="" width="120" height="120" loading="lazy" style="width:76px;height:76px;padding:10px;margin-bottom:16px;">
             <h3 style="font-size:18px;line-height:1.45;margin:0 0 9px;color:#0E1A14;">{{ L.rest.pain.compare.title }}</h3>
             <p style="font-size:14.5px;line-height:1.7;color:#4B5A52;margin:0;">{{ L.rest.pain.compare.body }}</p>
           </article>
-          <article class="ifm-card bt-5" data-reveal>
+          <article class="ifm-card" data-reveal>
             <img class="ifm-art ifm-art--pad" src="/assets/rest-pain-4.svg" alt="" width="120" height="120" loading="lazy" style="width:76px;height:76px;padding:10px;margin-bottom:16px;">
             <h3 style="font-size:18px;line-height:1.45;margin:0 0 9px;color:#0E1A14;">{{ L.rest.pain.track.title }}</h3>
             <p style="font-size:14.5px;line-height:1.7;color:#4B5A52;margin:0;">{{ L.rest.pain.track.body }}</p>
@@ -1241,23 +1242,23 @@
         </div>
         <!-- 蜿蜒路徑插圖打頭,四個節點的號碼由下面的卡片疊,不畫進 SVG。 -->
         <img class="ifm-art" src="/assets/rest-flow.svg" alt="" width="960" height="300" loading="lazy" style="margin-bottom:26px;">
-        <div class="ifm-bento">
-          <article class="ifm-card ifm-card--tint bt-3" data-reveal>
+        <div class="ifm-bento ifm-bento--even ifm-bento--four">
+          <article class="ifm-card ifm-card--tint" data-reveal>
             <div class="ifm-eyebrow"><span class="ifm-eyebrow__no">1</span></div>
             <h3 style="font-size:17.5px;margin:14px 0 8px;color:#0E1A14;">{{ L.rest.flow.s1.title }}</h3>
             <p style="font-size:14.5px;line-height:1.7;color:#4B5A52;margin:0;">{{ L.rest.flow.s1.body }}</p>
           </article>
-          <article class="ifm-card ifm-card--tint bt-3 bt-drop" data-reveal>
+          <article class="ifm-card ifm-card--tint" data-reveal>
             <div class="ifm-eyebrow"><span class="ifm-eyebrow__no">2</span></div>
             <h3 style="font-size:17.5px;margin:14px 0 8px;color:#0E1A14;">{{ L.rest.flow.s2.title }}</h3>
             <p style="font-size:14.5px;line-height:1.7;color:#4B5A52;margin:0;">{{ L.rest.flow.s2.body }}</p>
           </article>
-          <article class="ifm-card ifm-card--tint bt-3" data-reveal>
+          <article class="ifm-card ifm-card--tint" data-reveal>
             <div class="ifm-eyebrow"><span class="ifm-eyebrow__no">3</span></div>
             <h3 style="font-size:17.5px;margin:14px 0 8px;color:#0E1A14;">{{ L.rest.flow.s3.title }}</h3>
             <p style="font-size:14.5px;line-height:1.7;color:#4B5A52;margin:0;">{{ L.rest.flow.s3.body }}</p>
           </article>
-          <article class="ifm-card ifm-card--tint bt-3 bt-drop" data-reveal>
+          <article class="ifm-card ifm-card--tint" data-reveal>
             <div class="ifm-eyebrow"><span class="ifm-eyebrow__no">4</span></div>
             <h3 style="font-size:17.5px;margin:14px 0 8px;color:#0E1A14;">{{ L.rest.flow.s4.title }}</h3>
             <p style="font-size:14.5px;line-height:1.7;color:#4B5A52;margin:0;">{{ L.rest.flow.s4.body }}</p>
@@ -1270,8 +1271,8 @@
       <div class="restaurant-wrap">
       <!-- 原本是四個「文字 + 假表格」左右交替的大區塊,整頁一張圖都沒有。
            改成 bento:每格用插圖打頭、三條說明壓成短標籤,寬度與垂直位移刻意錯開。 -->
-      <div class="ifm-bento" style="padding:64px 0 72px;">
-        <article class="ifm-card bt-7" data-reveal aria-labelledby="restaurant-analyze-title">
+      <div class="ifm-bento ifm-bento--even" style="padding:64px 0 72px;">
+        <article class="ifm-card" data-reveal aria-labelledby="restaurant-analyze-title">
           <img class="ifm-art ifm-art--bleed" src="/assets/rest-cap-menu-ai.svg" alt="" width="480" height="360" loading="lazy">
           <div class="ifm-eyebrow"><span class="ifm-eyebrow__no">1</span>01 · MENU ANALYSIS</div>
           <h2 id="restaurant-analyze-title" style="font-size:25px;line-height:1.35;color:#0E1A14;margin:14px 0 10px;">{{ L.rest.caps.menuAi.title }}</h2>
@@ -1282,7 +1283,7 @@
             <li>{{ L.rest.caps.menuAi.li3 }}</li>
           </ul>
         </article>
-        <article class="ifm-card bt-5 bt-drop" data-reveal aria-labelledby="restaurant-cost-title">
+        <article class="ifm-card" data-reveal aria-labelledby="restaurant-cost-title">
           <img class="ifm-art ifm-art--bleed" src="/assets/rest-cap-cost.svg" alt="" width="480" height="360" loading="lazy">
           <div class="ifm-eyebrow"><span class="ifm-eyebrow__no">2</span>02 · COST &amp; PURCHASE</div>
           <h2 id="restaurant-cost-title" style="font-size:25px;line-height:1.35;color:#0E1A14;margin:14px 0 10px;">{{ L.rest.caps.cost.title }}</h2>
@@ -1293,7 +1294,7 @@
             <li>{{ L.rest.caps.cost.li3 }}</li>
           </ul>
         </article>
-        <article class="ifm-card bt-5" data-reveal aria-labelledby="restaurant-orders-title">
+        <article class="ifm-card" data-reveal aria-labelledby="restaurant-orders-title">
           <img class="ifm-art ifm-art--bleed" src="/assets/rest-cap-orders.svg" alt="" width="480" height="360" loading="lazy">
           <div class="ifm-eyebrow"><span class="ifm-eyebrow__no">3</span>03 · ORDER &amp; RECEIVING</div>
           <h2 id="restaurant-orders-title" style="font-size:25px;line-height:1.35;color:#0E1A14;margin:14px 0 10px;">{{ L.rest.caps.orders.title }}</h2>
@@ -1304,7 +1305,7 @@
             <li>{{ L.rest.caps.orders.li3 }}</li>
           </ul>
         </article>
-        <article class="ifm-card bt-7 bt-rise" data-reveal aria-labelledby="restaurant-team-title">
+        <article class="ifm-card" data-reveal aria-labelledby="restaurant-team-title">
           <img class="ifm-art ifm-art--bleed" src="/assets/rest-cap-team.svg" alt="" width="480" height="360" loading="lazy">
           <div class="ifm-eyebrow"><span class="ifm-eyebrow__no">4</span>04 · TEAM</div>
           <h2 id="restaurant-team-title" style="font-size:25px;line-height:1.35;color:#0E1A14;margin:14px 0 10px;">{{ L.rest.caps.team.title }}</h2>
@@ -1493,23 +1494,23 @@
       <!-- 蜿蜒路徑插圖打頭,四個節點的號碼由下面的卡片用 .ifm-eyebrow__no 疊上去,
            不畫進 SVG —— 圖裡有數字的話英文版也改不動,而且換順序要重畫圖。 -->
       <img class="ifm-art" src="/assets/sup-flow.svg" alt="" width="960" height="300" loading="lazy" style="margin-bottom:26px;">
-      <div class="ifm-bento">
-        <article class="ifm-card ifm-card--tint bt-3" data-reveal>
+      <div class="ifm-bento ifm-bento--even ifm-bento--four">
+        <article class="ifm-card ifm-card--tint" data-reveal>
           <div class="ifm-eyebrow"><span class="ifm-eyebrow__no">1</span></div>
           <h3 style="font-size:17.5px;margin:14px 0 8px;color:#0E1A14;">{{ L.sup.flowCatalogTitle }}</h3>
           <p style="font-size:14.5px;line-height:1.7;color:#4B5A52;margin:0;">{{ L.sup.flowCatalogDesc }}</p>
         </article>
-        <article class="ifm-card ifm-card--tint bt-3 bt-drop" data-reveal>
+        <article class="ifm-card ifm-card--tint" data-reveal>
           <div class="ifm-eyebrow"><span class="ifm-eyebrow__no">2</span></div>
           <h3 style="font-size:17.5px;margin:14px 0 8px;color:#0E1A14;">{{ L.sup.flowLeadsTitle }}</h3>
           <p style="font-size:14.5px;line-height:1.7;color:#4B5A52;margin:0;">{{ L.sup.flowLeadsDesc }}</p>
         </article>
-        <article class="ifm-card ifm-card--tint bt-3" data-reveal>
+        <article class="ifm-card ifm-card--tint" data-reveal>
           <div class="ifm-eyebrow"><span class="ifm-eyebrow__no">3</span></div>
           <h3 style="font-size:17.5px;margin:14px 0 8px;color:#0E1A14;">{{ L.sup.flowQuoteTitle }}</h3>
           <p style="font-size:14.5px;line-height:1.7;color:#4B5A52;margin:0;">{{ L.sup.flowQuoteDesc }}</p>
         </article>
-        <article class="ifm-card ifm-card--tint bt-3 bt-drop" data-reveal>
+        <article class="ifm-card ifm-card--tint" data-reveal>
           <div class="ifm-eyebrow"><span class="ifm-eyebrow__no">4</span></div>
           <h3 style="font-size:17.5px;margin:14px 0 8px;color:#0E1A14;">{{ L.sup.flowShipTitle }}</h3>
           <p style="font-size:14.5px;line-height:1.7;color:#4B5A52;margin:0;">{{ L.sup.flowShipDesc }}</p>
@@ -1521,8 +1522,8 @@
       <div class="supplier-wrap">
       <!-- 原本是四個「文字 + 假表格」左右交替的大區塊,整頁一張圖都沒有。
            改成 bento:每格用插圖打頭、三條說明壓成短標籤,寬度與垂直位移刻意錯開。 -->
-      <div class="ifm-bento" style="padding:64px 0 72px;">
-        <article class="ifm-card bt-7" data-reveal aria-labelledby="supplier-leads-title">
+      <div class="ifm-bento ifm-bento--even" style="padding:64px 0 72px;">
+        <article class="ifm-card" data-reveal aria-labelledby="supplier-leads-title">
           <img class="ifm-art ifm-art--bleed" src="/assets/sup-cap-1.svg" alt="" width="480" height="360" loading="lazy">
           <div class="ifm-eyebrow"><span class="ifm-eyebrow__no">1</span>{{ L.sup.cap1Eyebrow }}</div>
           <h2 id="supplier-leads-title" style="font-size:25px;line-height:1.35;color:#0E1A14;margin:14px 0 10px;">{{ L.sup.cap1Title }}</h2>
@@ -1533,7 +1534,7 @@
             <li>{{ L.sup.cap1Li3 }}</li>
           </ul>
         </article>
-        <article class="ifm-card bt-5 bt-drop" data-reveal aria-labelledby="supplier-quotes-title">
+        <article class="ifm-card" data-reveal aria-labelledby="supplier-quotes-title">
           <img class="ifm-art ifm-art--bleed" src="/assets/sup-cap-2.svg" alt="" width="480" height="360" loading="lazy">
           <div class="ifm-eyebrow"><span class="ifm-eyebrow__no">2</span>{{ L.sup.cap2Eyebrow }}</div>
           <h2 id="supplier-quotes-title" style="font-size:25px;line-height:1.35;color:#0E1A14;margin:14px 0 10px;">{{ L.sup.cap2Title }}</h2>
@@ -1544,7 +1545,7 @@
             <li>{{ L.sup.cap2Li3 }}</li>
           </ul>
         </article>
-        <article class="ifm-card bt-5" data-reveal aria-labelledby="supplier-pricing-title">
+        <article class="ifm-card" data-reveal aria-labelledby="supplier-pricing-title">
           <img class="ifm-art ifm-art--bleed" src="/assets/sup-cap-3.svg" alt="" width="480" height="360" loading="lazy">
           <div class="ifm-eyebrow"><span class="ifm-eyebrow__no">3</span>{{ L.sup.cap3Eyebrow }}</div>
           <h2 id="supplier-pricing-title" style="font-size:25px;line-height:1.35;color:#0E1A14;margin:14px 0 10px;">{{ L.sup.cap3Title }}</h2>
@@ -1555,7 +1556,7 @@
             <li>{{ L.sup.cap3Li3 }}</li>
           </ul>
         </article>
-        <article class="ifm-card bt-7 bt-rise" data-reveal aria-labelledby="supplier-customers-title">
+        <article class="ifm-card" data-reveal aria-labelledby="supplier-customers-title">
           <img class="ifm-art ifm-art--bleed" src="/assets/sup-cap-4.svg" alt="" width="480" height="360" loading="lazy">
           <div class="ifm-eyebrow"><span class="ifm-eyebrow__no">4</span>{{ L.sup.cap4Eyebrow }}</div>
           <h2 id="supplier-customers-title" style="font-size:25px;line-height:1.35;color:#0E1A14;margin:14px 0 10px;">{{ L.sup.cap4Title }}</h2>
