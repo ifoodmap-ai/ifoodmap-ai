@@ -295,23 +295,29 @@ SELECT set_config(
   '23000000-0000-0000-0000-000000000001',
   true
 );
+-- 正式庫(沒有 staging)裡有真實資料,所以只數這支測試自己建的兩列;
+-- 管理員看得到兩列,加上上面各身分「只看得到自己那一列」的檢查,就證明了範圍
 SELECT is(
-  (SELECT count(*) FROM public.order_quotes),
+  (SELECT count(*) FROM public.order_quotes
+    WHERE id IN ('51000000-0000-0000-0000-000000000001'::uuid, '51000000-0000-0000-0000-000000000002'::uuid)),
   2::bigint,
   'admin reads all quotes'
 );
 SELECT is(
-  (SELECT count(*) FROM public.order_payments),
+  (SELECT count(*) FROM public.order_payments
+    WHERE id IN ('52000000-0000-0000-0000-000000000001'::uuid, '52000000-0000-0000-0000-000000000002'::uuid)),
   2::bigint,
   'admin reads all payments'
 );
 SELECT is(
-  (SELECT count(*) FROM public.invoices),
+  (SELECT count(*) FROM public.invoices
+    WHERE id IN ('53000000-0000-0000-0000-000000000001'::uuid, '53000000-0000-0000-0000-000000000002'::uuid)),
   2::bigint,
   'admin reads all invoices'
 );
 SELECT is(
-  (SELECT count(*) FROM public.notifications),
+  (SELECT count(*) FROM public.notifications
+    WHERE id IN ('54000000-0000-0000-0000-000000000001'::uuid, '54000000-0000-0000-0000-000000000002'::uuid)),
   2::bigint,
   'admin reads all notifications'
 );
