@@ -115,7 +115,8 @@ test('五個功能是一個有名字的 group,圖示都是裝飾', () => {
   assert.match(sec, /<sc-for list="\{\{ rpProblems \}\}"/);
   // 每張圖都是 alt=""(文字都在旁邊),而且延遲載入(綁定 src 的圖少了 lazy 會先去抓 "{{ … }}")
   const imgs = sec.match(/<img\b[^>]*>/g) || [];
-  assert.equal(imgs.length, 4, '應該是 廚師、問題圖示、功能圖示、筆電 四個 <img>');
+  // 2026-11-17:筆電插圖改成會動的叫貨頁示意(.dm),不是 <img> 了
+  assert.equal(imgs.length, 3, '應該是 廚師、問題圖示、功能圖示 三個 <img>(筆電是示意畫面)');
   for (const tag of imgs) {
     assert.match(tag, /\salt=""/, `圖片要 alt="":${tag}`);
     assert.match(tag, /\sloading="lazy"/, `圖片要 loading="lazy":${tag}`);
@@ -250,7 +251,7 @@ test('用到的 11 張圖都存在,規格照契約(不含文字、沒有 id/clas
   }
   // 版面上寫死的兩張大圖,width/height 要跟 viewBox 同比例(不然載入前後會跳版)
   assert.match(sec, /<img class="rp-chef" src="\/assets\/rp-chef\.svg" alt="" width="200" height="240"/);
-  assert.match(sec, /<img class="rp-solution" src="\/assets\/rp-solution\.svg" alt="" width="560" height="360"/);
+  assert.match(sec, /<div class="rp-solution dm" data-demo="home-order" data-reveal aria-hidden="true">/);
 });
 
 test('元件把文字跟圖靠 index 對齊:四個問題、五個功能各有自己的圖', () => {
