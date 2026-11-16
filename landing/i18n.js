@@ -616,6 +616,24 @@
         "roleSupplierTitle": "我是供應商",
         "roleSupplierAction": "申請供應商上架 →"
       },
+      "lineCta": {
+        "eyebrow": "LINE 官方帳號",
+        "button": "加入 LINE 官方帳號",
+        "hint": "服務時間：週一至週五 9:00–18:00。加入後直接傳訊息給我們就可以。",
+        "qrAlt": "加入 iFoodmap LINE 官方帳號的 QR code",
+        "qrNote": "用手機掃描，加入官方帳號",
+        "titleRest": "不知道怎麼開始？加 LINE，真人一步步帶你",
+        "restBenefit1": "真人協助註冊，不用自己摸索",
+        "restBenefit2": "免費找食材，幫你媒合供應商",
+        "restBenefit3": "免費索取樣品，先試過再決定",
+        "titleSup": "想請人協助申請上架？加 LINE，真人陪你完成",
+        "supBenefit1": "真人協助註冊與商品上架",
+        "supBenefit2": "申請前有疑問，也可以先問",
+        "titleQa": "還有問題？直接在 LINE 問真人",
+        "qaBenefit1": "真人協助註冊與上架",
+        "qaBenefit2": "免費找食材，幫你媒合供應商",
+        "qaBenefit3": "免費索取樣品，先試過再決定"
+      },
       "footer": {
         "brandTagline": "食材地圖",
         "phoneLabel": "服務專線",
@@ -1389,6 +1407,24 @@
         "roleRestaurantAction": "Create a restaurant account →",
         "roleSupplierTitle": "I'm a supplier",
         "roleSupplierAction": "Apply to list as a supplier →"
+      },
+      "lineCta": {
+        "eyebrow": "LINE official account",
+        "button": "Add us on LINE",
+        "hint": "Service hours: Mon–Fri, 9:00–18:00. Once you have added us, just send a message.",
+        "qrAlt": "QR code to add the iFoodmap LINE official account",
+        "qrNote": "Scan with your phone to add the official account",
+        "titleRest": "Not sure where to start? Add us on LINE and a real person will walk you through it",
+        "restBenefit1": "A real person helps you sign up, so you do not have to figure it out alone",
+        "restBenefit2": "Free sourcing: we match you with suppliers",
+        "restBenefit3": "Request free samples and try before you decide",
+        "titleSup": "Want help getting listed? Add us on LINE and a real person will help",
+        "supBenefit1": "A real person helps you register and list your products",
+        "supBenefit2": "Questions before you apply? Ask us first",
+        "titleQa": "Still have questions? Ask a real person on LINE",
+        "qaBenefit1": "Help with registration and listing, from a real person",
+        "qaBenefit2": "Free sourcing: we match you with suppliers",
+        "qaBenefit3": "Request free samples and try before you decide"
       },
       "footer": {
         "brandTagline": "Food Sourcing Map",

@@ -2246,3 +2246,10 @@ pgTAP 沒辦法在本機跑(沒有 Postgres):套用前用乾跑驗證(不會 com
 ## 形象站卡片「整齊版」排版(2026-11-13)
 
 /restaurants 與 /suppliers 原本刻意錯落的 bento 卡片,改成同寬同高:痛點與能力區是 2×2、接單流程是四欄一排(容器加 `ifm-bento--even`,流程再加 `ifm-bento--four`;卡片不再帶 `bt-*` 跨欄或 `bt-rise` / `bt-drop` 位移)。手機照舊單欄。首頁、成功案例、關於我們等其他頁的 bento 沒動。測試 `tests/content.test.cjs` 的「錯落」斷言已改成「整齊」。
+
+## 形象站「加 LINE」引導(2026-11-17)
+
+- /restaurants、/suppliers、/qa 各一塊「加 LINE 官方帳號」(`.lc-*`,文案在 `landing/i18n.js` 的 `lineCta`)。好處只寫已經能提供的:**真人協助註冊(與上架)、免費找食材與媒合供應商、免費索取樣品**;/suppliers 那塊只寫真人協助註冊與上架(後兩項是給餐廳的)。
+- 桌機有 QR code(`landing/assets/line-qr.svg`,編碼 `https://line.me/R/ti/p/@750yvxki?oat_content=qr`,用 segno 產生);手機與觸控裝置不放 QR,改成整條 52px 按鈕。
+- 每個入口的連結帶不同的 `oat_content`(`landing_rest` / `landing_sup` / `landing_qa` / `qr`),到 LINE 官方帳號後台的「加入好友路徑」就能比較哪個位置帶來最多人(頁尾與聯絡頁的舊連結還是 `url`)。
+- **還沒做**:網站沒有流量分析(沒有 GA 等),註冊按鈕的成效目前量不到;LINE 通知 / LINE 自動接單需要 Messaging API 金鑰,見 PROPOSAL。

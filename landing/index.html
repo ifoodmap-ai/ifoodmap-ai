@@ -208,6 +208,23 @@
   .supplier-wrap { max-width:1240px; margin:0 auto; padding-left:40px; padding-right:40px; }
   /* /suppliers 的作業成本試算(#supplier-savings)。桌機:輸入一排四格、結果在下面一整條;
      手機:一欄,每格是「標籤 + 大觸控步進器」,結果摘要黏在輸入區底部(.sv-mini),邊改邊看得到數字。 */
+  /* 「加 LINE」區塊(.lc-*):/restaurants、/suppliers、/qa 各放一塊。桌機有 QR code(手邊有手機,掃碼最快),
+     手機 / 觸控裝置不放 QR(自己的手機沒辦法掃自己),改成整條按鈕。 */
+  .lc-card { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:28px; align-items:center; padding:30px 34px; border-radius:26px;
+    background:linear-gradient(135deg,#f1faf1 0%,#e3f4e3 100%); border:1px solid #cfe6d0; }
+  .lc-eyebrow { display:inline-flex; align-items:center; gap:8px; font-size:13px; font-weight:700; letter-spacing:.06em; color:#05803a; margin-bottom:10px; }
+  .lc-eyebrow::before { content:""; width:10px; height:10px; border-radius:50%; background:#06C755; }
+  .lc-title { font-size:26px; line-height:1.4; color:#14532d; margin:0 0 14px; }
+  .lc-benefits { list-style:none; margin:0 0 20px; padding:0; display:grid; gap:8px; }
+  .lc-benefits li { position:relative; padding-left:28px; font-size:16px; line-height:1.6; color:#2f4a37; }
+  .lc-benefits li::before { content:"✓"; position:absolute; left:0; top:1px; width:20px; height:20px; border-radius:50%; background:#06C755; color:#fff; font-size:12px; font-weight:700; display:flex; align-items:center; justify-content:center; }
+  .lc-btn { background:#06C755; color:#fff; box-shadow:0 10px 24px rgba(6,199,85,.28); }
+  .lc-hint { font-size:12.5px; line-height:1.6; color:#5b6b62; margin:12px 0 0; }
+  .lc-qr { text-align:center; }
+  .lc-qr img { display:block; width:148px; height:148px; border-radius:14px; border:1px solid #cfe6d0; background:#fff; padding:6px; box-sizing:content-box; }
+  .lc-qr p { font-size:12px; color:#4b5a52; margin:8px 0 0; max-width:160px; }
+  @media (max-width:768px), (hover:none) and (pointer:coarse) { .lc-qr { display:none; } .lc-card { grid-template-columns:1fr; } }
+  @media (max-width:768px) { .lc-card { padding:22px 18px; border-radius:20px; } .lc-title { font-size:21px; } .lc-btn { width:100%; min-height:52px; justify-content:center; text-align:center; } }
   /* /suppliers「客戶怎麼叫貨」示意(#supplier-order-entry):三種叫貨方式切換,右邊永遠是同一張結構化訂單。
      桌機:左(客戶這樣叫貨)→ 箭頭 → 右(你收到的訂單);手機:上下堆疊,箭頭轉向下。 */
   .oe-section { background:#fff; border-top:1px solid #e8eee9; }
@@ -1350,6 +1367,24 @@
       </div>
     </section>
 
+    <!-- 加 LINE(rest):好處寫的都是已經能提供的 —— 真人協助註冊(上架)、免費找食材與媒合供應商、免費索取樣品。
+         連結帶 oat_content,LINE 官方帳號後台的「加入好友路徑」才分得出是從哪一頁來的。 -->
+    <section class="restaurant-wrap" style="padding-top:8px;padding-bottom:64px;" aria-labelledby="lc-title-rest">
+      <div class="lc-card" data-reveal>
+        <div>
+          <div class="lc-eyebrow">{{ L.lineCta.eyebrow }}</div>
+          <h2 id="lc-title-rest" class="lc-title">{{ L.lineCta.titleRest }}</h2>
+          <ul class="lc-benefits"><li>{{ L.lineCta.restBenefit1 }}</li><li>{{ L.lineCta.restBenefit2 }}</li><li>{{ L.lineCta.restBenefit3 }}</li></ul>
+          <a class="platform-action lc-btn" href="https://line.me/R/ti/p/@750yvxki?oat_content=landing_rest" target="_blank" rel="noopener noreferrer">{{ L.lineCta.button }}</a>
+          <p class="lc-hint">{{ L.lineCta.hint }}</p>
+        </div>
+        <div class="lc-qr">
+          <img src="/assets/line-qr.svg" alt="{{ L.lineCta.qrAlt }}" width="148" height="148" loading="lazy">
+          <p>{{ L.lineCta.qrNote }}</p>
+        </div>
+      </div>
+    </section>
+
     <section class="restaurant-wrap" style="padding-top:88px;padding-bottom:92px;">
       <div class="ifm-cta-split" data-reveal style="padding:52px 48px;border-radius:28px;background:radial-gradient(560px 260px at 82% -25%,rgba(124,240,107,.22),transparent 65%),#102419;color:#fff;">
         <div class="ifm-cta-split__copy">
@@ -1677,6 +1712,24 @@
 
         <div class="sv-foot">
           <p class="sv-note">{{ L.sup.svNote }}</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- 加 LINE(sup):好處寫的都是已經能提供的 —— 真人協助註冊(上架)、免費找食材與媒合供應商、免費索取樣品。
+         連結帶 oat_content,LINE 官方帳號後台的「加入好友路徑」才分得出是從哪一頁來的。 -->
+    <section class="supplier-wrap" style="padding-top:8px;padding-bottom:64px;" aria-labelledby="lc-title-sup">
+      <div class="lc-card" data-reveal>
+        <div>
+          <div class="lc-eyebrow">{{ L.lineCta.eyebrow }}</div>
+          <h2 id="lc-title-sup" class="lc-title">{{ L.lineCta.titleSup }}</h2>
+          <ul class="lc-benefits"><li>{{ L.lineCta.supBenefit1 }}</li><li>{{ L.lineCta.supBenefit2 }}</li></ul>
+          <a class="platform-action lc-btn" href="https://line.me/R/ti/p/@750yvxki?oat_content=landing_sup" target="_blank" rel="noopener noreferrer">{{ L.lineCta.button }}</a>
+          <p class="lc-hint">{{ L.lineCta.hint }}</p>
+        </div>
+        <div class="lc-qr">
+          <img src="/assets/line-qr.svg" alt="{{ L.lineCta.qrAlt }}" width="148" height="148" loading="lazy">
+          <p>{{ L.lineCta.qrNote }}</p>
         </div>
       </div>
     </section>
@@ -2120,6 +2173,24 @@
           <h1 class="ifm-qa-title" style="font-size:42px;line-height:1.28;color:#0E1A14;margin:14px 0 16px;">{{ L.qa.heroTitle }}</h1>
           <p style="font-size:17px;line-height:1.8;color:#4B5A52;margin:0;">{{ L.qa.heroSub }}</p>
           <p style="font-size:14px;color:#5b6b62;margin:18px 0 0;">{{ qaCount }} {{ L.qa.countLabel }}</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- 加 LINE(qa):好處寫的都是已經能提供的 —— 真人協助註冊(上架)、免費找食材與媒合供應商、免費索取樣品。
+         連結帶 oat_content,LINE 官方帳號後台的「加入好友路徑」才分得出是從哪一頁來的。 -->
+    <section class="restaurant-wrap" style="padding-top:8px;padding-bottom:64px;" aria-labelledby="lc-title-qa">
+      <div class="lc-card" data-reveal>
+        <div>
+          <div class="lc-eyebrow">{{ L.lineCta.eyebrow }}</div>
+          <h2 id="lc-title-qa" class="lc-title">{{ L.lineCta.titleQa }}</h2>
+          <ul class="lc-benefits"><li>{{ L.lineCta.qaBenefit1 }}</li><li>{{ L.lineCta.qaBenefit2 }}</li><li>{{ L.lineCta.qaBenefit3 }}</li></ul>
+          <a class="platform-action lc-btn" href="https://line.me/R/ti/p/@750yvxki?oat_content=landing_qa" target="_blank" rel="noopener noreferrer">{{ L.lineCta.button }}</a>
+          <p class="lc-hint">{{ L.lineCta.hint }}</p>
+        </div>
+        <div class="lc-qr">
+          <img src="/assets/line-qr.svg" alt="{{ L.lineCta.qrAlt }}" width="148" height="148" loading="lazy">
+          <p>{{ L.lineCta.qrNote }}</p>
         </div>
       </div>
     </section>
