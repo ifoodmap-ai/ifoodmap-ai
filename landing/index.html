@@ -208,6 +208,108 @@
   .supplier-wrap { max-width:1240px; margin:0 auto; padding-left:40px; padding-right:40px; }
   /* /suppliers 的作業成本試算(#supplier-savings)。桌機:輸入一排四格、結果在下面一整條;
      手機:一欄,每格是「標籤 + 大觸控步進器」,結果摘要黏在輸入區底部(.sv-mini),邊改邊看得到數字。 */
+  /* ===== 產品示意動畫(.dm-*):取代 /restaurants 與 /suppliers 能力卡原本的插圖 =====
+     每張是一個「迷你產品畫面」(視窗 + 資料列),進到畫面才開始動、循環播放。
+     畫面是示意資料(右上角標「示意」),內容對應已上線的功能。純 CSS 動畫:
+     - 沒進畫面前 animation-play-state:paused,進來(.ifm-in)才跑;
+     - prefers-reduced-motion 下完全不動,直接顯示最後的完整畫面(基本樣式就是完成態)。
+     字級用 cqw(跟著卡片寬度縮放),手機與桌機看起來比例一樣。 */
+  .dm { position:relative; aspect-ratio:4/3; overflow:hidden; container-type:inline-size; background:linear-gradient(135deg,#eef8ef 0%,#dff1e3 100%); }
+  .dm-in { position:absolute; inset:0; font-size:3.05cqw; line-height:1.35; color:#17261c; }
+  .dm-win { position:absolute; left:6%; right:6%; top:8%; bottom:8%; background:#fff; border-radius:1.1em; box-shadow:0 1.2em 2.6em rgba(20,60,30,.14); padding:0 1.2em 1em; display:flex; flex-direction:column; gap:.75em; }
+  .dm-bar { display:flex; align-items:center; gap:.45em; padding:.85em 0 .55em; border-bottom:1px solid #e6efe7; font-weight:700; font-size:1.02em; margin:0 -1.2em; padding-left:1.2em; padding-right:1.2em; }
+  .dm-bar i { width:.62em; height:.62em; border-radius:50%; background:#d8e4da; display:inline-block; }
+  .dm-bar span { margin-left:.5em; }
+  .dm-tag { margin-left:auto; font-size:.78em; font-weight:700; color:#166534; background:#e6f5e8; border-radius:999px; padding:.15em .7em; }
+  .dm small { font-size:.82em; font-weight:700; color:#6c7b72; letter-spacing:.04em; }
+  .dm-chip { display:inline-flex; align-items:center; gap:.4em; background:#eff8f0; border:1px solid #d3e8d6; color:#14532d; border-radius:.7em; padding:.35em .75em; font-weight:600; }
+  .dm-chip--warn { background:#fff3d6; border-color:#f3dca0; color:#8a5a00; }
+  .dm-row { display:flex; align-items:center; gap:.7em; border:1px solid #e3ede4; border-radius:.8em; padding:.55em .8em; background:#fcfefc; }
+  .dm-row b { font-weight:700; }
+  .dm-row .dm-grow { margin-left:auto; }
+  .dm-sub { color:#6c7b72; font-size:.9em; }
+  .dm-dot { width:1.5em; height:1.5em; border-radius:50%; background:#06C755; color:#fff; font-size:.85em; display:inline-flex; align-items:center; justify-content:center; flex:0 0 auto; font-style:normal; }
+
+  /* 1 菜單分析:左邊菜單、掃描線掃過、右邊食材一項一項冒出來 */
+  .dm-cols { display:grid; grid-template-columns:1fr 1.1fr; gap:1em; flex:1; min-height:0; }
+  .dm-paper { position:relative; background:#fffdf4; border:1px solid #efe6c4; border-radius:.8em; padding:.8em 1em; overflow:hidden; display:flex; flex-direction:column; gap:.55em; }
+  .dm-paper p { margin:0; font-size:1.05em; font-weight:600; color:#3a3320; border-bottom:1px dashed #e4d9a8; padding-bottom:.35em; }
+  .dm-scan { position:absolute; left:0; right:0; top:0; height:.35em; background:linear-gradient(90deg,transparent,#06C755,transparent); box-shadow:0 0 1em #06C755; }
+  .dm-list { display:flex; flex-direction:column; gap:.5em; align-items:flex-start; }
+  .dm-note { font-style:normal; font-size:.88em; color:#166534; font-weight:700; margin-top:auto; }
+
+  /* 2 成本與比價:長條長出來、最低價閃一下 */
+  .dm-track { flex:1; height:.9em; border-radius:999px; background:#e5efe6; overflow:hidden; }
+  .dm-fill { display:block; height:100%; width:var(--w); border-radius:999px; background:linear-gradient(90deg,#46c138,#1f9e4e); }
+  .dm-cmp { display:grid; grid-template-columns:1fr 1fr; gap:.7em; }
+  .dm-cmp .dm-row { flex-direction:column; align-items:flex-start; gap:.15em; position:relative; }
+  .dm-cmp .dm-row b { font-size:1.25em; }
+  .dm-best { position:absolute; right:.6em; top:.5em; font-style:normal; font-size:.78em; font-weight:700; color:#fff; background:#06C755; border-radius:999px; padding:.1em .6em; }
+
+  /* 3 訂單進度:四個圓點依序打勾,最後出現「已確認收貨」 */
+  .dm-steps { list-style:none; margin:.3em 0 0; padding:0; display:grid; grid-template-columns:repeat(4,1fr); position:relative; }
+  .dm-steps::before { content:""; position:absolute; left:12.5%; right:12.5%; top:.75em; height:.3em; background:#e0ebe2; border-radius:99px; }
+  .dm-steps li { position:relative; text-align:center; font-size:.9em; color:#4b5a52; display:flex; flex-direction:column; align-items:center; gap:.45em; font-weight:600; }
+  .dm-steps .dm-dot { position:relative; z-index:1; }
+  .dm-done { margin:auto 0 0; background:#e6f5e8; border:1px solid #c6e5ca; color:#14532d; border-radius:.8em; padding:.6em .9em; font-weight:700; text-align:center; }
+
+  /* 4 團隊:三種身分輪流亮起,說明各自看得到什麼 */
+  .dm-role { display:grid; grid-template-columns:auto 1fr; gap:.1em .8em; align-items:center; border:1px solid #e3ede4; border-radius:.8em; padding:.6em .9em; }
+  .dm-role .dm-sub { grid-column:2; }
+  .dm-role b { font-size:1.05em; }
+  .dm-role .dm-dot { grid-row:1 / span 2; }
+
+  /* 5 商機雷達:新商機從上面滑進來 */
+  .dm-lead { display:grid; grid-template-columns:1fr auto; gap:.15em .6em; align-items:center; }
+  .dm-lead .dm-sub { grid-column:1; }
+  .dm-badge { font-size:.8em; font-weight:700; color:#fff; background:#06C755; border-radius:999px; padding:.1em .65em; font-style:normal; }
+
+  /* 6 訂單狀態:同一張單,狀態標籤依序換 */
+  .dm-state { position:relative; display:inline-block; min-width:5.6em; height:1.9em; }
+  .dm-state span { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; border-radius:999px; font-weight:700; font-size:.92em; }
+  .dm-state span:nth-child(1) { background:#fff3d6; color:#8a5a00; }
+  .dm-state span:nth-child(2) { background:#e3efff; color:#1d4f9b; }
+  .dm-state span:nth-child(3) { background:#e6f5e8; color:#14532d; }
+  .dm-total { margin-top:auto; display:flex; justify-content:space-between; align-items:baseline; border-top:2px solid #cfe6d0; padding-top:.6em; }
+  .dm-total b { font-size:1.5em; color:#14532d; font-family:'Space Grotesk','Noto Sans TC',sans-serif; }
+
+  /* 7 價格與備貨:折線畫出來 */
+  .dm-chart { position:relative; flex:1; min-height:0; background:#fbfefb; border:1px solid #e3ede4; border-radius:.8em; padding:.6em .8em .4em; }
+  .dm-chart svg { width:100%; height:100%; display:block; }
+  .dm-legend { display:flex; gap:1.2em; font-size:.88em; color:#4b5a52; }
+  .dm-legend span::before { content:""; display:inline-block; width:.8em; height:.3em; border-radius:99px; margin-right:.4em; vertical-align:middle; background:var(--c); }
+  .dm-line { fill:none; stroke-width:3; stroke-linecap:round; stroke-linejoin:round; stroke-dasharray:1; stroke-dashoffset:0; }
+
+  /* 8 客戶經營:下單頻率長條、久未下單的客戶閃一下 */
+  .dm-cust { display:grid; grid-template-columns:7.2em 1fr auto; gap:.7em; align-items:center; }
+  .dm-cust--flag { background:#fff8e6; border-color:#f3dca0; }
+
+  /* 動畫 */
+  @keyframes dm-show { 0% { opacity:0; transform:translateY(.7em); } 9% { opacity:1; transform:none; } 86% { opacity:1; transform:none; } 95%,100% { opacity:0; transform:translateY(-.3em); } }
+  @keyframes dm-grow { 0% { width:0; } 30% { width:var(--w); } 88% { width:var(--w); } 96%,100% { width:0; } }
+  @keyframes dm-scan { 0% { top:0; opacity:1; } 38% { top:calc(100% - .35em); opacity:1; } 42%,100% { top:calc(100% - .35em); opacity:0; } }
+  @keyframes dm-pulse { 0%,55% { box-shadow:0 0 0 0 rgba(6,199,85,.0); } 62% { box-shadow:0 0 0 .5em rgba(6,199,85,.28); } 75%,100% { box-shadow:0 0 0 .9em rgba(6,199,85,0); } }
+  @keyframes dm-flag { 0%,50% { background:#fff8e6; } 60% { background:#ffe9b0; } 72%,100% { background:#fff8e6; } }
+  @keyframes dm-state { 0% { opacity:0; transform:scale(.9); } 4% { opacity:1; transform:none; } 31% { opacity:1; } 35%,100% { opacity:0; } }
+  @keyframes dm-hl { 0%,3% { background:#fff; border-color:#e3ede4; } 6%,30% { background:#eaf7ec; border-color:#9fd6a8; } 34%,100% { background:#fff; border-color:#e3ede4; } }
+  @keyframes dm-draw { 0% { stroke-dashoffset:1; } 40%,88% { stroke-dashoffset:0; } 96%,100% { stroke-dashoffset:1; } }
+  .dm-show, .dm-fillanim, .dm-stateanim, .dm-hlanim, .dm-drawanim, .dm-scananim, .dm-pulseanim, .dm-flaganim { animation-play-state:paused; }
+  .ifm-in .dm-show, .ifm-in .dm-fillanim, .ifm-in .dm-stateanim, .ifm-in .dm-hlanim, .ifm-in .dm-drawanim, .ifm-in .dm-scananim, .ifm-in .dm-pulseanim, .ifm-in .dm-flaganim { animation-play-state:running; }
+  .dm-show { animation:dm-show 9s ease both infinite; animation-delay:var(--d,0s); }
+  .dm-fillanim { animation:dm-grow 9s ease-out both infinite; animation-delay:var(--d,0s); }
+  .dm-scananim { animation:dm-scan 9s linear both infinite; }
+  .dm-pulseanim { animation:dm-pulse 9s ease-out both infinite; animation-delay:var(--d,0s); }
+  .dm-flaganim { animation:dm-flag 9s ease both infinite; }
+  .dm-stateanim { animation:dm-state 9s ease both infinite; animation-delay:var(--d,0s); }
+  .dm-hlanim { animation:dm-hl 9s ease both infinite; animation-delay:var(--d,0s); }
+  .dm-drawanim { animation:dm-draw 9s ease-in-out both infinite; animation-delay:var(--d,0s); }
+  /* 手機:卡片比較窄,字級拉大一點(10px 太小)、畫面稍微拉高讓內容放得下 */
+  @media (max-width:768px) { .dm { aspect-ratio:5/4; } .dm-in { font-size:3.5cqw; } .dm-win { top:6%; bottom:6%; left:5%; right:5%; gap:.6em; } }
+  @media (prefers-reduced-motion: reduce) {
+    .dm-show, .dm-fillanim, .dm-stateanim, .dm-hlanim, .dm-drawanim, .dm-scananim, .dm-pulseanim, .dm-flaganim { animation:none !important; }
+    .dm-stateanim:not(:last-child) { display:none; }
+    .dm-scan { display:none; }
+  }
   /* 「加 LINE」區塊(.lc-*):/restaurants、/suppliers、/qa 各放一塊。桌機有 QR code(手邊有手機,掃碼最快),
      手機 / 觸控裝置不放 QR(自己的手機沒辦法掃自己),改成整條按鈕。 */
   .lc-card { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:28px; align-items:center; padding:30px 34px; border-radius:26px;
@@ -1289,7 +1391,7 @@
            改成 bento:每格用插圖打頭、三條說明壓成短標籤,寬度與垂直位移刻意錯開。 -->
       <div class="ifm-bento ifm-bento--even" style="padding:64px 0 72px;">
         <article class="ifm-card" data-reveal aria-labelledby="restaurant-analyze-title">
-          <img class="ifm-art ifm-art--bleed" src="/assets/rest-cap-menu-ai.svg" alt="" width="480" height="360" loading="lazy">
+          <div class="ifm-art ifm-art--bleed dm" data-demo="menu-ai" aria-hidden="true"><div class="dm-in"><div class="dm-win"><div class="dm-bar"><i></i><i></i><i></i><span>{{ L.demo.menuTitle }}</span><b class="dm-tag">{{ L.demo.tag }}</b></div><div class="dm-cols"><div class="dm-paper"><u class="dm-scan dm-scananim"></u><p>{{ L.demo.dish1 }}</p><p>{{ L.demo.dish2 }}</p><p>{{ L.demo.dish3 }}</p></div><div class="dm-list"><small>{{ L.demo.ingTitle }}</small><span class="dm-chip dm-show" style="--d:1.0s">✓ {{ L.demo.ing1 }}</span><span class="dm-chip dm-show" style="--d:1.9s">✓ {{ L.demo.ing2 }}</span><span class="dm-chip dm-show" style="--d:2.8s">✓ {{ L.demo.ing3 }}</span><span class="dm-chip dm-show" style="--d:3.7s">✓ {{ L.demo.ing4 }}</span><em class="dm-note dm-show" style="--d:4.8s">{{ L.demo.menuCount }}</em></div></div></div></div></div>
           <div class="ifm-eyebrow"><span class="ifm-eyebrow__no">1</span>01 · MENU ANALYSIS</div>
           <h2 id="restaurant-analyze-title" style="font-size:25px;line-height:1.35;color:#0E1A14;margin:14px 0 10px;">{{ L.rest.caps.menuAi.title }}</h2>
           <p style="font-size:15px;line-height:1.8;color:#4B5A52;margin:0;">{{ L.rest.caps.menuAi.sub }}</p>
@@ -1300,7 +1402,7 @@
           </ul>
         </article>
         <article class="ifm-card" data-reveal aria-labelledby="restaurant-cost-title">
-          <img class="ifm-art ifm-art--bleed" src="/assets/rest-cap-cost.svg" alt="" width="480" height="360" loading="lazy">
+          <div class="ifm-art ifm-art--bleed dm" data-demo="cost" aria-hidden="true"><div class="dm-in"><div class="dm-win"><div class="dm-bar"><i></i><i></i><i></i><span>{{ L.demo.costTitle }}</span><b class="dm-tag">{{ L.demo.tag }}</b></div><div style="display:grid;gap:.55em"><div class="dm-row"><span style="min-width:4.2em">{{ L.demo.ing1 }}</span><div class="dm-track"><i class="dm-fill dm-fillanim" style="--w:84%;--d:0.2s"></i></div><b>42%</b></div><div class="dm-row"><span style="min-width:4.2em">{{ L.demo.ing2 }}</span><div class="dm-track"><i class="dm-fill dm-fillanim" style="--w:38%;--d:0.7s"></i></div><b>19%</b></div><div class="dm-row"><span style="min-width:4.2em">{{ L.demo.ing3 }}</span><div class="dm-track"><i class="dm-fill dm-fillanim" style="--w:24%;--d:1.2s"></i></div><b>12%</b></div></div><small>{{ L.demo.compareTitle }}</small><div class="dm-cmp"><div class="dm-row dm-show" style="--d:2.2s"><span class="dm-sub">{{ L.demo.supA }}</span><b>$38</b><em class="dm-best dm-pulseanim" style="--d:2.2s">{{ L.demo.best }}</em></div><div class="dm-row dm-show" style="--d:2.6s"><span class="dm-sub">{{ L.demo.supB }}</span><b>$41</b></div></div></div></div></div>
           <div class="ifm-eyebrow"><span class="ifm-eyebrow__no">2</span>02 · COST &amp; PURCHASE</div>
           <h2 id="restaurant-cost-title" style="font-size:25px;line-height:1.35;color:#0E1A14;margin:14px 0 10px;">{{ L.rest.caps.cost.title }}</h2>
           <p style="font-size:15px;line-height:1.8;color:#4B5A52;margin:0;">{{ L.rest.caps.cost.sub }}</p>
@@ -1311,7 +1413,7 @@
           </ul>
         </article>
         <article class="ifm-card" data-reveal aria-labelledby="restaurant-orders-title">
-          <img class="ifm-art ifm-art--bleed" src="/assets/rest-cap-orders.svg" alt="" width="480" height="360" loading="lazy">
+          <div class="ifm-art ifm-art--bleed dm" data-demo="orders" aria-hidden="true"><div class="dm-in"><div class="dm-win"><div class="dm-bar"><i></i><i></i><i></i><span>{{ L.demo.ordersTitle }}</span><b class="dm-tag">{{ L.demo.tag }}</b></div><div class="dm-row"><b>#A3F9</b><span class="dm-sub">{{ L.demo.supA }}</span></div><ol class="dm-steps"><li><i class="dm-dot dm-show" style="--d:0.3s">✓</i><span>{{ L.demo.step1 }}</span></li><li><i class="dm-dot dm-show" style="--d:1.5s">✓</i><span>{{ L.demo.step2 }}</span></li><li><i class="dm-dot dm-show" style="--d:2.7s">✓</i><span>{{ L.demo.step3 }}</span></li><li><i class="dm-dot dm-show" style="--d:3.9s">✓</i><span>{{ L.demo.step4 }}</span></li></ol><p class="dm-done dm-show" style="--d:4.6s">✓ {{ L.demo.received }}</p></div></div></div>
           <div class="ifm-eyebrow"><span class="ifm-eyebrow__no">3</span>03 · ORDER &amp; RECEIVING</div>
           <h2 id="restaurant-orders-title" style="font-size:25px;line-height:1.35;color:#0E1A14;margin:14px 0 10px;">{{ L.rest.caps.orders.title }}</h2>
           <p style="font-size:15px;line-height:1.8;color:#4B5A52;margin:0;">{{ L.rest.caps.orders.sub }}</p>
@@ -1322,7 +1424,7 @@
           </ul>
         </article>
         <article class="ifm-card" data-reveal aria-labelledby="restaurant-team-title">
-          <img class="ifm-art ifm-art--bleed" src="/assets/rest-cap-team.svg" alt="" width="480" height="360" loading="lazy">
+          <div class="ifm-art ifm-art--bleed dm" data-demo="team" aria-hidden="true"><div class="dm-in"><div class="dm-win"><div class="dm-bar"><i></i><i></i><i></i><span>{{ L.demo.teamTitle }}</span><b class="dm-tag">{{ L.demo.tag }}</b></div><div class="dm-role dm-hlanim" style="--d:0s"><i class="dm-dot">★</i><b>{{ L.demo.roleOwner }}</b><span class="dm-sub">{{ L.demo.seeOwner }}</span></div><div class="dm-role dm-hlanim" style="--d:3s"><i class="dm-dot">●</i><b>{{ L.demo.roleManager }}</b><span class="dm-sub">{{ L.demo.seeManager }}</span></div><div class="dm-role dm-hlanim" style="--d:6s"><i class="dm-dot">○</i><b>{{ L.demo.rolePurchaser }}</b><span class="dm-sub">{{ L.demo.seePurchaser }}</span></div></div></div></div>
           <div class="ifm-eyebrow"><span class="ifm-eyebrow__no">4</span>04 · TEAM</div>
           <h2 id="restaurant-team-title" style="font-size:25px;line-height:1.35;color:#0E1A14;margin:14px 0 10px;">{{ L.rest.caps.team.title }}</h2>
           <p style="font-size:15px;line-height:1.8;color:#4B5A52;margin:0;">{{ L.rest.caps.team.sub }}</p>
@@ -1557,7 +1659,7 @@
            改成 bento:每格用插圖打頭、三條說明壓成短標籤,寬度與垂直位移刻意錯開。 -->
       <div class="ifm-bento ifm-bento--even" style="padding:64px 0 72px;">
         <article class="ifm-card" data-reveal aria-labelledby="supplier-leads-title">
-          <img class="ifm-art ifm-art--bleed" src="/assets/sup-cap-1.svg" alt="" width="480" height="360" loading="lazy">
+          <div class="ifm-art ifm-art--bleed dm" data-demo="leads" aria-hidden="true"><div class="dm-in"><div class="dm-win"><div class="dm-bar"><i></i><i></i><i></i><span>{{ L.demo.leadsTitle }}</span><b class="dm-tag">{{ L.demo.tag }}</b></div><div class="dm-row dm-lead dm-show" style="--d:0.3s"><b>{{ L.demo.lead1 }}</b><em class="dm-badge dm-pulseanim" style="--d:.3s">{{ L.demo.leadNew }}</em><span class="dm-sub">{{ L.demo.lead1Area }}</span></div><div class="dm-row dm-lead dm-show" style="--d:1.3s"><b>{{ L.demo.lead2 }}</b><em class="dm-badge" style="background:#8fb9a8">{{ L.demo.leadMatch }}</em><span class="dm-sub">{{ L.demo.lead2Area }}</span></div><div class="dm-row dm-lead dm-show" style="--d:2.3s"><b>{{ L.demo.lead3 }}</b><em class="dm-badge" style="background:#8fb9a8">{{ L.demo.leadMatch }}</em><span class="dm-sub">{{ L.demo.lead3Area }}</span></div></div></div></div>
           <div class="ifm-eyebrow"><span class="ifm-eyebrow__no">1</span>{{ L.sup.cap1Eyebrow }}</div>
           <h2 id="supplier-leads-title" style="font-size:25px;line-height:1.35;color:#0E1A14;margin:14px 0 10px;">{{ L.sup.cap1Title }}</h2>
           <p style="font-size:15px;line-height:1.8;color:#4B5A52;margin:0;">{{ L.sup.cap1Sub }}</p>
@@ -1568,7 +1670,7 @@
           </ul>
         </article>
         <article class="ifm-card" data-reveal aria-labelledby="supplier-quotes-title">
-          <img class="ifm-art ifm-art--bleed" src="/assets/sup-cap-2.svg" alt="" width="480" height="360" loading="lazy">
+          <div class="ifm-art ifm-art--bleed dm" data-demo="quote" aria-hidden="true"><div class="dm-in"><div class="dm-win"><div class="dm-bar"><i></i><i></i><i></i><span>{{ L.demo.quoteTitle }}</span><b class="dm-tag">{{ L.demo.tag }}</b></div><div class="dm-row"><b>{{ L.demo.quoteCustomer }}</b><span class="dm-grow dm-state"><span class="dm-stateanim" style="--d:0s">{{ L.demo.stateNew }}</span><span class="dm-stateanim" style="--d:3s">{{ L.demo.stateQuote }}</span><span class="dm-stateanim" style="--d:6s">{{ L.demo.stateReady }}</span></span></div><div class="dm-row"><span>{{ L.demo.quoteItem1 }}</span></div><div class="dm-row"><span>{{ L.demo.quoteItem2 }}</span></div><div class="dm-total"><small>{{ L.demo.quoteTitle }}</small><b>{{ L.demo.quoteTotal }}</b></div></div></div></div>
           <div class="ifm-eyebrow"><span class="ifm-eyebrow__no">2</span>{{ L.sup.cap2Eyebrow }}</div>
           <h2 id="supplier-quotes-title" style="font-size:25px;line-height:1.35;color:#0E1A14;margin:14px 0 10px;">{{ L.sup.cap2Title }}</h2>
           <p style="font-size:15px;line-height:1.8;color:#4B5A52;margin:0;">{{ L.sup.cap2Sub }}</p>
@@ -1579,7 +1681,7 @@
           </ul>
         </article>
         <article class="ifm-card" data-reveal aria-labelledby="supplier-pricing-title">
-          <img class="ifm-art ifm-art--bleed" src="/assets/sup-cap-3.svg" alt="" width="480" height="360" loading="lazy">
+          <div class="ifm-art ifm-art--bleed dm" data-demo="pricing" aria-hidden="true"><div class="dm-in"><div class="dm-win"><div class="dm-bar"><i></i><i></i><i></i><span>{{ L.demo.priceTitle }}</span><b class="dm-tag">{{ L.demo.tag }}</b></div><div class="dm-legend"><span style="--c:#8fb9a8">{{ L.demo.priceMarket }}</span><span style="--c:#1f9e4e">{{ L.demo.priceYours }}</span></div><div class="dm-chart"><div style="height:100%"><svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet"><path class="dm-line dm-drawanim" pathLength="1" d="M4 62 L34 54 L64 58 L94 40 L124 44 L154 26 L196 18" stroke="#8fb9a8"/><path class="dm-line dm-drawanim" pathLength="1" style="--d:.6s" d="M4 52 L34 50 L64 48 L94 44 L124 40 L154 34 L196 30" stroke="#1f9e4e"/></svg></div></div><div class="dm-row dm-show" style="--d:3.2s"><b>{{ L.demo.priceItem }}</b><span class="dm-sub dm-grow">{{ L.demo.priceForecast }}</span><em class="dm-badge">+15%</em></div></div></div></div>
           <div class="ifm-eyebrow"><span class="ifm-eyebrow__no">3</span>{{ L.sup.cap3Eyebrow }}</div>
           <h2 id="supplier-pricing-title" style="font-size:25px;line-height:1.35;color:#0E1A14;margin:14px 0 10px;">{{ L.sup.cap3Title }}</h2>
           <p style="font-size:15px;line-height:1.8;color:#4B5A52;margin:0;">{{ L.sup.cap3Sub }}</p>
@@ -1590,7 +1692,7 @@
           </ul>
         </article>
         <article class="ifm-card" data-reveal aria-labelledby="supplier-customers-title">
-          <img class="ifm-art ifm-art--bleed" src="/assets/sup-cap-4.svg" alt="" width="480" height="360" loading="lazy">
+          <div class="ifm-art ifm-art--bleed dm" data-demo="customers" aria-hidden="true"><div class="dm-in"><div class="dm-win"><div class="dm-bar"><i></i><i></i><i></i><span>{{ L.demo.custTitle }}</span><b class="dm-tag">{{ L.demo.tag }}</b></div><div class="dm-row dm-cust"><b>{{ L.demo.cust1 }}</b><div class="dm-track"><i class="dm-fill dm-fillanim" style="--w:90%;--d:0.2s"></i></div><span class="dm-sub">{{ L.demo.cust1Freq }}</span></div><div class="dm-row dm-cust"><b>{{ L.demo.cust2 }}</b><div class="dm-track"><i class="dm-fill dm-fillanim" style="--w:62%;--d:0.7s"></i></div><span class="dm-sub">{{ L.demo.cust2Freq }}</span></div><div class="dm-row dm-cust dm-cust--flag dm-flaganim"><b>{{ L.demo.cust3 }}</b><div class="dm-track"><i class="dm-fill dm-fillanim" style="--w:14%;--d:1.2s;background:#f2a33a"></i></div><span class="dm-sub">{{ L.demo.cust3Freq }}</span></div><span class="dm-chip dm-chip--warn dm-show" style="--d:2.4s;align-self:flex-start">{{ L.demo.custFlag }}</span></div></div></div>
           <div class="ifm-eyebrow"><span class="ifm-eyebrow__no">4</span>{{ L.sup.cap4Eyebrow }}</div>
           <h2 id="supplier-customers-title" style="font-size:25px;line-height:1.35;color:#0E1A14;margin:14px 0 10px;">{{ L.sup.cap4Title }}</h2>
           <p style="font-size:15px;line-height:1.8;color:#4B5A52;margin:0;">{{ L.sup.cap4Sub }}</p>

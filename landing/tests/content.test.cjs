@@ -88,10 +88,16 @@ function restaurantCapabilitySection(fragment) {
   return fragment.slice(start, end);
 }
 
+// 2026-11-17 業主要求:能力卡不要都是插圖,改成會動的「產品示意畫面」(.dm,資料是示例)。
+// 每張卡一個示意畫面、四張各不相同、對螢幕閱讀器是裝飾(aria-hidden,標題與說明已經講完內容)。
+function demosOf(fragment) {
+  return [...fragment.matchAll(/<div class="ifm-art ifm-art--bleed dm" data-demo="([a-z-]+)" aria-hidden="true">/g)].map((m) => m[1]);
+}
+
 function assertRestaurantCapabilityArt(fragment) {
-  const arts = [...fragment.matchAll(/src="(\/assets\/rest-cap-[a-z-]+\.svg)"/g)].map((m) => m[1]);
-  assert.equal(arts.length, 4, `能力卡應該有 4 張插圖,目前 ${arts.length} 張`);
-  assert.equal(new Set(arts).size, 4, `四張插圖不可以重複:${arts.join(', ')}`);
+  const demos = demosOf(fragment);
+  assert.deepEqual(demos, ['menu-ai', 'cost', 'orders', 'team'], `能力卡的示意畫面應該是四張各不相同:${demos.join(', ')}`);
+  assert.doesNotMatch(fragment, /rest-cap-[a-z-]+\.svg/, '能力卡不再用插圖');
 }
 
 function assertRestaurantCapabilities(fragment) {
@@ -171,13 +177,9 @@ function assertSupplierCapabilityOrder(fragment) {
 // bento 改版後:每張能力卡都要有自己的插圖,而且四張不能重複用同一張。
 // 這是「整頁一張圖都沒有」那個問題的擋線。
 function assertSupplierCapabilityArt(fragment) {
-  const arts = [...fragment.matchAll(/src="(\/assets\/sup-cap-\d\.svg)"/g)].map((m) => m[1]);
-  assert.equal(arts.length, 4, `能力卡應該有 4 張插圖,目前 ${arts.length} 張`);
-  assert.equal(new Set(arts).size, 4, `四張插圖不可以重複:${arts.join(', ')}`);
-  // 裝飾性插圖一律空 alt(標題已經說明了內容,重複唸一次只是噪音)
-  for (const art of arts) {
-    assert.match(fragment, new RegExp(`alt=""[^>]*src="${art.replace(/\//g, '\\/')}"|src="${art.replace(/\//g, '\\/')}"[^>]*alt=""`));
-  }
+  const demos = demosOf(fragment);
+  assert.deepEqual(demos, ['leads', 'quote', 'pricing', 'customers'], `能力卡的示意畫面應該是四張各不相同:${demos.join(', ')}`);
+  assert.doesNotMatch(fragment, /sup-cap-\d\.svg/, '能力卡不再用插圖');
 }
 
 function assertSupplierApplicationCtas(fragment) {
@@ -530,7 +532,7 @@ test('restaurant page names four accurate pains and a menu-to-receiving workflow
   }
 });
 
-test('restaurant capabilities are four illustrated bento cards, not walls of fake table data', () => {
+test('restaurant capabilities are four demo-screen bento cards, not walls of fake table data', () => {
   assertRestaurantCapabilities(restaurants);
   assertRestaurantCapabilityOrder(restaurants);
   const caps = restaurantCapabilitySection(restaurants);
@@ -572,7 +574,7 @@ test('restaurant capability guards fail when cards are swapped or lose their art
   const a = restaurants.slice(first, second);
   const b = restaurants.slice(second, third);
   assert.throws(() => assertRestaurantCapabilityOrder(restaurants.slice(0, first) + b + a + restaurants.slice(third)));
-  const duplicated = restaurantCapabilitySection(restaurants).replace(/rest-cap-(cost|orders|team)\.svg/g, 'rest-cap-menu-ai.svg');
+  const duplicated = restaurantCapabilitySection(restaurants).replace(/data-demo="(cost|orders|team)"/g, 'data-demo="menu-ai"');
   assert.throws(() => assertRestaurantCapabilityArt(duplicated));
 });
 
@@ -704,7 +706,7 @@ test('supplier page names four pains and an accurate lead-to-relationship workfl
   }
 });
 
-test('supplier capabilities are four illustrated bento cards, not walls of fake table data', () => {
+test('supplier capabilities are four demo-screen bento cards, not walls of fake table data', () => {
   assertSupplierCapabilities(suppliers);
   assertSupplierCapabilityOrder(suppliers);
   assertSupplierCapabilityArt(supplierCapabilitySection(suppliers));
@@ -761,7 +763,7 @@ test('supplier capability guards fail when cards are swapped or lose their art',
   assert.throws(() => assertSupplierCapabilityOrder(swapped));
 
   // 四張卡共用同一張圖也要被抓到
-  const duplicated = supplierCapabilitySection(suppliers).replace(/sup-cap-[234]\.svg/g, 'sup-cap-1.svg');
+  const duplicated = supplierCapabilitySection(suppliers).replace(/data-demo="(quote|pricing|customers)"/g, 'data-demo="leads"');
   assert.throws(() => assertSupplierCapabilityArt(duplicated));
 });
 
@@ -1470,4 +1472,14 @@ test('the language hint is a dismissible region above the header, outside <main>
   }
   // 焦點框對底色至少 3:1(WCAG 1.4.11)
   assert.ok(contrastRatio('#0B6B40', '#F3FAF6') >= 3);
+});
+
+
+test('capability demos are decorative, animate only once visible, and still render fully without motion', () => {
+  for (const html of [restaurants, suppliers]) {
+    // 示意畫面的第一個子節點不能是 svg:prerender 會把「aria-hidden 容器裡的長 svg」當成世界地圖
+    assert.doesNotMatch(html, /data-demo="[a-z-]+" aria-hidden="true"><svg/);
+  }
+  assert.match(source, /\.ifm-in \.dm-show[^{]*\{\s*animation-play-state:\s*running/s, '示意動畫要等卡片進到畫面(.ifm-in)才開始跑');
+  assert.match(source, /@media \(prefers-reduced-motion: reduce\)\s*\{[^}]*\.dm-show[^}]*animation:\s*none/s, '減少動態的使用者不該看到動畫');
 });

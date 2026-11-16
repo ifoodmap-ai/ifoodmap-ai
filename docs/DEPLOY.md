@@ -2253,3 +2253,17 @@ pgTAP 沒辦法在本機跑(沒有 Postgres):套用前用乾跑驗證(不會 com
 - 桌機有 QR code(`landing/assets/line-qr.svg`,編碼 `https://line.me/R/ti/p/@750yvxki?oat_content=qr`,用 segno 產生);手機與觸控裝置不放 QR,改成整條 52px 按鈕。
 - 每個入口的連結帶不同的 `oat_content`(`landing_rest` / `landing_sup` / `landing_qa` / `qr`),到 LINE 官方帳號後台的「加入好友路徑」就能比較哪個位置帶來最多人(頁尾與聯絡頁的舊連結還是 `url`)。
 - **還沒做**:網站沒有流量分析(沒有 GA 等),註冊按鈕的成效目前量不到;LINE 通知 / LINE 自動接單需要 Messaging API 金鑰,見 PROPOSAL。
+
+## 形象站能力卡:產品示意動畫(2026-11-17)
+
+/restaurants 與 /suppliers 能力區的八張卡,原本是插畫(`assets/rest-cap-*.svg`、`sup-cap-*.svg`),改成會動的「迷你產品畫面」(`.dm-*`,資料是示例、右上角標「示意」):
+
+| 頁面 | 示意 |
+| --- | --- |
+| /restaurants | AI 菜單分析(掃描線掃過菜單、食材一項項辨識出來)、成本與比價(長條長出、最低價閃示)、訂單與收貨(四步依序打勾)、團隊管理(老闆 / 店長 / 採購員輪流亮起,說明各看得到什麼) |
+| /suppliers | 商機雷達(新商機滑進來)、報價與接單(同一張單狀態依序換)、價格與備貨(折線畫出來)、客戶經營(下單頻率長條、久未下單的客戶閃示) |
+
+- 純 CSS 動畫(`@keyframes dm-*`),沒有新的 JS 與圖片;文案在 `landing/i18n.js` 的 `demo`(中英各 59 條)。字級用 `cqw` 跟著卡片寬度縮放,手機另外放大一點並把畫面拉高。
+- 卡片進到畫面(`.ifm-in`)才開始動;`prefers-reduced-motion` 下完全不動、直接顯示完成的畫面(預渲染也是這個狀態)。對螢幕閱讀器是裝飾(`aria-hidden`),標題與說明照舊。
+- 示意的第一個子節點不可以是 svg:預渲染會把「aria-hidden 容器裡的長 svg」當成世界地圖而失敗(折線圖的 svg 包在內層 div 裡)。
+- 舊的八張插圖檔還留在 `assets/`,已經沒有頁面使用,之後可以刪。
