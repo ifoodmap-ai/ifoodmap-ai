@@ -619,7 +619,6 @@
       "lineCta": {
         "eyebrow": "LINE 官方帳號",
         "button": "加入 LINE 官方帳號",
-        "hint": "服務時間：週一至週五 9:00–18:00。加入後直接傳訊息給我們就可以。",
         "qrAlt": "加入 iFoodmap LINE 官方帳號的 QR code",
         "qrNote": "用手機掃描，加入官方帳號",
         "titleRest": "不知道怎麼開始？加 LINE，真人一步步帶你",
@@ -1411,7 +1410,6 @@
       "lineCta": {
         "eyebrow": "LINE official account",
         "button": "Add us on LINE",
-        "hint": "Service hours: Mon–Fri, 9:00–18:00. Once you have added us, just send a message.",
         "qrAlt": "QR code to add the iFoodmap LINE official account",
         "qrNote": "Scan with your phone to add the official account",
         "titleRest": "Not sure where to start? Add us on LINE and a real person will walk you through it",
