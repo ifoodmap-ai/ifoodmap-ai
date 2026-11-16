@@ -340,6 +340,60 @@
     .dm-stateanim:not(:last-child) { display:none; }
     .dm-scan { display:none; }
   }
+  /* ===== Hero 的「手機叫貨 + 後台」組合示意(.dmc-*):後台視窗在後、手機疊在右下 ===== */
+  .dmc { position:relative; width:100%; max-width:560px; aspect-ratio:11/9; container-type:inline-size; justify-self:end; }
+  .dmc-dash { position:absolute; left:0; top:2%; width:85%; background:#fff; border:1px solid #dfe8e1; border-radius:2.6cqw; box-shadow:0 2.4cqw 5cqw rgba(20,60,30,.14); padding:2.2cqw 2.4cqw 2.4cqw; font-size:2.2cqw; line-height:1.3; color:#17261c; display:flex; flex-direction:column; gap:1.6cqw; }
+  .dmc-bar { display:flex; align-items:center; gap:1cqw; }
+  .dmc-bar > b:first-child { font-size:1.25em; }
+  .dmc-chip { background:#eef3ef; border-radius:99px; padding:.15em .8em; color:#5b6b62; font-size:.9em; }
+  .dmc-bar .dm-tag { margin-left:auto; }
+  .dmc-kpis { display:grid; grid-template-columns:repeat(3,1fr); gap:1.4cqw; }
+  .dmc-kpi { border:1px solid #e3ede4; border-radius:1.6cqw; padding:1.2cqw 1.5cqw; display:flex; flex-direction:column; gap:.2em; background:#fcfefc; }
+  .dmc-kpi small { font-size:.85em; font-weight:600; color:#6c7b72; }
+  .dmc-kpi b { font-size:1.55em; font-family:'Space Grotesk','Noto Sans TC',sans-serif; }
+  .dmc-kpi em { font-style:normal; font-size:.82em; font-weight:700; color:#1f9e4e; }
+  .dmc-chart { border:1px solid #e3ede4; border-radius:1.6cqw; padding:1.3cqw 1.6cqw 1cqw; }
+  .dmc-ct { font-size:.95em; color:#4b5a52; }
+  .dmc-svgwrap { height:9cqw; margin-top:.6cqw; }
+  .dmc-svgwrap svg { width:100%; height:100%; display:block; }
+  .dmc-lists { display:grid; grid-template-columns:1fr 1fr; gap:1.4cqw; }
+  .dmc-list { border:1px solid #e3ede4; border-radius:1.6cqw; padding:1.2cqw 1.5cqw; display:flex; flex-direction:column; gap:.7cqw; }
+  .dmc-list > b { font-size:.95em; color:#4b5a52; }
+  .dmc-li { display:grid; grid-template-columns:5.2em 1fr; gap:.8em; align-items:center; font-size:.9em; }
+  .dmc-li .dm-track { height:.8em; }
+  .dmc-label { position:absolute; left:3%; bottom:2%; z-index:3; background:#14301f; color:#fff; font-size:2.5cqw; font-weight:700; padding:.6em 1.2em; border-radius:99px; box-shadow:0 1.2cqw 3cqw rgba(20,48,31,.3); }
+  .dmc-phone { position:absolute; right:1%; bottom:-17%; width:37%; aspect-ratio:9/17.6; background:#14301f; border-radius:5.6cqw; padding:1.1cqw; box-shadow:0 3cqw 6cqw rgba(20,48,31,.32); z-index:2; }
+  .dmc-screen { height:100%; background:#fff; border-radius:4.6cqw; overflow:hidden; display:flex; flex-direction:column; font-size:2.05cqw; line-height:1.3; color:#17261c; }
+  .dmc-head { padding:3.4cqw 2.4cqw 1.6cqw; display:flex; flex-direction:column; gap:.2em; }
+  .dmc-head small { color:#6c7b72; font-size:.85em; }
+  .dmc-head b { font-size:1.3em; }
+  .dmc-search { margin:0 2cqw; background:#eef3ef; border-radius:1.4cqw; padding:1cqw 1.6cqw; color:#6c7b72; font-size:.9em; }
+  .dmc-tabs { display:flex; gap:.8cqw; padding:1.4cqw 2cqw; }
+  .dmc-tab { border:1px solid #cfe0d3; border-radius:99px; padding:.15em .6em; font-size:.85em; color:#4b5a52; white-space:nowrap; }
+  .dmc-tab.is-on { background:#166534; border-color:#166534; color:#fff; }
+  .dmc-item { margin:0 2cqw 1.2cqw; border:1px solid #e3ede4; border-radius:1.8cqw; padding:1.1cqw 1.3cqw; display:grid; grid-template-columns:auto 1fr auto; gap:1.2cqw; align-items:center; }
+  .dmc-thumb { width:5.4cqw; height:5.4cqw; border-radius:1.4cqw; background:#eef8ef; display:flex; align-items:center; justify-content:center; font-style:normal; font-size:3.2cqw; }
+  .dmc-item b { display:block; font-size:.95em; }
+  .dmc-item small { color:#6c7b72; font-size:.8em; }
+  .dmc-step { display:flex; align-items:center; gap:.9cqw; }
+  .dmc-step u { text-decoration:none; width:3.3cqw; height:3.3cqw; border-radius:1cqw; background:#e6f5e8; color:#166534; display:inline-flex; align-items:center; justify-content:center; font-weight:700; }
+  .dmc-q { min-width:2.4cqw; text-align:center; font-weight:700; font-family:'Space Grotesk',sans-serif; }
+  .dmc-q.dm-qty { min-width:2.4cqw; }
+  .dmc-sendbar { margin:auto 2cqw 2.2cqw; background:#166534; color:#fff; border-radius:2cqw; padding:1.5cqw 2cqw; display:flex; justify-content:space-between; align-items:center; font-weight:700; }
+  .dmc-total { min-width:9.5cqw; text-align:right; }
+  @media (max-width:768px) {
+    .dmc { aspect-ratio:6/5; justify-self:center; margin-bottom:8%; }
+    .dmc-dash { width:100%; font-size:3.2cqw; padding:3cqw; border-radius:4cqw; gap:2.4cqw; }
+    .dmc-kpis { gap:2cqw; } .dmc-kpi { padding:2cqw; border-radius:2.4cqw; }
+    .dmc-lists { display:none; }
+    .dmc-svgwrap { height:13cqw; }
+    .dmc-phone { width:41%; right:0; bottom:-12%; border-radius:7cqw; padding:1.4cqw; }
+    .dmc-screen { font-size:2.6cqw; border-radius:5.8cqw; }
+    .dmc-tabs { gap:.5cqw; padding:1.2cqw 1.6cqw; }
+    .dmc-tab { font-size:.78em; padding:.1em .45em; }
+    .dmc-label { font-size:3.4cqw; bottom:-4%; left:0; }
+  }
+  @media (prefers-reduced-motion: reduce) { .dmc .dm-line { stroke-dasharray:none; } }
   /* 「加 LINE」區塊(.lc-*):/restaurants、/suppliers、/qa 各放一塊。桌機有 QR code(手邊有手機,掃碼最快),
      手機 / 觸控裝置不放 QR(自己的手機沒辦法掃自己),改成整條按鈕。 */
   .lc-card { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:28px; align-items:center; padding:30px 34px; border-radius:26px;
@@ -1341,7 +1395,7 @@
           </div>
         </div>
 
-        <img class="platform-hero-art" data-reveal src="/assets/rest-hero-panel.svg" alt="" width="560" height="350" loading="lazy">
+        <div class="platform-hero-art dmc" data-demo="hero-restaurant" data-reveal aria-hidden="true"><div class="dmc-dash"><div class="dmc-bar"><b>{{ L.demo.hrTitle }}</b><span class="dmc-chip">{{ L.demo.hrMonth }}</span><span class="dmc-chip">{{ L.demo.hrAll }}</span><b class="dm-tag">{{ L.demo.tag }}</b></div><div class="dmc-kpis"><div class="dmc-kpi dm-show" style="--d:0.20s"><small>{{ L.demo.hrK1 }}</small><b>$186,400</b><em>{{ L.demo.hrK1t }}</em></div><div class="dmc-kpi dm-show" style="--d:0.45s"><small>{{ L.demo.hrK2 }}</small><b>58</b><em>{{ L.demo.hrK2t }}</em></div><div class="dmc-kpi dm-show" style="--d:0.70s"><small>{{ L.demo.hrK3 }}</small><b>7</b><em>{{ L.demo.hrK3t }}</em></div></div><div class="dmc-chart"><b class="dmc-ct">{{ L.demo.hrChart }}</b><div class="dmc-svgwrap"><svg viewBox="0 0 300 80" preserveAspectRatio="none"><defs><linearGradient id="dmcg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#46c138" stop-opacity=".28"/><stop offset="1" stop-color="#46c138" stop-opacity="0"/></linearGradient></defs><path class="dmc-area dm-show" style="--d:.8s" d="M0 62 L30 56 L60 58 L90 46 L120 50 L150 38 L180 40 L210 28 L240 30 L270 18 L300 12 L300 80 L0 80 Z" fill="url(#dmcg)"/><path class="dm-line dm-drawanim" pathLength="1" d="M0 62 L30 56 L60 58 L90 46 L120 50 L150 38 L180 40 L210 28 L240 30 L270 18 L300 12" stroke="#1f9e4e"/></svg></div></div><div class="dmc-lists"><div class="dmc-list"><b>{{ L.demo.hrL1 }}</b><div class="dmc-li"><span>{{ L.demo.ing1 }}</span><div class="dm-track"><i class="dm-fill dm-fillanim" style="--w:84%;--d:0.30s"></i></div></div><div class="dmc-li"><span>{{ L.demo.ing2 }}</span><div class="dm-track"><i class="dm-fill dm-fillanim" style="--w:38%;--d:0.65s"></i></div></div><div class="dmc-li"><span>{{ L.demo.ing3 }}</span><div class="dm-track"><i class="dm-fill dm-fillanim" style="--w:24%;--d:1.00s"></i></div></div><div class="dmc-li"><span>{{ L.demo.ing4 }}</span><div class="dm-track"><i class="dm-fill dm-fillanim" style="--w:14%;--d:1.35s"></i></div></div></div><div class="dmc-list"><b>{{ L.demo.hrL2 }}</b><div class="dmc-li"><span>{{ L.demo.supA }}</span><div class="dm-track"><i class="dm-fill dm-fillanim" style="--w:90%;--d:0.30s"></i></div></div><div class="dmc-li"><span>{{ L.demo.supB }}</span><div class="dm-track"><i class="dm-fill dm-fillanim" style="--w:76%;--d:0.65s"></i></div></div><div class="dmc-li"><span>{{ L.demo.dcSup3 }}</span><div class="dm-track"><i class="dm-fill dm-fillanim" style="--w:62%;--d:1.00s"></i></div></div></div></div></div><span class="dmc-label">{{ L.demo.phLabelRest }}</span><div class="dmc-phone"><div class="dmc-screen"><div class="dmc-head"><small>{{ L.demo.phStore }}</small><b>{{ L.demo.phTitle }}</b></div><div class="dmc-search">{{ L.demo.phSearch }}</div><div class="dmc-tabs"><span class="dmc-tab is-on">{{ L.demo.phTab1 }}</span><span class="dmc-tab">{{ L.demo.phTab2 }}</span><span class="dmc-tab">{{ L.demo.phTab3 }}</span><span class="dmc-tab">{{ L.demo.phTab4 }}</span></div><div class="dmc-item dm-show" style="--d:0.30s"><i class="dmc-thumb">🥬</i><div><b>{{ L.demo.phItem1 }}</b><small>{{ L.demo.phItem1Sub }}</small></div><div class="dmc-step"><u>−</u><span class="dmc-q">2</span><u>+</u></div></div><div class="dmc-item dm-show" style="--d:0.65s"><i class="dmc-thumb">🥚</i><div><b>{{ L.demo.phItem2 }}</b><small>{{ L.demo.phItem2Sub }}</small></div><div class="dmc-step"><u>−</u><span class="dm-qty dmc-q"><span class="dm-qa">1</span><span class="dm-qb">2</span></span><u>+</u></div></div><div class="dmc-item dm-show" style="--d:1.00s"><i class="dmc-thumb">🍜</i><div><b>{{ L.demo.phItem3 }}</b><small>{{ L.demo.phItem3Sub }}</small></div><div class="dmc-step"><u>−</u><span class="dmc-q">20</span><u>+</u></div></div><div class="dmc-sendbar dm-pulseanim"><span>{{ L.demo.phBar }}</span><b><span class="dm-qty dmc-total"><span class="dm-qa">NT$ 1,940</span><span class="dm-qb">NT$ 2,540</span></span> {{ L.demo.phSend }}</b></div></div></div></div>
       </div>
     </section>
 
@@ -1539,7 +1593,7 @@
           </div>
         </div>
 
-        <img class="platform-hero-art" data-reveal src="/assets/sup-hero-panel.svg" alt="" width="560" height="350" loading="lazy">
+        <div class="platform-hero-art dmc" data-demo="hero-supplier" data-reveal aria-hidden="true"><div class="dmc-dash"><div class="dmc-bar"><b>{{ L.demo.hsTitle }}</b><span class="dmc-chip">{{ L.demo.hsMonth }}</span><span class="dmc-chip">{{ L.demo.hsAll }}</span><b class="dm-tag">{{ L.demo.tag }}</b></div><div class="dmc-kpis"><div class="dmc-kpi dm-show" style="--d:0.20s"><small>{{ L.demo.hsK1 }}</small><b>386</b><em>{{ L.demo.hsK1t }}</em></div><div class="dmc-kpi dm-show" style="--d:0.45s"><small>{{ L.demo.hsK2 }}</small><b>341</b><em>{{ L.demo.hsK2t }}</em></div><div class="dmc-kpi dm-show" style="--d:0.70s"><small>{{ L.demo.hsK3 }}</small><b>42</b><em>{{ L.demo.hsK3t }}</em></div></div><div class="dmc-chart"><b class="dmc-ct">{{ L.demo.hsChart }}</b><div class="dmc-svgwrap"><svg viewBox="0 0 300 80" preserveAspectRatio="none"><defs><linearGradient id="dmcg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#46c138" stop-opacity=".28"/><stop offset="1" stop-color="#46c138" stop-opacity="0"/></linearGradient></defs><path class="dmc-area dm-show" style="--d:.8s" d="M0 62 L30 56 L60 58 L90 46 L120 50 L150 38 L180 40 L210 28 L240 30 L270 18 L300 12 L300 80 L0 80 Z" fill="url(#dmcg)"/><path class="dm-line dm-drawanim" pathLength="1" d="M0 62 L30 56 L60 58 L90 46 L120 50 L150 38 L180 40 L210 28 L240 30 L270 18 L300 12" stroke="#1f9e4e"/></svg></div></div><div class="dmc-lists"><div class="dmc-list"><b>{{ L.demo.hsL1 }}</b><div class="dmc-li"><span>{{ L.demo.dcProd1 }}</span><div class="dm-track"><i class="dm-fill dm-fillanim" style="--w:88%;--d:0.30s"></i></div></div><div class="dmc-li"><span>{{ L.demo.dcProd2 }}</span><div class="dm-track"><i class="dm-fill dm-fillanim" style="--w:70%;--d:0.65s"></i></div></div><div class="dmc-li"><span>{{ L.demo.dcProd3 }}</span><div class="dm-track"><i class="dm-fill dm-fillanim" style="--w:52%;--d:1.00s"></i></div></div><div class="dmc-li"><span>{{ L.demo.dcProd4 }}</span><div class="dm-track"><i class="dm-fill dm-fillanim" style="--w:38%;--d:1.35s"></i></div></div></div><div class="dmc-list"><b>{{ L.demo.hsL2 }}</b><div class="dmc-li"><span>{{ L.demo.hsC1 }}</span><div class="dm-track"><i class="dm-fill dm-fillanim" style="--w:84%;--d:0.30s"></i></div></div><div class="dmc-li"><span>{{ L.demo.hsC2 }}</span><div class="dm-track"><i class="dm-fill dm-fillanim" style="--w:62%;--d:0.65s"></i></div></div><div class="dmc-li"><span>{{ L.demo.hsC3 }}</span><div class="dm-track"><i class="dm-fill dm-fillanim" style="--w:40%;--d:1.00s"></i></div></div><div class="dmc-li"><span>{{ L.demo.hsC4 }}</span><div class="dm-track"><i class="dm-fill dm-fillanim" style="--w:22%;--d:1.35s"></i></div></div></div></div></div><span class="dmc-label">{{ L.demo.phLabelSup }}</span><div class="dmc-phone"><div class="dmc-screen"><div class="dmc-head"><small>{{ L.demo.phStore }}</small><b>{{ L.demo.phTitle }}</b></div><div class="dmc-search">{{ L.demo.phSearch }}</div><div class="dmc-tabs"><span class="dmc-tab is-on">{{ L.demo.phTab1 }}</span><span class="dmc-tab">{{ L.demo.phTab2 }}</span><span class="dmc-tab">{{ L.demo.phTab3 }}</span><span class="dmc-tab">{{ L.demo.phTab4 }}</span></div><div class="dmc-item dm-show" style="--d:0.30s"><i class="dmc-thumb">🥬</i><div><b>{{ L.demo.phItem1 }}</b><small>{{ L.demo.phItem1Sub }}</small></div><div class="dmc-step"><u>−</u><span class="dmc-q">2</span><u>+</u></div></div><div class="dmc-item dm-show" style="--d:0.65s"><i class="dmc-thumb">🥚</i><div><b>{{ L.demo.phItem2 }}</b><small>{{ L.demo.phItem2Sub }}</small></div><div class="dmc-step"><u>−</u><span class="dm-qty dmc-q"><span class="dm-qa">1</span><span class="dm-qb">2</span></span><u>+</u></div></div><div class="dmc-item dm-show" style="--d:1.00s"><i class="dmc-thumb">🍜</i><div><b>{{ L.demo.phItem3 }}</b><small>{{ L.demo.phItem3Sub }}</small></div><div class="dmc-step"><u>−</u><span class="dmc-q">20</span><u>+</u></div></div><div class="dmc-sendbar dm-pulseanim"><span>{{ L.demo.phBar }}</span><b><span class="dm-qty dmc-total"><span class="dm-qa">NT$ 1,940</span><span class="dm-qb">NT$ 2,540</span></span> {{ L.demo.phSend }}</b></div></div></div></div>
       </div>
     </section>
 
