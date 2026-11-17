@@ -2286,3 +2286,19 @@ pgTAP 沒辦法在本機跑(沒有 Postgres):套用前用乾跑驗證(不會 com
 - 手機:店名與專屬價、搜尋框、分類標籤、三個品項(縮圖、單位與價格、+/- 數量),下面「已選 3 項 NT$ … 送出」;其中一個品項的數量與總額會變。
 - 內容是示意資料(「示意」標籤);手機右下角延伸出畫面一些、與 hero 下方留白重疊。手機版:只留數字卡與折線(清單隱藏),手機縮小。
 - 動畫沿用 `.dm-*`:進到畫面才跑、`prefers-reduced-motion` 下不動。舊的 hero 插圖檔還在 `assets/`,頁面不再使用。
+
+## 官網留言自動轉供應商(2026-11-18,`20261118100000_landing_lead_forwarding`)
+
+首頁 AI 助手的「留下聯絡方式」改成一步一題的對話:配送縣市(按鈕或打字)→ 配送頻率(按鈕或打字)→ 店名或稱呼 → 手機 / LINE ID / Email 擇一(自動判斷),要聯絡方式的那句話裡寫明「送出即同意提供給符合的供應商(最多 10 家)」。
+留好之後引導「加 LINE」(預填訊息帶需求編號 = analysis_id 前 6 碼)與「免費註冊」。漏斗事件(`landing_ai_*`,匿名、不帶個資)寫進 `app_events`。
+訪客送出 → `landing_leads`(`consent_share = true`)→ AFTER INSERT trigger `forward_landing_lead()`:
+依 `analysis_id` 的食材清單比對供應商上架品項(名稱雙向包含、兩邊 ≥ 2 字或完全相同)與服務區域(空白或判斷不出來都算符合),
+品項符合最多的前 10 家各寫一筆 `supplier_leads`(status `new`,`contact` 欄位是聯絡資料快照),供應商在後台「商機」頁看得到。
+
+- `landing_leads.forward_status`:`pending`(沒勾同意或轉送出錯)/ `forwarded` / `no_match`(沒有符合的供應商 → 管理員人工處理)
+- 沒勾同意的 lead 不會轉出去;轉送出錯只記 WARNING,lead 本身照樣寫入
+- 供應商改不了 `contact` / `landing_lead_id`(`SUPPLIER_LEAD_CONTACT_READONLY`);anon 不能自己填處理狀態
+- **部署順序**:先套 migration,再 push 前端(前端會寫新欄位,舊 schema 會回 400)
+- 重送沒轉成功的 lead:`SELECT public.forward_landing_lead(id) FROM public.landing_leads WHERE forward_status = 'pending' AND consent_share;`(以 service_role / postgres 執行)
+- 還原:`supabase/rollbacks/20261118100000_landing_lead_forwarding.down.sql`(只拆 trigger / function,資料保留)
+- 尚未做:供應商收到商機時的 Email / LINE 通知(目前只在商機頁與儀表板看得到)

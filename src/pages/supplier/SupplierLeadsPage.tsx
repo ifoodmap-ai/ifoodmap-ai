@@ -20,8 +20,22 @@ import { supabase } from '@/integrations/supabase/client';
 
 type LeadStatus = 'new' | 'viewed' | 'contacted' | 'won' | 'lost' | 'dismissed';
 
+/** 官網 AI 助手留言轉進來的聯絡資料(後端快照,只有被轉到的供應商看得到) */
+interface LeadContact {
+  company?: string;
+  name?: string;
+  phone?: string;
+  line?: string;
+  email?: string;
+  area?: string;
+  frequency?: string;
+  notes?: string;
+  contact_time?: string;
+}
+
 interface LeadRow {
   id: string;
+  contact?: LeadContact | null;
   supplier_id: string;
   restaurant_id: string | null;
   analysis_id: string | null;
@@ -138,7 +152,7 @@ export default function SupplierLeadsPage() {
         // ── 商機列表 ────────────────────────────────
         const { data: leadRows } = (await (supabase as never)
           .from('supplier_leads')
-          .select('id, supplier_id, restaurant_id, analysis_id, matched_items, score, reason, status, created_at')
+          .select('id, supplier_id, restaurant_id, analysis_id, matched_items, score, reason, status, created_at, contact')
           .eq('supplier_id', sid)
           .order('created_at', { ascending: false })) as { data: LeadRow[] | null };
         const rows = leadRows ?? [];
@@ -379,7 +393,7 @@ export default function SupplierLeadsPage() {
                         <div className="min-w-0">
                           <div className="flex items-center gap-2 flex-wrap">
                             <p className="font-medium text-slate-800">
-                              {(lead.restaurant_id && restaurantNames[lead.restaurant_id]) || '未具名餐廳'}
+                              {(lead.restaurant_id && restaurantNames[lead.restaurant_id]) || lead.contact?.company || '未具名餐廳'}
                             </p>
                             <Badge variant="outline" className={meta.className}>{meta.label}</Badge>
                             {lead.score != null && (
@@ -408,6 +422,37 @@ export default function SupplierLeadsPage() {
                             </span>
                           )}
                         </div>
+                      )}
+
+                      {lead.contact && (
+                        <dl
+                          className="mt-3 grid gap-x-4 gap-y-1.5 text-sm sm:grid-cols-2 rounded-lg border border-emerald-100 bg-white px-3 py-2.5"
+                          aria-label="客戶聯絡資料"
+                        >
+                          {([
+                            ['聯絡人', lead.contact.name],
+                            ['電話', lead.contact.phone],
+                            ['LINE', lead.contact.line],
+                            ['Email', lead.contact.email],
+                            ['配送地點', lead.contact.area],
+                            ['配送頻率', lead.contact.frequency],
+                            ['方便聯繫', lead.contact.contact_time],
+                            ['特殊需求', lead.contact.notes],
+                          ] as const)
+                            .filter(([, v]) => !!v)
+                            .map(([k, v]) => (
+                              <div key={k} className="flex gap-2 min-w-0">
+                                <dt className="shrink-0 text-slate-400">{k}</dt>
+                                <dd className="min-w-0 break-words text-slate-800">
+                                  {k === '電話' ? (
+                                    <a href={`tel:${String(v).replace(/[^0-9+]/g, '')}`} className="text-emerald-700 underline underline-offset-2">{v}</a>
+                                  ) : k === 'Email' ? (
+                                    <a href={`mailto:${v}`} className="text-emerald-700 underline underline-offset-2">{v}</a>
+                                  ) : v}
+                                </dd>
+                              </div>
+                            ))}
+                        </dl>
                       )}
 
                       {lead.reason && (

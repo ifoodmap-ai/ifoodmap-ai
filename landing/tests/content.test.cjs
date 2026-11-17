@@ -931,7 +931,9 @@ test('lead capture reaches Supabase from both forms, and both write-only tables 
   // 不帶 return=minimal 整筆會被 RLS 擋成 42501。
   assert.equal((source.match(/\/rest\/v1\/landing_leads/g) || []).length, 1);
   assert.equal((source.match(/\/rest\/v1\/partnership_leads/g) || []).length, 1);
-  assert.equal((source.match(/'Prefer': 'return=minimal'/g) || []).length, 2);
+  // 第三處是 AI 助手的匿名漏斗事件(app_events,同樣只開 anon INSERT)
+  assert.equal((source.match(/\/rest\/v1\/app_events/g) || []).length, 1);
+  assert.equal((source.match(/'Prefer': 'return=minimal'/g) || []).length, 3);
   // 每一筆都要帶 lang,否則後台分不出這筆 lead 是哪個語系的訪客留的
   assert.match(component, /lang: i18n && typeof i18n\.current === 'function' \? i18n\.current\(window\) : 'zh'/);
 

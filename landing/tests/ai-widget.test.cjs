@@ -29,7 +29,7 @@ const PURE_END = '/* ==== AI-PURE:END ==== */';
 const pureSource = widget.slice(widget.indexOf(PURE_BEGIN), widget.indexOf(PURE_END));
 const PURE_NAMES = [
   'AI_LIMITS', 'QUOTA_CODES', 'classifyFailure', 'parseChatData', 'handoffUrl', 'validEmail', 'isLeadRateLimited',
-  'chatMessages', 'userTextCount', 'saveMessages', 'shouldSaveOnLeave', 'dataUrlBytes', 'analysisNote', 'leadRow', 'nextPair',
+  'parseLeadContact', 'chatMessages', 'userTextCount', 'saveMessages', 'shouldSaveOnLeave', 'dataUrlBytes', 'analysisNote', 'leadRow', 'nextPair',
   'cooldownSeconds', 'pairFields', 'mergeIngredients', 'menuOutcome', 'exitNeedsSave',
 ];
 // vm 裡沒有 window / document:純函式一旦偷碰 DOM,這裡就會直接 ReferenceError
@@ -93,7 +93,7 @@ test('2. 忙碌鎖:同時只有一個 AI 請求;忙碌時送出鈕 aria-disabled
   assert.match(widget, /textInput\.addEventListener\('keydown', function \(e\) \{\s*if \(e\.key !== 'Enter'\) return;\s*if \(e\.isComposing \|\| e\.keyCode === 229\) return;[^\n]*\n\s*e\.preventDefault\(\);\s*if \(aiBusy\) return;[^\n]*\n\s*sendText\(\);/);
   // 舊寫法(每按一次 Enter 就無條件 sendText)不可以回來
   assert.doesNotMatch(widget, /if \(e\.key === 'Enter'\) \{ e\.preventDefault\(\); sendText\(\); \}/);
-  // 送 Email 期間也上鎖,連按兩下不會寫出兩筆 lead
+  // 送聯絡表單期間也上鎖,連按兩下不會寫出兩筆 lead
   assert.match(fnBody('saveLead'), /setBusy\(true\);/);
 });
 
@@ -215,7 +215,7 @@ test('5b. stage:done → 「需求整理好了」CTA;ended → 鎖住 + CTA;舊�
 });
 
 // ── 6. CTA ───────────────────────────────────────────────────────────────────
-test('6. CTA:沒有「每頁一次」的旗標;畫面上同時只有一組;主按鈕免費註冊、次要留 Email', () => {
+test('6. CTA:沒有「每頁一次」的旗標;畫面上同時只有一組;主按鈕免費註冊、同等份量的「留聯絡方式請供應商報價」', () => {
   // 舊的 once-per-page 旗標與函式整個拿掉
   assert.doesNotMatch(widget, /\bctaShown\b|\bleadShown\b|showLeadCTA/);
   const cta = fnBody('showCTA');
@@ -227,9 +227,10 @@ test('6. CTA:沒有「每頁一次」的旗標;畫面上同時只有一組;主�
   assert.match(cta, /reg\.setAttribute\('data-cta', 'register'\);/);
   assert.match(cta, /reg\.textContent = registerLabel\(\);/);
   assert.match(fnBody('registerLabel'), /if \(registering\) return txt\('ctaRegisterBusy'\);\s*return txt\(collect\.active \? 'ctaSwitchRegister' : 'ctaRegister'\);/);
-  assert.match(cta, /alt\.setAttribute\('data-cta', 'email'\);/);
-  assert.match(cta, /alt\.textContent = txt\('ctaEmail'\);/);
-  assert.equal(dict('zh').ai.ctaEmail, '不想註冊？留下 Email，專人跟你聯絡');
+  assert.match(cta, /alt\.setAttribute\('data-cta', 'lead'\);/);
+  assert.match(cta, /alt\.textContent = txt\('ctaLead'\);/);
+  assert.match(cta, /alt\.className = 'ai-cta ai-cta--ghost'/, '兩顆按鈕同樣是 .ai-cta 大按鈕,不是藏在角落的小字連結');
+  assert.equal(dict('zh').ai.ctaLead, '留下聯絡方式，讓供應商報價給我');
   assert.match(dict('zh').ai.ctaRegister, /^免費註冊/);
   // 出現時機:第一則回覆後、done、ended / 429(lockFor)、菜單分析完、通用錯誤、照片超過上限
   assert.match(fnBody('afterReply'), /showCTA\(txt\('ctaPrefixChat'\)\)/);
@@ -242,7 +243,7 @@ test('6. CTA:沒有「每頁一次」的旗標;畫面上同時只有一組;主�
   assert.match(fnBody('afterReply'), /var seq = ctaSeq;\s*setTimeout\(function \(\) \{ if \(seq === ctaSeq && !locked\) showCTA/);
   // 切語系時兩顆按鈕跟著換字
   assert.match(fnBody('applyStaticStrings'), /\.ai-cta-row \[data-cta="register"\]/);
-  assert.match(fnBody('applyStaticStrings'), /\.ai-cta-row \[data-cta="email"\]/);
+  assert.match(fnBody('applyStaticStrings'), /\.ai-cta-row \[data-cta="lead"\]/);
   // 44px 點擊區
   assert.match(widget, /\.ai-cta \{[^}]*min-height: 44px;/);
   assert.match(widget, /\.ai-cta-alt \{[^}]*min-height: 44px;/);
@@ -268,7 +269,7 @@ test('7a. 交接網址放 #handoff= 片段(不用 ?),值是 encodeURIComponent(a
 
 test('7b. 按「免費註冊」:忙碌文字 → 有訊息才存檔(reason register,10 秒逾時)→ 標成已存檔 → location.assign', () => {
   const go = fnBody('goRegister');
-  assert.match(go, /if \(registering \|\| collect\.sending\) return;\s*registering = true;\s*btn\.textContent = txt\('ctaRegisterBusy'\);/);
+  assert.match(go, /if \(registering \|\| collect\.sending\) return;\s*registering = true;\s*track\('landing_ai_register_click'\);\s*btn\.textContent = txt\('ctaRegisterBusy'\);/);
   assert.match(go, /saveForExit\('register'\)\.then\(function \(\) \{[\s\S]*?markSaved\(\);\s*window\.location\.assign\(handoffUrl\(window\.IFM_PRODUCT_BASE_URL, conv\.analysisId, conv\.claimToken\)\);/);
   // 產品站網址只住在 index.html 頂端那一行,widget 不另外寫死
   assert.doesNotMatch(widget, /https:\/\/app\.ifoodmap\.ai/);
@@ -290,66 +291,113 @@ test('7b. 按「免費註冊」:忙碌文字 → 有訊息才存檔(reason regis
   assert.match(widget, /window\.addEventListener\('pageshow', function \(e\) \{ if \(e\.persisted\) resetRegistering\(\); \}\);/);
 });
 
-// ── 8. 留 Email ──────────────────────────────────────────────────────────────
-test('8a. 留 Email:先問稱呼再問 Email,不再收電話', () => {
-  assert.doesNotMatch(widget, /contact_phone|askPhone|phoneInvalid|placeholderPhone|collect\.phone/);
+// ── 8. 留聯絡方式(一步一題、用點的)──────────────────────────────────────────
+test('8a. 留聯絡方式:地區 → 頻率 → 店名或稱呼 → 手機 / LINE / Email 擇一,不再一次丟出整張表單', () => {
+  // 最後一步只收一個欄位,自動判斷是哪一種
+  assert.deepEqual(plain(ai.parseLeadContact('0912-345-678')), { phone: '0912-345-678' });
+  assert.deepEqual(plain(ai.parseLeadContact(' +886 2 2345 6789 ')), { phone: '+886 2 2345 6789' });
+  assert.deepEqual(plain(ai.parseLeadContact('ahui_noodle')), { line: 'ahui_noodle' });
+  assert.deepEqual(plain(ai.parseLeadContact('@ahui.noodle')), { line: 'ahui.noodle' });
+  assert.deepEqual(plain(ai.parseLeadContact('chef@restaurant.tw')), { email: 'chef@restaurant.tw' });
+  for (const bad of ['', '   ', null, '123', '12345', '0912 abc 345', '阿輝', 'a b', 'ab', 'abc', 'x'.repeat(41), '1'.repeat(16)]) {
+    assert.equal(ai.parseLeadContact(bad), null, String(bad));
+  }
+
+  // 流程:不再有表單,也沒有舊的「問稱呼 → 問 Email」
+  assert.doesNotMatch(widget, /validLeadForm|buildLeadForm|ai-lead-form|askName|askEmail|emailInvalid/);
   for (const lang of ['zh', 'en']) {
-    for (const key of ['askPhone', 'phoneInvalid', 'placeholderPhone', 'ctaButton']) {
+    for (const key of ['askName', 'askEmail', 'emailInvalid', 'ctaEmail', 'placeholderName', 'placeholderEmail', 'leadIntro', 'leadSubmit', 'leadConsent', 'placeholderLeadForm']) {
       assert.equal(dict(lang).ai[key], undefined, `${lang}.ai.${key} 應該已經拿掉`);
     }
   }
-  const handle = fnBody('handleCollect');
-  assert.match(handle, /if \(collect\.step === 'name'\) \{\s*collect\.name = v\.slice\(0, 60\); collect\.step = 'email';\s*addMsg\('bot', txtf\('askEmail', \{ name: collect\.name \}\)\);/);
-  assert.match(handle, /if \(!validEmail\(v\)\) \{ addMsg\('bot', txt\('emailInvalid'\)\); showCTA\(\); return; \}/);
-  assert.match(fnBody('startCollect'), /collect\.active = true; collect\.step = 'name';\s*addMsg\('bot', txt\('askName'\)\);/);
-  // 稱呼與 Email 不進對話紀錄(不會被送去 AI、也不會出現在 analysis_records.messages)
-  assert.doesNotMatch(handle, /history\.push/);
-  // Email 這一步把手機鍵盤切成 Email 版
-  assert.match(fnBody('syncComposer'), /textInput\.setAttribute\('inputmode', askingEmail \? 'email' : 'text'\);/);
-
-  // Email 檢查:格式 + 長度 ≤ 254(規則本身在 R4 那條測試逐字比對)
+  const start = fnBody('startCollect');
+  assert.match(start, /collect\.active = true; collect\.step = 'area';/);
+  assert.match(start, /addChips\(addMsg\('bot', txt\('leadAskArea'\)\), LEAD_AREAS\);\s*showCTA\(\);/);
+  const answer = fnBody('collectAnswer');
+  // 四步:每一步都是「記下答案 → 下一題 → 重出 CTA 出口」
+  assert.match(answer, /if \(collect\.step === 'area'\) \{\s*collect\.area = value\.slice\(0, 100\); collect\.step = 'freq';/);
+  assert.match(answer, /addChips\(addMsg\('bot', txt\('leadAskFreq'\)\), LEAD_FREQS\);\s*showCTA\(\);/);
+  assert.match(answer, /collect\.frequency = value\.slice\(0, 60\); collect\.step = 'who';/);
+  assert.match(answer, /collect\.who = value\.slice\(0, 100\); collect\.step = 'contact';/);
+  assert.match(answer, /var c = parseLeadContact\(value\);\s*if \(!c\) \{ addMsg\('bot', txt\('leadContactInvalid'\)\); showCTA\(\); return; \}/);
+  // 打字也能答(handleCollect 就是 collectAnswer),按鈕與打字走同一條路
+  assert.match(fnBody('handleCollect'), /collectAnswer\(v, v\);/);
+  assert.match(fnBody('addChips'), /collectAnswer\(c\.v, txt\(c\.k\)\);/);
+  // 地區 / 頻率的值固定存中文(供應商的服務區域是中文縣市名),按鈕上的字才跟著語系
+  assert.equal(dict('zh').ai.leadChipTaipei, '台北市');
+  assert.equal(dict('en').ai.leadChipTaipei, 'Taipei');
+  assert.match(widget, /\{ k: 'leadChipTaipei', v: '台北市' \}/);
+  // 答案不進對話紀錄(不會被送去 AI、也不會出現在 analysis_records.messages)
+  for (const name of ['collectAnswer', 'handleCollect', 'saveLead']) assert.doesNotMatch(fnBody(name), /history\.push/);
+  // 同意說明就在要聯絡方式的那一句裡(不是預設打勾的勾選框)
+  assert.match(dict('zh').ai.leadAskContact, /同意把你的需求與聯絡方式提供給符合的供應商/);
+  assert.match(widget, /consent: true/);
+  // Email 規則(DB、notify-lead、異業合作表單共用)還在
   assert.equal(ai.validEmail('chef@restaurant.tw'), true);
-  assert.equal(ai.validEmail('  chef@restaurant.tw  '), true);
-  for (const bad of ['', 'chef', 'chef@', 'chef@restaurant', '@restaurant.tw', 'a b@c.tw', null]) {
-    assert.equal(ai.validEmail(bad), false, String(bad));
-  }
-  const local = 'a'.repeat(64);
-  const exact = `${local}@${'b'.repeat(254 - local.length - 1 - 3)}.tw`;
-  assert.equal(exact.length, 254);
-  assert.equal(ai.validEmail(exact), true);
-  assert.equal(ai.validEmail('c' + exact), false, '255 字要擋');
+  assert.equal(ai.validEmail('chef@restaurant'), false);
 });
 
-test('8b. 留 Email:先用 reason lead 存檔拿 analysisId,再寫 landing_leads(contact_email、analysis_id)', () => {
+test('8b. 留聯絡方式:先用 reason lead 存檔拿 analysisId,再寫 landing_leads(帶同意旗標與 analysis_id)', () => {
   const save = fnBody('saveLead');
   assert.ok(save.indexOf("saveForExit('lead')") >= 0 && save.indexOf("saveForExit('lead')") < save.indexOf('/rest/v1/landing_leads'));
-  assert.match(save, /leadRow\(\{ name: collect\.name, email: collect\.email \}, lastAnalysis, history, conv\.analysisId, navigator\.userAgent\)/);
+  assert.match(save, /\}, lastAnalysis, history, conv\.analysisId, navigator\.userAgent\);/);
 
   const row = plain(ai.leadRow(
-    { name: '王小明', email: ' chef@restaurant.tw ' },
+    { name: '阿輝鍋燒麵 阿輝', phone: ' 0912-345-678 ', area: '台北市', frequency: '每週 2～3 次', consent: true },
     { summary: '火鍋店每週採購', ingredients: [{ name: '高麗菜', quantity: 10, unit: 'kg' }, { name: '' }, { name: '豬五花', unit: '斤' }] },
     [{ role: 'user', text: '我要高麗菜' }],
     'analysis-1',
     'Mozilla/5.0 '.repeat(60),
   ));
-  assert.deepEqual(Object.keys(row).sort(), ['analysis_id', 'company_name', 'contact_email', 'detail', 'items_text', 'source', 'user_agent']);
-  assert.equal('contact_phone' in row, false, '不再送電話');
-  assert.equal(row.contact_email, 'chef@restaurant.tw');
-  assert.equal(row.company_name, '王小明');
+  assert.deepEqual(Object.keys(row).sort(), [
+    'analysis_id', 'company_name', 'consent_share', 'contact_line', 'contact_name', 'contact_phone', 'contact_time',
+    'delivery_area', 'detail', 'extra_notes', 'frequency', 'items_text', 'source', 'user_agent',
+  ]);
+  assert.equal(row.company_name, '阿輝鍋燒麵 阿輝');
+  assert.equal(row.contact_name, null, '店名與稱呼只收一格時,不重複寫進聯絡人');
+  assert.equal(row.contact_phone, '0912-345-678');
+  assert.equal(row.contact_line, null);
+  assert.equal(row.delivery_area, '台北市');
+  assert.equal(row.frequency, '每週 2～3 次');
+  assert.equal(row.consent_share, true);
   assert.equal(row.analysis_id, 'analysis-1');
   assert.equal(row.source, 'ai_widget');
   assert.equal(row.items_text, '高麗菜10kg、豬五花斤');
-  assert.match(row.detail, /^【AI 採購助手】客戶姓名：王小明\n火鍋店每週採購\n採購清單：高麗菜10kg、豬五花斤$/);
+  assert.match(row.detail, /^【AI 採購助手】客戶姓名：阿輝鍋燒麵 阿輝\n火鍋店每週採購\n採購清單：高麗菜10kg、豬五花斤\n配送地點：台北市\n配送頻率：每週 2～3 次$/);
   assert.equal(row.user_agent.length, 300);
+  // 店名與稱呼分開給時,聯絡人才會另外寫
+  assert.equal(ai.leadRow({ name: '阿輝', company: '阿輝鍋燒麵', phone: '0912345678' }, null, [], null, '').contact_name, '阿輝');
+  // 沒勾同意就是 false(後端不會轉給供應商)
+  assert.equal(ai.leadRow({ name: 'x', phone: '0912345678' }, null, [], null, '').consent_share, false);
+  // 有給 Email 才送 contact_email
+  assert.equal(ai.leadRow({ name: 'x', email: ' a@b.co ' }, null, [], null, '').contact_email, 'a@b.co');
 
-  // 沒有分析結果:detail 帶對話(只有文字,AI 的 note 不帶),而且長度先截短 —— 後端有長度 check,超過整筆會被擋
+  // AI 沒整理出清單:detail 帶對話(只有文字,AI 的 note 不帶),而且長度先截短 —— 後端有長度 check,超過整筆會被擋
   const long = Array.from({ length: 20 }, (_, i) => ({ role: i % 2 ? 'bot' : 'user', text: '字'.repeat(300) }));
-  const talk = plain(ai.leadRow({ name: 'x'.repeat(100), email: 'a@b.co' }, null, long, null, ''));
+  const talk = plain(ai.leadRow({ name: 'x'.repeat(200), phone: '0912345678' }, null, long, null, ''));
   assert.equal(talk.items_text, null);
   assert.equal(talk.analysis_id, null);
-  assert.equal(talk.company_name.length, 60);
+  assert.equal(talk.company_name.length, 100);
   assert.ok(talk.detail.length <= 2000);
   assert.match(talk.detail, /\n對話：客：/);
+});
+
+test('8d. 留好之後:加 LINE 排在註冊前面(帶需求編號的預填訊息),漏斗事件只送匿名代號、不帶個資', () => {
+  const cta = fnBody('showCTA');
+  assert.match(cta, /if \(collect\.step === 'done'\) \{[\s\S]*?line\.setAttribute\('data-cta', 'line'\);[\s\S]*?b\.insertBefore\(line, reg\);/);
+  assert.match(cta, /line\.rel = 'noopener noreferrer'/);
+  assert.match(fnBody('lineHref'), /'https:\/\/line\.me\/R\/oaMessage\/' \+ LINE_OA \+ '\/\?' \+ encodeURIComponent\(txtf\('lineMsg'/);
+  assert.match(widget, /var LINE_OA\s+= '@750yvxki';/);
+  assert.match(fnBody('saveLead'), /showCTA\(txt\('ctaPrefixLeadDone'\)\)/);
+  assert.match(dict('zh').ai.ctaPrefixLeadDone, /加我們的 LINE/);
+  // 事件:名稱固定、屬性只有步驟名稱 / 成功與否,沒有姓名、電話、LINE ID
+  const events = [...widget.matchAll(/track\('(landing_ai_[a-z_]+)'(?:, (\{[^}]*\}))?\)/g)];
+  assert.ok(events.length >= 6, `漏斗事件太少:${events.length}`);
+  for (const [, , props] of events) {
+    for (const key of (props || '').match(/\b\w+(?=:)/g) || []) assert.ok(['step', 'ok', 'why'].includes(key), `事件屬性只能是 step / ok / why:${key}`);
+  }
+  assert.match(fnBody('track'), /session_key: trackKey/);
+  assert.match(fnBody('track'), /\} catch \(e\) \{\}/, '事件送不出去不能影響對話');
 });
 
 test('8c. 收到 400 + LEAD_RATE_LIMITED → 友善文案(不是「送出失敗」)', () => {
@@ -361,8 +409,8 @@ test('8c. 收到 400 + LEAD_RATE_LIMITED → 友善文案(不是「送出失敗�
   assert.match(save, /\} else if \(isLeadRateLimited\(res\.status, res\.json\)\) \{[\s\S]*?bub\.textContent = txt\('leadRateLimited'\);/);
   // 失敗時要讀 body 才知道是不是被防灌水擋下
   assert.match(save, /return r\.json\(\)\.then\(function \(j\) \{ return \{ ok: false, status: r\.status, json: j \}; \}/);
-  // 被擋下之後:Email 那顆不再出現,但註冊出口還在(成功才把那組收掉)
-  assert.match(save, /if \(collect\.step === 'done'\) removeCTA\(\);[^\n]*\n\s*else showCTA\(\);/);
+  // 被擋下之後:「留聯絡方式」那顆不再出現,但註冊出口還在;留成功了則接著請他註冊追蹤報價
+  assert.match(save, /if \(collect\.step === 'done'\) showCTA\(txt\('ctaPrefixLeadDone'\)\);[^\n]*\n\s*else showCTA\(\);/);
   assert.match(fnBody('showCTA'), /collect\.step !== 'limited'/);
   // 寫入點仍然只有一個(content.test.cjs 也有擋),而且 return=minimal
   assert.equal((rawSource.match(/\/rest\/v1\/landing_leads/g) || []).length, 1);
@@ -470,7 +518,7 @@ test('11. widget 用到的每個 txt() / txtf() key 在中英字典都有,英文
     assert.doesNotMatch(dict('en').ai[key], CJK, `en.ai.${key} 還是中文`);
   }
   // 新文案的佔位符兩邊一致({max} / {name} / {email})
-  for (const key of ['tooLong', 'uploadLimit', 'askEmail', 'leadSuccess']) {
+  for (const key of ['tooLong', 'uploadLimit', 'lineMsg', 'leadSuccess']) {
     const holes = (s) => (s.match(/\{\w+\}/g) || []).sort().join(',');
     assert.equal(holes(dict('zh').ai[key]), holes(dict('en').ai[key]), key);
   }
@@ -482,8 +530,8 @@ test('11. widget 用到的每個 txt() / txtf() key 在中英字典都有,英文
     .split('\n')
     .map((line) => line.replace(/\/\/.*$/, ''))
     .filter((line) => CJK.test(line));
-  // 放行的只有兩種:寫進 landing_leads.detail 給業主看的標籤(leadRow),以及品牌字標「食」
-  const leftovers = code.filter((line) => !/'【AI 採購助手】客戶姓名：'|'\\n採購清單：'|'\\n對話：'|<div class="ai-ava">食<\/div>/.test(line));
+  // 放行的只有三種:寫進 landing_leads.detail 給業主看的標籤(leadRow)、地區 / 頻率按鈕存進後台的固定中文值(LEAD_AREAS / LEAD_FREQS),以及品牌字標「食」
+  const leftovers = code.filter((line) => !/\{ k: 'leadChip[A-Za-z0-9]+', v: '[^']+' \}|'【AI 採購助手】客戶姓名：'|'\\n採購清單：'|'\\n對話：'|'\\n店家：'|'\\n訪客自己寫的需求：'|'\\n配送地點：'|'\\n配送頻率：'|'\\n特殊需求：'|'\\n方便聯繫：'|<div class="ai-ava">食<\/div>/.test(line));
   assert.deepEqual(leftovers, [], `widget 裡有寫死的中文:\n${leftovers.join('\n')}`);
 });
 
@@ -538,7 +586,7 @@ test('R1. 後續照片帶上手上那組;新版 ai 回同一組 → 食材併進
   const third = plain(ai.menuOutcome(second.conv, second.view, { analysisId: 'A', claimToken: 'TA', ingredients: [{ name: '高麗菜' }, { name: '豬五花' }, { name: '蛤蜊' }] }));
   assert.deepEqual(third.view.ingredients.map((i) => i.name), ['高麗菜', '豬五花', '蛤蜊']);
   assert.equal(third.view.summary, '菜單2');
-  // 留 Email 時:analysis_id 指的那筆,跟 items_text 一定對得上
+  // 留聯絡方式時:analysis_id 指的那筆,跟 items_text 一定對得上
   const row = plain(ai.leadRow({ name: 'x', email: 'a@b.co' }, third.view, [], third.conv.analysisId, ''));
   assert.equal(row.analysis_id, 'A');
   assert.equal(row.items_text, '高麗菜、豬五花、蛤蜊');
@@ -564,7 +612,7 @@ test('R1. 後續照片帶上手上那組;新版 ai 回同一組 → 食材併進
   assert.match(fnBody('renderAnalysis'), /conv\.analysisId = outcome\.conv\.analysisId;\s*conv\.claimToken = outcome\.conv\.claimToken;\s*lastAnalysis = outcome\.view;\s*if \(outcome\.split\) recordsSplit = true;/);
   // 存檔的回應是那筆紀錄的權威版本(後端合併後的清單)
   assert.match(fnBody('postExtract'), /if \(j\.data\.ingredients && j\.data\.ingredients\.length\) lastAnalysis = \{ summary: j\.data\.summary \|\| '', ingredients: j\.data\.ingredients \};/);
-  assert.match(fnBody('saveLead'), /leadRow\(\{ name: collect\.name, email: collect\.email \}, lastAnalysis, history, conv\.analysisId, navigator\.userAgent\)/);
+  assert.match(fnBody('saveLead'), /leadRow\(\{[\s\S]*?\}, lastAnalysis, history, conv\.analysisId, navigator\.userAgent\)/);
 });
 
 // ── 修訂 2 R4:Email 規則全站統一 ─────────────────────────────────────────────
@@ -604,7 +652,7 @@ test('R4. widget 與異業合作表單用同一條 Email regex(一字不差)+ �
 });
 
 // ── 修訂 2 R10:widget 補強 ───────────────────────────────────────────────────
-test('R10a. 留 Email 收到一半可以「改成免費註冊」或「取消」,對話與交接資料都留著', () => {
+test('R10a. 留聯絡方式問到一半可以「改成免費註冊」或「取消」,對話與交接資料都留著', () => {
   const cta = fnBody('showCTA');
   assert.match(cta, /if \(collect\.active\) \{\s*var cancel = document\.createElement\('button'\);\s*cancel\.type = 'button'; cancel\.className = 'ai-cta-alt'; cancel\.setAttribute\('data-cta', 'cancel'\);\s*cancel\.textContent = txt\('ctaCancelLead'\);\s*cancel\.addEventListener\('click', cancelCollect\);/);
   // 註冊那顆一直都在(收集中改叫「改成免費註冊」),按下去走同一個 goRegister(帶交接)
@@ -612,13 +660,13 @@ test('R10a. 留 Email 收到一半可以「改成免費註冊」或「取消」,
   assert.match(cta, /reg\.addEventListener\('click', function \(\) \{ goRegister\(reg\); \}\);/);
   assert.equal(dict('zh').ai.ctaSwitchRegister, '改成免費註冊 →');
   // 以前按「留 Email」會把整組 CTA 拿掉、收集中什麼出口都沒有;現在每一步之後都重出一組
-  assert.match(fnBody('startCollect'), /addMsg\('bot', txt\('askName'\)\);\s*showCTA\(\);/);
-  assert.match(fnBody('handleCollect'), /addMsg\('bot', txtf\('askEmail', \{ name: collect\.name \}\)\);\s*showCTA\(\);/);
+  assert.match(fnBody('startCollect'), /LEAD_AREAS\);\s*showCTA\(\);/);
+  assert.match(fnBody('collectAnswer'), /LEAD_FREQS\);\s*showCTA\(\);[^\n]*\n\s*syncComposer\(\);/);
   // 取消:只重設收集狀態,對話紀錄、analysisId / claimToken、存檔佇列一概不動
   const cancel = fnBody('cancelCollect');
-  assert.match(cancel, /if \(!collect\.active \|\| collect\.sending \|\| registering\) return;\s*collect\.active = false; collect\.step = ''; collect\.name = ''; collect\.email = '';\s*addMsg\('bot', txt\('leadCancelled'\)\);\s*showCTA\(\);/);
+  assert.match(cancel, /if \(!collect\.active \|\| collect\.sending \|\| registering\) return;\s*collect\.active = false; collect\.step = ''; collect\.area = ''; collect\.frequency = ''; collect\.who = '';\s*clearChips\(\);\s*addMsg\('bot', txt\('leadCancelled'\)\);\s*showCTA\(\);/);
   assert.doesNotMatch(cancel, /history|conv\.|saveChain|lastAnalysis|recordsSplit|savedUserCount/);
-  // 送 Email 的那幾秒兩個出口都暫停(不會一邊寫 lead 一邊跳頁)
+  // 送出的那幾秒兩個出口都暫停(不會一邊寫 lead 一邊跳頁)
   assert.match(fnBody('saveLead'), /collect\.sending = true;\s*setCTADisabled\(true\);/);
   assert.match(fnBody('saveLead'), /collect\.sending = false;/);
   assert.match(fnBody('goRegister'), /if \(registering \|\| collect\.sending\) return;/);

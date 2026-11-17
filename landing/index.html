@@ -4582,10 +4582,13 @@ class Component extends DCLogic {
     text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
   .ai-cta[aria-disabled="true"], .ai-cta-alt[aria-disabled="true"] { opacity: .6; cursor: progress; }
 
-  .ai-lead { margin-top: 10px; display: flex; flex-direction: column; gap: 8px; }
-  .ai-lead input { width: 100%; box-sizing: border-box; padding: 10px 12px; border: 1.5px solid #dde5dc; border-radius: 10px; font-size: 13.5px; font-family: inherit; outline: none; }
-  .ai-lead input:focus { border-color: #46c138; }
-  .ai-lead button { background: linear-gradient(135deg,#46c138,#1f9e4e); color:#0E1A14; font-weight:700; font-size:14px; padding:11px; border:none; border-radius:100px; cursor:pointer; }
+  .ai-cta--ghost { margin-top: 8px; background: #fff; color: #1f7a37; border: 1.5px solid #46c138; }
+  .ai-cta--line { margin-top: 8px; background: #06C755; color: #fff; text-decoration: none; justify-content: center; }
+  /* 留聯絡方式的快速回覆:用點的,不用打字 */
+  .ai-qr-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+  .ai-qr { min-height: 44px; padding: 0 16px; border-radius: 100px; border: 1.5px solid #46c138; background: #fff; color: #1f7a37; font-family: inherit; font-size: 14px; font-weight: 700; cursor: pointer; }
+  .ai-qr:hover { background: #eaf7e4; }
+  .ai-qr[aria-disabled="true"] { opacity: .6; cursor: progress; }
 
   .ai-foot { flex-shrink: 0; border-top: 1px solid #eef1ee; background: #fff; padding: 10px; display: flex; align-items: center; gap: 8px; }
   .ai-sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
@@ -4621,6 +4624,7 @@ class Component extends DCLogic {
 (function () {
   var SUPA_URL  = (window.IFM_SUPA || {}).url;
   var SUPA_ANON = (window.IFM_SUPA || {}).anon;
+  var LINE_OA   = '@750yvxki';   // LINE 官方帳號 ID(跟頁面上其他加 LINE 的連結同一個)
   // 語系:一律呼叫時才查字典。存成 var 的話,使用者切語系後會停在舊語言。
   // 「現在是哪個語系」的真相是網址前綴,所以每次都跟 IfmI18n 現拿,不在 boot 時抓一次。
   function curLang() {
@@ -4781,9 +4785,26 @@ class Component extends DCLogic {
   // landing_leads 的一筆。欄位對應照舊,只是聯絡方式從手機改成 Email(不再收電話)。
   // 文字欄位先在前端截短:後端有長度 check(SPEC §6),超過整筆會被擋,lead 就掉了。
   // detail 是給業主在後台看的,維持中文。
+  // 最後一步只收一個欄位:手機、LINE ID 或 Email 擇一(自動判斷)。回傳 { phone } / { line } / { email },看不懂就回 null。
+  function parseLeadContact(text) {
+    var s = String(text == null ? '' : text).replace(/^\s+|\s+$/g, '');
+    if (!s) return null;
+    if (/^[0-9+()\-\s#.]+$/.test(s)) {
+      var digits = s.replace(/[^0-9]/g, '');
+      return digits.length >= 8 && digits.length <= 15 ? { phone: s.slice(0, 25) } : null;
+    }
+    if (validEmail(s)) return { email: s };
+    var id = s.replace(/^@/, '');
+    return /^[A-Za-z0-9._\-]{4,40}$/.test(id) ? { line: id } : null;
+  }
+
   function leadRow(lead, analysis, list, analysisId, userAgent) {
-    var name = String((lead && lead.name) || '').slice(0, 60);
+    lead = lead || {};
+    function clip(x, n) { return String(x == null ? '' : x).replace(/^\s+|\s+$/g, '').slice(0, n); }
+    var name = clip(lead.name, 100);
+    var company = clip(lead.company, 100) || name;
     var detail = '【AI 採購助手】客戶姓名：' + name;
+    if (company && company !== name) detail += '\n店家：' + company;
     var items = '';
     if (analysis && analysis.summary) detail += '\n' + analysis.summary;
     var ings = analysis && analysis.ingredients && analysis.ingredients.length ? analysis.ingredients : [];
@@ -4792,18 +4813,35 @@ class Component extends DCLogic {
         .map(function (i) { return i.name + (i.quantity || '') + (i.unit || ''); }).join('、');
       detail += '\n採購清單：' + items;
     } else {
+      var typed = clip(lead.items, 500);
+      if (typed) { items = typed; detail += '\n訪客自己寫的需求：' + typed; }
       var talk = chatMessages(list || []);
       if (talk.length) detail += '\n對話：' + talk.map(function (m) { return (m.role === 'user' ? '客' : 'AI') + '：' + m.text; }).join(' / ');
     }
-    return {
-      company_name: name,
-      contact_email: String((lead && lead.email) || '').replace(/^\s+|\s+$/g, ''),
+    var area = clip(lead.area, 100), frequency = clip(lead.frequency, 60), notes = clip(lead.notes, 500), when = clip(lead.time, 60);
+    if (area) detail += '\n配送地點：' + area;
+    if (frequency) detail += '\n配送頻率：' + frequency;
+    if (notes) detail += '\n特殊需求：' + notes;
+    if (when) detail += '\n方便聯繫：' + when;
+    var row = {
+      company_name: company,
+      contact_name: (name && company !== name) ? name : null,
+      contact_phone: clip(lead.phone, 25) || null,
+      contact_line: clip(lead.line, 60) || null,
+      delivery_area: area || null,
+      frequency: frequency || null,
+      extra_notes: notes || null,
+      contact_time: when || null,
+      consent_share: lead.consent === true,
       items_text: items ? items.slice(0, 1000) : null,
       detail: detail.slice(0, 2000),
       source: 'ai_widget',
       analysis_id: analysisId || null,
       user_agent: String(userAgent || '').slice(0, 300)
     };
+    var email = clip(lead.email, 254);
+    if (email) row.contact_email = email;
+    return row;
   }
   // 記下後端給的 analysisId + claimToken(SPEC §5)→ 回傳新的那組。
   // replace = true(analyze-chat 的回應):有給就換成它給的那組 —— 驗證過的會原樣回同一組,舊的失效時後端會開新的一筆。
@@ -4866,10 +4904,11 @@ class Component extends DCLogic {
   /* ==== AI-PURE:END ==== */
 
   var history = [];          // {role:'user'|'bot', text, note?}。只放文字:照片的 base64 不進對話紀錄,不會跟著存檔到處送
+  var trackKey = Math.random().toString(36).slice(2) + Date.now().toString(36);   // 這次開頁的匿名代號,只用來把同一個人的漏斗步驟串起來
   var lastAnalysis = null;   // {summary, ingredients}:最近一次分析(菜單或整段對話)的結果,留 Email 時寫進 landing_leads
   var conv = { analysisId: null, claimToken: null };   // 這段對話在後台的那筆 analysis_records(SPEC §5),註冊交接靠它
   var savedUserCount = 0;    // 上次存檔時的使用者訊息數 —— 關面板 / 離開頁面只存「還沒存過」的內容
-  var collect = { active: false, step: '', name: '', email: '', sending: false };   // step: name → email → done(或 limited)
+  var collect = { active: false, step: '', sending: false, area: '', frequency: '', who: '' };   // step: area → freq → who → contact → done(或 limited)
   var aiBusy = false;        // 忙碌鎖:同一時間只有一個 AI 請求(對話、菜單、送出 Email 都算)
   var locked = '';           // '' | 'ended'(AI 判定結束)| 'quota'(免費額度用完)| 'cooldown'(10 分鐘級限流,時間到自動解鎖)
   var registering = false;   // 按了「免費註冊」,正在存檔 / 跳轉
@@ -4933,8 +4972,7 @@ class Component extends DCLogic {
 
   // 輸入框提示會隨「現在問到哪一步」而不同 —— 切語系時要換成當下那一步的字,不能寫死預設值
   function currentPlaceholder() {
-    if (collect.active && collect.step === 'name')  return txt('placeholderName');
-    if (collect.active && collect.step === 'email') return txt('placeholderEmail');
+    if (collect.active) return txt({ area: 'placeholderLeadArea', freq: 'placeholderLeadFreq', who: 'placeholderLeadWho', contact: 'placeholderLeadContact' }[collect.step] || 'placeholderLeadArea');
     if (locked === 'cooldown') return txt('placeholderCooldown');
     if (locked) return txt('placeholderLocked');
     return txt('inputPlaceholder');
@@ -4960,8 +4998,12 @@ class Component extends DCLogic {
     // 畫面上那組 CTA 的兩顆按鈕算外框,跟著換;它上面那句前言是對話紀錄,不動。
     var reg = body.querySelector('.ai-cta-row [data-cta="register"]');
     if (reg) reg.textContent = registerLabel();
-    var alt = body.querySelector('.ai-cta-row [data-cta="email"]');
-    if (alt) alt.textContent = txt('ctaEmail');
+    var alt = body.querySelector('.ai-cta-row [data-cta="lead"]');
+    if (alt) alt.textContent = txt('ctaLead');
+    var chipEls = body.querySelectorAll('.ai-qr[data-lk]');
+    for (var ci = 0; ci < chipEls.length; ci++) chipEls[ci].textContent = txt(chipEls[ci].getAttribute('data-lk'));
+    var lineEl = body.querySelector('.ai-cta-row [data-cta="line"]');
+    if (lineEl) lineEl.textContent = txt('ctaLine');
     var cancel = body.querySelector('.ai-cta-row [data-cta="cancel"]');
     if (cancel) cancel.textContent = txt('ctaCancelLead');
     // 例外:畫面上只有開場白那一則(使用者還沒講過話)時才換開場白,
@@ -4999,7 +5041,7 @@ class Component extends DCLogic {
 
   // ---- 輸入列狀態:忙碌鎖 / 對話鎖 / 註冊交接中,只在這裡算 ----
   // 用 aria-disabled + readOnly,不用 disabled:disabled 會把焦點踢出去,用鍵盤的人會迷路。
-  // 收聯絡資料時輸入框一定要能用 —— 對話鎖住了也還能留 Email。
+  // 收聯絡資料時輸入框一定要能用 —— 對話鎖住了也還能留聯絡方式。
   function toggleOff(el, off) {
     if (off) el.setAttribute('aria-disabled', 'true');
     else el.removeAttribute('aria-disabled');
@@ -5007,12 +5049,11 @@ class Component extends DCLogic {
   function syncComposer() {
     var aiClosed = !!locked && !collect.active;
     toggleOff(sendBtn, aiBusy || registering || aiClosed);
-    toggleOff(uploadBtn, registering || !!locked);
+    toggleOff(uploadBtn, registering || !!locked || collect.active);   // 問聯絡資料的時候不收照片
     textInput.readOnly = registering || aiClosed;
     toggleOff(textInput, registering || aiClosed);
-    var askingEmail = collect.active && collect.step === 'email';
-    textInput.setAttribute('inputmode', askingEmail ? 'email' : 'text');
-    textInput.setAttribute('autocomplete', askingEmail ? 'email' : (collect.active && collect.step === 'name' ? 'name' : 'off'));
+    textInput.setAttribute('inputmode', 'text');
+    textInput.setAttribute('autocomplete', 'off');
     textInput.placeholder = currentPlaceholder();
   }
   function setBusy(on) { aiBusy = on; syncComposer(); }
@@ -5118,7 +5159,16 @@ class Component extends DCLogic {
     if (registering) reg.setAttribute('aria-disabled', 'true');
     reg.addEventListener('click', function () { goRegister(reg); });
     b.appendChild(reg);
-    // 收 Email 收到一半(R10):出口是「改成免費註冊」(上面那顆換字)與「取消」,對話與交接資料都留著
+    // 留好聯絡方式之後:加 LINE 排在註冊前面(帶需求編號的預填訊息,小編在 LINE 後台對得到是哪一筆)
+    if (collect.step === 'done') {
+      var line = document.createElement('a');
+      line.className = 'ai-cta ai-cta--line'; line.setAttribute('data-cta', 'line');
+      line.href = lineHref(); line.target = '_blank'; line.rel = 'noopener noreferrer';
+      line.textContent = txt('ctaLine');
+      line.addEventListener('click', function () { track('landing_ai_line_click'); });
+      b.insertBefore(line, reg);
+    }
+    // 填聯絡表單填到一半(R10):出口是「改成免費註冊」(上面那顆換字)與「取消」,對話與交接資料都留著
     if (collect.active) {
       var cancel = document.createElement('button');
       cancel.type = 'button'; cancel.className = 'ai-cta-alt'; cancel.setAttribute('data-cta', 'cancel');
@@ -5126,11 +5176,11 @@ class Component extends DCLogic {
       cancel.addEventListener('click', cancelCollect);
       b.appendChild(cancel);
     }
-    // 已經在留、已經留過(或被防灌水擋下)Email 的人,不再出現這顆
+    // 已經在留、已經留過(或被防灌水擋下)聯絡方式的人,不再出現這顆。兩顆按鈕同等份量:註冊 / 直接請供應商報價
     if (!collect.active && collect.step !== 'done' && collect.step !== 'limited') {
       var alt = document.createElement('button');
-      alt.type = 'button'; alt.className = 'ai-cta-alt'; alt.setAttribute('data-cta', 'email');
-      alt.textContent = txt('ctaEmail');
+      alt.type = 'button'; alt.className = 'ai-cta ai-cta--ghost'; alt.setAttribute('data-cta', 'lead');
+      alt.textContent = txt('ctaLead');
       alt.addEventListener('click', function () {
         if (registering) return;
         removeCTA();
@@ -5145,6 +5195,7 @@ class Component extends DCLogic {
   function goRegister(btn) {
     if (registering || collect.sending) return;
     registering = true;
+    track('landing_ai_register_click');
     btn.textContent = txt('ctaRegisterBusy');
     setCTADisabled(true);
     imageQueue = [];
@@ -5244,6 +5295,7 @@ class Component extends DCLogic {
     if (userTextCount(history) >= AI_LIMITS.maxUserMessages) { lockFor('quota'); return; }
     textInput.value = '';
     history.push({ role: 'user', text: v });
+    if (userTextCount(history) === 1) track('landing_ai_first_message');
     addMsg('user', v);
     addTyping();
     setBusy(true);
@@ -5388,40 +5440,113 @@ class Component extends DCLogic {
   // ---- 留 Email(次要出口)----
   // 對話式收集:先問稱呼,再問 Email(不再收電話);稱呼與 Email 只顯示在畫面上,不進對話紀錄、不送給 AI。
   // 收集中畫面上那組 CTA 換成「改成免費註冊」+「取消」(R10):改主意不用重新整理,對話與交接資料都還在。
+  // ---- 留聯絡方式:一步一題、用點的(2026-11-18,取代原本一次丟出整張表單)----
+  // 地區 → 頻率(兩題都有快速回覆按鈕,也可以直接打字)→ 店名或稱呼 → 手機 / LINE / Email 擇一。
+  // 需求品項不用再問:送出時先把整段對話整理成食材清單(saveForExit('lead')),後端 trigger 再依食材與地區轉給符合的供應商。
+  // 地區、頻率按鈕的值固定存中文(供應商的服務區域是中文縣市名),按鈕上的字則跟著語系。
+  var LEAD_AREAS = [
+    { k: 'leadChipTaipei', v: '台北市' }, { k: 'leadChipNewTaipei', v: '新北市' }, { k: 'leadChipTaoyuan', v: '桃園市' },
+    { k: 'leadChipTaichung', v: '台中市' }, { k: 'leadChipTainan', v: '台南市' }, { k: 'leadChipKaohsiung', v: '高雄市' }
+  ];
+  var LEAD_FREQS = [
+    { k: 'leadChipDaily', v: '每天' }, { k: 'leadChipWeekly23', v: '每週 2～3 次' }, { k: 'leadChipWeekly1', v: '每週 1 次' }, { k: 'leadChipFlex', v: '不固定' }
+  ];
+  function clearChips() {
+    var rows = body.querySelectorAll('.ai-qr-row');
+    for (var i = 0; i < rows.length; i++) rows[i].remove();
+  }
+  function addChips(bub, list) {
+    var wrap = document.createElement('div'); wrap.className = 'ai-qr-row';
+    list.forEach(function (c) {
+      var btn = document.createElement('button');
+      btn.type = 'button'; btn.className = 'ai-qr'; btn.setAttribute('data-lk', c.k);
+      btn.textContent = txt(c.k);
+      btn.addEventListener('click', function () {
+        if (collect.sending || !collect.active) return;
+        collectAnswer(c.v, txt(c.k));
+      });
+      wrap.appendChild(btn);
+    });
+    bub.appendChild(wrap);
+    scrollDown();
+  }
+  function lineHref() {
+    var code = String(conv.analysisId || '').replace(/[^A-Za-z0-9]/g, '').slice(0, 6).toUpperCase();
+    var items = lastAnalysis && lastAnalysis.ingredients && lastAnalysis.ingredients.length
+      ? lastAnalysis.ingredients.filter(function (i) { return i && i.name; }).map(function (i) { return i.name; }).join('、').slice(0, 80) : '';
+    return 'https://line.me/R/oaMessage/' + LINE_OA + '/?' + encodeURIComponent(txtf('lineMsg', { code: code || '-', items: items || '-' }));
+  }
+  // 漏斗事件(匿名、不帶任何個資):看每一步掉多少人。失敗不影響使用。
+  function track(name, props) {
+    try {
+      if (!SUPA_URL || !SUPA_ANON) return;
+      fetch(SUPA_URL + '/rest/v1/app_events', {
+        method: 'POST',
+        headers: { 'apikey': SUPA_ANON, 'Authorization': 'Bearer ' + SUPA_ANON, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
+        body: JSON.stringify({ event: name, properties: props || {}, session_key: trackKey }),
+        keepalive: true
+      }).catch(function () {});
+    } catch (e) {}
+  }
+
   function startCollect() {
     if (collect.active || collect.step === 'done' || collect.step === 'limited') return;
-    collect.active = true; collect.step = 'name';
-    addMsg('bot', txt('askName'));
+    collect.active = true; collect.step = 'area';
+    track('landing_ai_lead_start');
+    clearChips();
+    addChips(addMsg('bot', txt('leadAskArea')), LEAD_AREAS);
     showCTA();
     syncComposer(); textInput.focus();
   }
 
-  function handleCollect(v) {
-    addMsg('user', v);
-    if (collect.step === 'name') {
-      collect.name = v.slice(0, 60); collect.step = 'email';
-      addMsg('bot', txtf('askEmail', { name: collect.name }));
+  function handleCollect(v) { collectAnswer(v, v); }
+
+  function collectAnswer(value, shown) {
+    if (collect.sending) return;
+    clearChips();
+    addMsg('user', shown);
+    if (collect.step === 'area') {
+      collect.area = value.slice(0, 100); collect.step = 'freq';
+      track('landing_ai_lead_step', { step: 'area' });
+      addChips(addMsg('bot', txt('leadAskFreq')), LEAD_FREQS);
       showCTA();   // 出口跟著移到最新一則下面
       syncComposer();
       return;
     }
-    if (collect.step === 'email') {
-      if (!validEmail(v)) { addMsg('bot', txt('emailInvalid')); showCTA(); return; }
-      collect.email = v; saveLead();
+    if (collect.step === 'freq') {
+      collect.frequency = value.slice(0, 60); collect.step = 'who';
+      track('landing_ai_lead_step', { step: 'freq' });
+      addMsg('bot', txt('leadAskWho'));
+      showCTA(); syncComposer(); textInput.focus();
+      return;
+    }
+    if (collect.step === 'who') {
+      collect.who = value.slice(0, 100); collect.step = 'contact';
+      track('landing_ai_lead_step', { step: 'who' });
+      addMsg('bot', txt('leadAskContact'));
+      showCTA(); syncComposer(); textInput.focus();
+      return;
+    }
+    if (collect.step === 'contact') {
+      var c = parseLeadContact(value);
+      if (!c) { addMsg('bot', txt('leadContactInvalid')); showCTA(); return; }
+      track('landing_ai_lead_step', { step: 'contact' });
+      saveLead(c);
     }
   }
 
-  // 「取消」:回到一般對話。對話紀錄、analysisId / claimToken 都不動,之後還能註冊或重新留 Email
+  // 「取消」:回到一般對話。對話紀錄、analysisId / claimToken 都不動,之後還能註冊或重新留聯絡方式
   function cancelCollect() {
     if (!collect.active || collect.sending || registering) return;
-    collect.active = false; collect.step = ''; collect.name = ''; collect.email = '';
+    collect.active = false; collect.step = ''; collect.area = ''; collect.frequency = ''; collect.who = '';
+    clearChips();
     addMsg('bot', txt('leadCancelled'));
     showCTA();
     syncComposer(); textInput.focus();
   }
 
   // 先用 reason 'lead' 把對話存成一筆(拿 analysisId),再寫 landing_leads
-  function saveLead() {
+  function saveLead(contact) {
     var bub = addMsg('bot', txt('sending'));
     collect.sending = true;
     setCTADisabled(true);
@@ -5429,7 +5554,10 @@ class Component extends DCLogic {
     saveForExit('lead').then(function (saved) {
       if (saved) markSaved();
       // lastAnalysis 是 conv.analysisId 那一筆的食材(menuOutcome / 存檔回應維護):analysis_id 與品項一定對得上
-      var row = leadRow({ name: collect.name, email: collect.email }, lastAnalysis, history, conv.analysisId, navigator.userAgent);
+      var row = leadRow({
+        name: collect.who, phone: contact.phone, line: contact.line, email: contact.email,
+        area: collect.area, frequency: collect.frequency, consent: true
+      }, lastAnalysis, history, conv.analysisId, navigator.userAgent);
       return fetch(SUPA_URL + '/rest/v1/landing_leads', {
         method: 'POST',
         headers: { 'apikey': SUPA_ANON, 'Authorization': 'Bearer ' + SUPA_ANON, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
@@ -5441,22 +5569,26 @@ class Component extends DCLogic {
         function () { return { ok: false, status: r.status, json: null }; });
     }).then(function (res) {
       if (res.ok) {
-        bub.textContent = txtf('leadSuccess', { name: collect.name, email: collect.email });
+        bub.textContent = txtf('leadSuccess', { name: collect.who });
         collect.active = false; collect.step = 'done';
+        track('landing_ai_lead_submit', { ok: true });
       } else if (isLeadRateLimited(res.status, res.json)) {
-        // 後端防灌水(同一個 Email 24 小時內第 3 筆、或全站當天太多):重送也沒用,改給友善說明 + 註冊出口
+        // 後端防灌水(同一個電話 / LINE / Email 24 小時內第 3 筆、或全站當天太多):重送也沒用,改給友善說明 + 註冊出口
         bub.textContent = txt('leadRateLimited');
         collect.active = false; collect.step = 'limited';
+        track('landing_ai_lead_submit', { ok: false, why: 'rate_limited' });
       } else {
-        bub.textContent = txt('leadFailure');   // 停在 Email 這一步,再送一次就會重試
+        bub.textContent = txt('leadFailure');   // 停在最後一步,再送一次聯絡方式就會重試
+        track('landing_ai_lead_submit', { ok: false, why: 'error' });
       }
     }).catch(function () { bub.textContent = txt('leadFailure'); })
       .then(function () {
         collect.sending = false;
         setBusy(false);
-        if (collect.step === 'done') removeCTA();   // 留好了:收集中那組(含「取消」)收掉
-        else showCTA();                             // 被擋下 → 只剩註冊;失敗 → 還在收,出口留著
-        pumpImages();   // 送 Email 期間排進來的照片,現在輪到它
+        if (collect.step === 'done') showCTA(txt('ctaPrefixLeadDone'));   // 留好了:加 LINE、免費註冊(追蹤報價、存成採購單草稿)
+        else showCTA();                                                   // 被擋下 → 只剩註冊;失敗 → 還在收,出口留著
+        syncComposer();
+        pumpImages();   // 送出期間排進來的照片,現在輪到它
       });
   }
 
