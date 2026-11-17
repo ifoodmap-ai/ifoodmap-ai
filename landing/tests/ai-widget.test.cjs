@@ -387,7 +387,7 @@ test('8d. 留好之後:加 LINE 排在註冊前面(帶需求編號的預填訊�
   assert.match(cta, /if \(collect\.step === 'done'\) \{[\s\S]*?line\.setAttribute\('data-cta', 'line'\);[\s\S]*?b\.insertBefore\(line, reg\);/);
   assert.match(cta, /line\.rel = 'noopener noreferrer'/);
   assert.match(fnBody('lineHref'), /'https:\/\/line\.me\/R\/oaMessage\/' \+ LINE_OA \+ '\/\?' \+ encodeURIComponent\(txtf\('lineMsg'/);
-  assert.match(widget, /var LINE_OA\s+= '@750yvxki';/);
+  assert.match(widget, /var LINE_OA\s+= '@694xprvx';/);
   assert.match(fnBody('saveLead'), /showCTA\(txt\('ctaPrefixLeadDone'\)\)/);
   assert.match(dict('zh').ai.ctaPrefixLeadDone, /加我們的 LINE/);
   // 事件:名稱固定、屬性只有步驟名稱 / 成功與否,沒有姓名、電話、LINE ID

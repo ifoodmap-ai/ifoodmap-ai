@@ -1319,7 +1319,10 @@ test('footer carries exactly the two approved social accounts', () => {
   // 客服 LINE@ 與 Facebook。舊站那兩個導流用的 LINE 帳號與那支 YouTube 宣傳影片刻意不搬。
   assert.match(footer, /href="https:\/\/line\.me\/R\/ti\/p\/@750yvxki\?oat_content=url"/);
   assert.match(footer, /href="https:\/\/www\.facebook\.com\/iFoodmap"/);
-  assert.doesNotMatch(source, /@694xprvx|@988wsmli/);
+  // 2026-11-18 業主指定:AI 助手留好聯絡方式後「加 LINE」要加到 https://lin.ee/NFy0w5Y(= @694xprvx),只用在 AI 助手那一處;頁面其他地方仍是客服 LINE@
+  assert.equal((source.match(/@694xprvx/g) || []).length, 1, '@694xprvx 只出現在 AI 助手的 LINE_OA 常數');
+  assert.doesNotMatch(footer, /@694xprvx/);
+  assert.doesNotMatch(source, /@988wsmli/);
   assert.doesNotMatch(footer, /youtube|youtu\.be/i);
   // 兩條都是外部連結
   assert.equal((footer.match(/target="_blank"/g) || []).length, 2);
