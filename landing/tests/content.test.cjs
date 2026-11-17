@@ -1320,8 +1320,9 @@ test('footer carries exactly the two approved social accounts', () => {
   assert.match(footer, /href="https:\/\/line\.me\/R\/ti\/p\/@750yvxki\?oat_content=url"/);
   assert.match(footer, /href="https:\/\/www\.facebook\.com\/iFoodmap"/);
   // 2026-11-18 業主指定:AI 助手留好聯絡方式後「加 LINE」要加到 https://lin.ee/NFy0w5Y(= @694xprvx),只用在 AI 助手那一處;頁面其他地方仍是客服 LINE@
-  assert.equal((source.match(/@694xprvx/g) || []).length, 1, '@694xprvx 只出現在 AI 助手的 LINE_OA 常數');
-  assert.doesNotMatch(footer, /@694xprvx/);
+  assert.equal((source.match(/lin\.ee\/NFy0w5Y/g) || []).length, 1, '指定的 LINE 短網址只出現在 AI 助手的 LINE_URL 常數');
+  assert.doesNotMatch(source, /@694xprvx/);
+  assert.doesNotMatch(footer, /lin\.ee/);
   assert.doesNotMatch(source, /@988wsmli/);
   assert.doesNotMatch(footer, /youtube|youtu\.be/i);
   // 兩條都是外部連結

@@ -382,13 +382,17 @@ test('8b. 留聯絡方式:先用 reason lead 存檔拿 analysisId,再寫 landing
   assert.match(talk.detail, /\n對話：客：/);
 });
 
-test('8d. 留好之後:加 LINE 排在註冊前面(帶需求編號的預填訊息),漏斗事件只送匿名代號、不帶個資', () => {
+test('8d. 留好之後:加 LINE 排在註冊前面(指到業主指定的帳號,並請訪客把需求編號傳過去),漏斗事件只送匿名代號、不帶個資', () => {
   const cta = fnBody('showCTA');
   assert.match(cta, /if \(collect\.step === 'done'\) \{[\s\S]*?line\.setAttribute\('data-cta', 'line'\);[\s\S]*?b\.insertBefore\(line, reg\);/);
   assert.match(cta, /line\.rel = 'noopener noreferrer'/);
-  assert.match(fnBody('lineHref'), /'https:\/\/line\.me\/R\/oaMessage\/' \+ LINE_OA \+ '\/\?' \+ encodeURIComponent\(txtf\('lineMsg'/);
-  assert.match(widget, /var LINE_OA\s+= '@694xprvx';/);
-  assert.match(fnBody('saveLead'), /showCTA\(txt\('ctaPrefixLeadDone'\)\)/);
+  // 指到業主指定的官方帳號短網址(oaMessage 預填訊息連結在電腦版只會開到 LINE 首頁,實測過,不用)
+  assert.match(widget, /var LINE_URL\s+= 'https:\/\/lin\.ee\/NFy0w5Y';/);
+  assert.match(cta, /line\.href = LINE_URL;/);
+  assert.doesNotMatch(widget, /line\.me\/R\/oaMessage/);
+  assert.match(fnBody('leadCode'), /slice\(0, 6\)\.toUpperCase\(\)/);
+  assert.match(dict('zh').ai.ctaPrefixLeadDone, /需求編號 \{code\}/);
+  assert.match(fnBody('saveLead'), /showCTA\(txtf\('ctaPrefixLeadDone', \{ code: leadCode\(\) \}\)\)/);
   assert.match(dict('zh').ai.ctaPrefixLeadDone, /加我們的 LINE/);
   // 事件:名稱固定、屬性只有步驟名稱 / 成功與否,沒有姓名、電話、LINE ID
   const events = [...widget.matchAll(/track\('(landing_ai_[a-z_]+)'(?:, (\{[^}]*\}))?\)/g)];
@@ -410,7 +414,7 @@ test('8c. 收到 400 + LEAD_RATE_LIMITED → 友善文案(不是「送出失敗�
   // 失敗時要讀 body 才知道是不是被防灌水擋下
   assert.match(save, /return r\.json\(\)\.then\(function \(j\) \{ return \{ ok: false, status: r\.status, json: j \}; \}/);
   // 被擋下之後:「留聯絡方式」那顆不再出現,但註冊出口還在;留成功了則接著請他註冊追蹤報價
-  assert.match(save, /if \(collect\.step === 'done'\) showCTA\(txt\('ctaPrefixLeadDone'\)\);[^\n]*\n\s*else showCTA\(\);/);
+  assert.match(save, /if \(collect\.step === 'done'\) showCTA\(txtf\('ctaPrefixLeadDone', \{ code: leadCode\(\) \}\)\);[^\n]*\n\s*else showCTA\(\);/);
   assert.match(fnBody('showCTA'), /collect\.step !== 'limited'/);
   // 寫入點仍然只有一個(content.test.cjs 也有擋),而且 return=minimal
   assert.equal((rawSource.match(/\/rest\/v1\/landing_leads/g) || []).length, 1);
@@ -518,7 +522,7 @@ test('11. widget 用到的每個 txt() / txtf() key 在中英字典都有,英文
     assert.doesNotMatch(dict('en').ai[key], CJK, `en.ai.${key} 還是中文`);
   }
   // 新文案的佔位符兩邊一致({max} / {name} / {email})
-  for (const key of ['tooLong', 'uploadLimit', 'lineMsg', 'leadSuccess']) {
+  for (const key of ['tooLong', 'uploadLimit', 'ctaPrefixLeadDone', 'leadSuccess']) {
     const holes = (s) => (s.match(/\{\w+\}/g) || []).sort().join(',');
     assert.equal(holes(dict('zh').ai[key]), holes(dict('en').ai[key]), key);
   }

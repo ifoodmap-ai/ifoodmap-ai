@@ -4624,7 +4624,7 @@ class Component extends DCLogic {
 (function () {
   var SUPA_URL  = (window.IFM_SUPA || {}).url;
   var SUPA_ANON = (window.IFM_SUPA || {}).anon;
-  var LINE_OA   = '@694xprvx';   // 加 LINE 的官方帳號(短網址 https://lin.ee/NFy0w5Y 指向的那個)
+  var LINE_URL  = 'https://lin.ee/NFy0w5Y';   // 加 LINE 的官方帳號(業主指定)。用官方短網址:電腦版、手機版都會開到「加好友」頁;預填訊息的 oaMessage 連結在電腦版只會開到 LINE 首頁
   // 語系:一律呼叫時才查字典。存成 var 的話,使用者切語系後會停在舊語言。
   // 「現在是哪個語系」的真相是網址前綴,所以每次都跟 IfmI18n 現拿,不在 boot 時抓一次。
   function curLang() {
@@ -5163,7 +5163,7 @@ class Component extends DCLogic {
     if (collect.step === 'done') {
       var line = document.createElement('a');
       line.className = 'ai-cta ai-cta--line'; line.setAttribute('data-cta', 'line');
-      line.href = lineHref(); line.target = '_blank'; line.rel = 'noopener noreferrer';
+      line.href = LINE_URL; line.target = '_blank'; line.rel = 'noopener noreferrer';
       line.textContent = txt('ctaLine');
       line.addEventListener('click', function () { track('landing_ai_line_click'); });
       b.insertBefore(line, reg);
@@ -5470,12 +5470,8 @@ class Component extends DCLogic {
     bub.appendChild(wrap);
     scrollDown();
   }
-  function lineHref() {
-    var code = String(conv.analysisId || '').replace(/[^A-Za-z0-9]/g, '').slice(0, 6).toUpperCase();
-    var items = lastAnalysis && lastAnalysis.ingredients && lastAnalysis.ingredients.length
-      ? lastAnalysis.ingredients.filter(function (i) { return i && i.name; }).map(function (i) { return i.name; }).join('、').slice(0, 80) : '';
-    return 'https://line.me/R/oaMessage/' + LINE_OA + '/?' + encodeURIComponent(txtf('lineMsg', { code: code || '-', items: items || '-' }));
-  }
+  // 需求編號 = 這段對話在後台那筆 analysis_records 的 id 前 6 碼;加好友後請他把編號傳過來,小編就對得到是哪一筆
+  function leadCode() { return String(conv.analysisId || '').replace(/[^A-Za-z0-9]/g, '').slice(0, 6).toUpperCase() || '-'; }
   // 漏斗事件(匿名、不帶任何個資):看每一步掉多少人。失敗不影響使用。
   function track(name, props) {
     try {
@@ -5585,7 +5581,7 @@ class Component extends DCLogic {
       .then(function () {
         collect.sending = false;
         setBusy(false);
-        if (collect.step === 'done') showCTA(txt('ctaPrefixLeadDone'));   // 留好了:加 LINE、免費註冊(追蹤報價、存成採購單草稿)
+        if (collect.step === 'done') showCTA(txtf('ctaPrefixLeadDone', { code: leadCode() }));   // 留好了:加 LINE、免費註冊(追蹤報價、存成採購單草稿)
         else showCTA();                                                   // 被擋下 → 只剩註冊;失敗 → 還在收,出口留著
         syncComposer();
         pumpImages();   // 送出期間排進來的照片,現在輪到它

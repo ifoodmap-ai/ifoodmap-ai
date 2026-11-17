@@ -2290,7 +2290,7 @@ pgTAP 沒辦法在本機跑(沒有 Postgres):套用前用乾跑驗證(不會 com
 ## 官網留言自動轉供應商(2026-11-18,`20261118100000_landing_lead_forwarding`)
 
 首頁 AI 助手的「留下聯絡方式」改成一步一題的對話:配送縣市(按鈕或打字)→ 配送頻率(按鈕或打字)→ 店名或稱呼 → 手機 / LINE ID / Email 擇一(自動判斷),要聯絡方式的那句話裡寫明「送出即同意提供給符合的供應商(最多 10 家)」。
-留好之後引導「加 LINE」(預填訊息帶需求編號 = analysis_id 前 6 碼)與「免費註冊」。漏斗事件(`landing_ai_*`,匿名、不帶個資)寫進 `app_events`。
+留好之後引導「加 LINE」(連到 https://lin.ee/NFy0w5Y,畫面上告知需求編號 = analysis_id 前 6 碼,請訪客加好友後傳過來)與「免費註冊」。漏斗事件(`landing_ai_*`,匿名、不帶個資)寫進 `app_events`。
 訪客送出 → `landing_leads`(`consent_share = true`)→ AFTER INSERT trigger `forward_landing_lead()`:
 依 `analysis_id` 的食材清單比對供應商上架品項(名稱雙向包含、兩邊 ≥ 2 字或完全相同)與服務區域(空白或判斷不出來都算符合),
 品項符合最多的前 10 家各寫一筆 `supplier_leads`(status `new`,`contact` 欄位是聯絡資料快照),供應商在後台「商機」頁看得到。

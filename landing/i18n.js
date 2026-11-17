@@ -945,7 +945,7 @@
         "sending": "送出中…",
         "leadSuccess": "✓ 收到了，{name}！符合的供應商會用電話或 LINE 直接聯絡你報價；如果暫時沒有合適的，我們的團隊也會主動跟你聯繫 🙌",
         "ctaLead": "留下聯絡方式，讓供應商報價給我",
-        "ctaPrefixLeadDone": "想更快收到報價？加我們的 LINE，有真人協助；也可以免費註冊，追蹤報價並把這次需求存成採購單草稿 👇",
+        "ctaPrefixLeadDone": "想更快收到報價？加我們的 LINE，加好友後把需求編號 {code} 傳給我們，真人會馬上對應你的需求；也可以免費註冊，追蹤報價並把這次需求存成採購單草稿 👇",
         "leadAskArea": "好的！我幫你把需求轉給符合的供應商，只要再回答 3 個小問題 😊\n1/3 配送到哪個縣市？（點選，或直接輸入其他縣市）",
         "leadAskFreq": "2/3 多久叫一次貨？",
         "leadAskWho": "3/3 怎麼稱呼您？店名也可以一起寫（例：阿輝鍋燒麵 阿輝）",
@@ -966,7 +966,6 @@
         "placeholderLeadWho": "店名、稱呼…",
         "placeholderLeadContact": "手機或 LINE ID…",
         "ctaLine": "加 LINE，報價與進度通知你",
-        "lineMsg": "你好，我剛在 iFoodmap 留了需求（編號 {code}）：{items}",
         "leadFailure": "送出失敗，請稍後再試一次 🙏",
         "leadRateLimited": "今天收到的留言次數已經達到上限了，請明天再試，或直接寫信到 ifoodmaptw@gmail.com，我們會盡快回覆 🙏"
       }
@@ -1897,7 +1896,7 @@
         "sending": "Sending…",
         "leadSuccess": "✓ Got it, {name}. Matching suppliers will contact you by phone or LINE with quotes. If none fit right away, our team will reach out too 🙌",
         "ctaLead": "Leave your contact so suppliers can quote me",
-        "ctaPrefixLeadDone": "Want quotes faster? Add us on LINE for real-person help, or sign up free to track quotes and save this as a draft purchase order 👇",
+        "ctaPrefixLeadDone": "Want quotes faster? Add us on LINE and send us your request number {code} so a real person can match it right away — or sign up free to track quotes and save this as a draft purchase order 👇",
         "leadAskArea": "Great — I'll pass your request to matching suppliers. Just 3 quick questions 😊\n1/3 Which city should we deliver to? (Tap one, or type another)",
         "leadAskFreq": "2/3 How often do you order?",
         "leadAskWho": "3/3 What should we call you? Your business name is welcome too (e.g. Ah-Hui Noodle House, Hui)",
@@ -1918,7 +1917,6 @@
         "placeholderLeadWho": "Business or name…",
         "placeholderLeadContact": "Mobile or LINE ID…",
         "ctaLine": "Add LINE — get quotes and updates",
-        "lineMsg": "Hi, I just left a request on iFoodmap (ref {code}): {items}",
         "leadFailure": "Couldn't send that — please try again in a moment 🙏",
         "leadRateLimited": "We've reached today's limit for messages. Please try again tomorrow, or email us at ifoodmaptw@gmail.com and we'll get back to you 🙏"
       }
