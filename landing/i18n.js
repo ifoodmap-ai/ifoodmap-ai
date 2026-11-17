@@ -754,7 +754,11 @@
         "hrK3t": "▲ 1 家新合作",
         "hrChart": "每日採購",
         "hrL1": "食材成本占比",
-        "hrL2": "供應商比價"
+        "hrL2": "供應商比價",
+        "heroLiveTag": "即時媒合",
+        "heroLive1": "高麗菜 10 kg → 阿明蔬果 96%",
+        "heroLive2": "雞蛋 20 箱 → 收到 3 份報價",
+        "heroLive3": "山野農場 剛上架 12 項商品"
       },
       "lineCta": {
         "eyebrow": "LINE 官方帳號",
@@ -1685,7 +1689,11 @@
         "hrK3t": "▲ 1 new",
         "hrChart": "Spend per day",
         "hrL1": "Cost share by item",
-        "hrL2": "Supplier prices"
+        "hrL2": "Supplier prices",
+        "heroLiveTag": "Live matching",
+        "heroLive1": "10 kg cabbage → Amin Produce 96%",
+        "heroLive2": "20 cases of eggs → 3 quotes received",
+        "heroLive3": "Shanye Farm just listed 12 products"
       },
       "lineCta": {
         "eyebrow": "LINE official account",

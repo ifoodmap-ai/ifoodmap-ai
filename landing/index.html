@@ -394,6 +394,24 @@
     .dmc-label { font-size:3.4cqw; bottom:-4%; left:0; }
   }
   @media (prefers-reduced-motion: reduce) { .dmc .dm-line { stroke-dasharray:none; } }
+  /* ===== 首頁 hero:地圖更豐富(點陣地圖、供應弧線與光點、節點脈衝)、即時媒合通知、搜尋框呼吸光 ===== */
+  .mc-heroveil { position:absolute; inset:0; pointer-events:none; background:radial-gradient(ellipse 40% 56% at 50% 50%, rgba(255,255,255,.9) 0%, rgba(255,255,255,.62) 60%, rgba(255,255,255,0) 100%); }
+  .mc-arc { stroke:#1f9e4e; stroke-opacity:.75; stroke-width:1.4; stroke-dasharray:3 7; animation:mcArc 2.6s linear infinite; }
+  .mc-runner { filter:drop-shadow(0 0 4px rgba(31,158,78,.9)); }
+  .mc-ping { fill:none; stroke:#0B6B40; stroke-width:1.4; transform-box:fill-box; transform-origin:center; animation:mcPing 3.4s ease-out infinite; }
+  .mc-ping--hub { stroke-width:2; animation-duration:2.8s; }
+  @keyframes mcArc { to { stroke-dashoffset:-40; } }
+  @keyframes mcPing { 0% { transform:scale(1); opacity:.75; } 100% { transform:scale(4.2); opacity:0; } }
+  .mc-live { position:absolute; z-index:1; display:flex; flex-direction:column; align-items:flex-start; gap:.35em; max-width:230px; background:rgba(255,255,255,.92); border:1px solid #d6e8d9; border-radius:16px; padding:11px 15px; font-size:13.5px; font-weight:600; color:#14532d; box-shadow:0 14px 34px rgba(20,60,30,.14); backdrop-filter:blur(6px); pointer-events:none; opacity:0; animation:mcLive 12s ease-in-out infinite both; }
+  .mc-live .dm-tag { margin:0; font-size:11px; }
+  .mc-live--a { left:max(2%, calc(50% - 560px)); top:26%; }
+  .mc-live--b { right:max(2%, calc(50% - 560px)); top:40%; animation-delay:4s; }
+  .mc-live--c { left:max(4%, calc(50% - 520px)); bottom:14%; animation-delay:8s; }
+  @keyframes mcLive { 0% { opacity:0; transform:translateY(14px); } 6%,28% { opacity:1; transform:none; } 36%,100% { opacity:0; transform:translateY(-10px); } }
+  @media (max-width:1180px) { .mc-live { display:none; } }
+  .mc-heroform { animation:mcSearchGlow 4s ease-in-out infinite; }
+  @keyframes mcSearchGlow { 0%,100% { box-shadow:0 14px 34px rgba(14,26,20,.08), 0 0 0 0 rgba(124,240,107,0); } 50% { box-shadow:0 14px 40px rgba(18,138,84,.16), 0 0 0 5px rgba(124,240,107,.22); } }
+  @media (prefers-reduced-motion: reduce) { .mc-arc, .mc-ping, .mc-live, .mc-heroform { animation:none !important; } .mc-live { opacity:1; } .mc-ping { display:none; } }
   /* 「加 LINE」區塊(.lc-*):/restaurants、/suppliers、/qa 各放一塊。桌機有 QR code(手邊有手機,掃碼最快),
      手機 / 觸控裝置不放 QR(自己的手機沒辦法掃自己),改成整條按鈕。 */
   .lc-card { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:28px; align-items:center; padding:30px 34px; border-radius:26px;
@@ -1095,6 +1113,12 @@
     <section class="ifm-v2" style="position:relative;overflow:hidden;border-bottom:1px solid #E6EAE7">
       <!-- 世界地圖由 d3 + world-atlas 在 drawMap() 畫進這個容器 -->
       <div ref="{{ mapRef }}" aria-hidden="true" style="position:absolute;inset:0;overflow:hidden;pointer-events:none"></div>
+      <!-- 文字後面墊一層淡淡的白霧,地圖再熱鬧、標題與搜尋框都讀得清楚 -->
+      <div class="mc-heroveil" aria-hidden="true"></div>
+      <!-- 即時媒合的示意通知(桌機才有;示意資料):圍在標題四周,輪流浮現 -->
+      <div class="mc-live mc-live--a" aria-hidden="true"><b class="dm-tag">{{ L.demo.heroLiveTag }}</b><span>{{ L.demo.heroLive1 }}</span></div>
+      <div class="mc-live mc-live--b" aria-hidden="true"><b class="dm-tag">{{ L.demo.heroLiveTag }}</b><span>{{ L.demo.heroLive2 }}</span></div>
+      <div class="mc-live mc-live--c" aria-hidden="true"><b class="dm-tag">{{ L.demo.heroLiveTag }}</b><span>{{ L.demo.heroLive3 }}</span></div>
       <div style="position:absolute;top:-220px;right:-140px;width:640px;height:640px;background:radial-gradient(circle,rgba(18,138,84,.09),transparent 68%)"></div>
       <div class="mc-heroinner" style="position:relative;max-width:860px;margin:0 auto;padding:clamp(56px,9vw,92px) 20px clamp(52px,8vw,84px);text-align:center;display:flex;flex-direction:column;align-items:center">
         <div class="mc-eyebrow mc-badge" style="display:inline-flex;align-items:center;gap:9px;border:1px solid #DCE3DE;background:#fff;border-radius:999px;padding:7px 16px;font-family:'Space Grotesk',sans-serif;font-size:11.5px;letter-spacing:.18em;color:#5E6E65">
@@ -2749,25 +2773,61 @@ class Component extends DCLogic {
       }
       const land = topojson.feature(this.topo, this.topo.objects.countries);
       const projection = d3.geoNaturalEarth1().rotate([-121, 0]).fitSize([w * 1.25, h * 1.25], land);
-      projection.translate([w * 0.5, h * 0.52]);
+      projection.translate([w * (w < 700 ? 0.5 : 0.7), h * (w < 700 ? 0.52 : 0.44)]);
       const path = d3.geoPath(projection);
+      const calm = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
       el.innerHTML = '';
       const svg = d3.select(el).append('svg')
         .attr('width', w).attr('height', h)
         .attr('viewBox', '0 0 ' + w + ' ' + h);
+
+      // 點陣地圖:陸地不是實心色塊,而是一格一格的圓點(pattern),經緯網格墊在底下,有「資料地圖」的科技感
+      const defs = svg.append('defs');
+      defs.append('pattern').attr('id', 'mcDots').attr('width', 7).attr('height', 7).attr('patternUnits', 'userSpaceOnUse')
+        .append('circle').attr('cx', 3.5).attr('cy', 3.5).attr('r', 1.35).attr('fill', '#5FA37E');
+      const glow = defs.append('radialGradient').attr('id', 'mcHubGlow');
+      glow.append('stop').attr('offset', '0%').attr('stop-color', '#46c138').attr('stop-opacity', .45);
+      glow.append('stop').attr('offset', '100%').attr('stop-color', '#46c138').attr('stop-opacity', 0);
+      svg.append('path').datum(d3.geoGraticule10()).attr('d', path)
+        .attr('fill', 'none').attr('stroke', '#DCE9E0').attr('stroke-width', 0.5).attr('opacity', .8);
       svg.append('g').selectAll('path').data(land.features).join('path')
         .attr('d', path)
-        .attr('fill', '#F2F6F3')
-        .attr('stroke', '#DCE6DF')
-        .attr('stroke-width', 0.7);
-      svg.append('g').selectAll('circle')
-        .data([[121.5, 25.0], [120.3, 22.6], [139.7, 35.7], [103.8, 1.35], [-99.1, 19.4], [-0.1, 51.5], [151.2, -33.9]])
-        .join('circle')
-        .attr('cx', d => (projection(d) || [-99, -99])[0])
-        .attr('cy', d => (projection(d) || [-99, -99])[1])
-        .attr('r', 2.6)
-        .attr('fill', '#0B6B40')
-        .attr('opacity', .55);
+        .attr('fill', 'url(#mcDots)')
+        .attr('stroke', '#C9DDD0')
+        .attr('stroke-width', 0.5)
+        .attr('stroke-opacity', .7);
+
+      // 供應網路:各地的供應商 / 餐廳節點,弧線都連到台灣(平台所在),弧線上有光點在跑
+      const HUB = [121.5, 25.0];
+      const nodes = [
+        [120.3, 22.6], [120.7, 24.1], [139.7, 35.7], [127.0, 37.6], [114.2, 22.3], [103.8, 1.35], [100.5, 13.75],
+        [151.2, -33.9], [-118.2, 34.05], [-0.1, 51.5], [55.3, 25.2], [-99.1, 19.4],
+      ].slice(0, w < 700 ? 7 : 12);
+      const arcs = svg.append('g').attr('fill', 'none');
+      nodes.forEach((n, i) => {
+        const d = path({ type: 'LineString', coordinates: [n, HUB] });
+        if (!d) return;
+        arcs.append('path').attr('d', d).attr('class', 'mc-arc').style('animation-delay', (-i * 0.35) + 's');
+        if (!calm) {
+          arcs.append('circle').attr('r', 2.4).attr('fill', '#1f9e4e').attr('class', 'mc-runner')
+            .append('animateMotion').attr('dur', (4.2 + (i % 5) * 0.9) + 's').attr('begin', (-i * 0.7) + 's')
+            .attr('repeatCount', 'indefinite').attr('path', d);
+        }
+      });
+      const dots = svg.append('g');
+      nodes.forEach((n, i) => {
+        const p = projection(n);
+        if (!p) return;
+        dots.append('circle').attr('cx', p[0]).attr('cy', p[1]).attr('r', 3).attr('fill', '#fff').attr('stroke', '#0B6B40').attr('stroke-width', 1.6);
+        dots.append('circle').attr('cx', p[0]).attr('cy', p[1]).attr('r', 3).attr('class', 'mc-ping').style('animation-delay', (-i * 0.45) + 's');
+      });
+      const hub = projection(HUB);
+      if (hub) {
+        dots.append('circle').attr('cx', hub[0]).attr('cy', hub[1]).attr('r', 46).attr('fill', 'url(#mcHubGlow)');
+        dots.append('circle').attr('cx', hub[0]).attr('cy', hub[1]).attr('r', 6).attr('class', 'mc-ping mc-ping--hub');
+        dots.append('circle').attr('cx', hub[0]).attr('cy', hub[1]).attr('r', 6).attr('class', 'mc-ping mc-ping--hub').style('animation-delay', '-1.4s');
+        dots.append('circle').attr('cx', hub[0]).attr('cy', hub[1]).attr('r', 5.2).attr('fill', '#0B6B40').attr('stroke', '#fff').attr('stroke-width', 2);
+      }
       this._mapW = w; this._mapH = h;
     } catch (e) {
       /* 地圖是裝飾,載不到就留白,不影響頁面 */
